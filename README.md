@@ -181,6 +181,28 @@ DB_PASSWORD=
 SEMANTIC_SCHEMA_PATH=/absolute/path/to/schema.yaml
 ```
 
+### 로컬/회사 endpoint 분리
+
+코드는 기존 `VLLM_*` 이름을 계속 지원하면서, 회사/로컬 분리를 위해 더 일반적인 이름도 함께 읽습니다.
+
+```bash
+LLM_BASE_URL=https://api.openai.com
+LLM_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+
+EMBED_BASE_URL=http://127.0.0.1:8124
+EMBED_MODEL=intfloat/multilingual-e5-small
+```
+
+회사 환경에서는 위 값을 사내 LLM/embedding gateway URL로 바꾸면 됩니다. 로컬 전용 값은 `.env.local`에 둘 수 있고, 이 파일은 Git에 올라가지 않도록 무시됩니다.
+
+`kbcard-agent-common` 문서 기준으로는 uv 환경을 권장합니다.
+
+```bash
+uv venv --python 3.12
+uv pip install -r requirements.txt
+```
+
 ## 처리 흐름
 
 1. 사용자가 웹 UI에서 질문을 입력합니다.

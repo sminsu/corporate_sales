@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .env
+.env.local
+.local/
 .venv/
 venv/
 output/
