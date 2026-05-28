@@ -165,6 +165,12 @@ def _validate_agent(agent_name: str, header_agent_name: str, body_agent_name: st
         raise HTTPException(status_code=400, detail="본문 agent_name과 URL agent_name이 다릅니다.")
 
 
+def _raise_api_error(exc: Exception) -> None:
+    error_name = agent.common_error_name(exc)
+    detail = f"{error_name}: {exc}" if str(exc) else error_name
+    raise HTTPException(status_code=agent.common_http_status(exc), detail=detail) from exc
+
+
 def _get_or_create_session(session_id: str | None, user_id: str = "ui", agent_name: str = "manual") -> dict[str, Any]:
     resolved_id = session_id or f"sess_{uuid.uuid4().hex}"
     if resolved_id in _SESSIONS:
@@ -1019,7 +1025,7 @@ def query(
     try:
         data = _run_query(req, session, message_id, agent_name=agent_name, user_id=x_user_id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_api_error(exc)
     data = _finalize_assistant_message(session, data, message_id)
     return {"success": True, "data": data}
 
@@ -1103,7 +1109,7 @@ def legacy_query(req: LegacyQueryRequest):
     try:
         data = _run_query(compatible, session, message_id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_api_error(exc)
     data = _finalize_assistant_message(session, data, message_id)
     return data
 

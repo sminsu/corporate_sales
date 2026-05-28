@@ -72,35 +72,6 @@ def build_glossary_summary(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def build_query_reference_summary(schema: dict) -> str:
-    lines = []
-    for ref in schema.get("query_references", []):
-        lines.append(f"- **{ref.get('intent', '')}**")
-        says = ", ".join(ref.get("when_user_says", [])[:4])
-        if says:
-            lines.append(f"  user_says: [{says}]")
-        if ref.get("primary_table"):
-            lines.append(f"  primary_table: {ref['primary_table']}")
-        if ref.get("join_tables"):
-            lines.append(f"  join_tables: {', '.join(ref.get('join_tables', []))}")
-        if ref.get("join_rule"):
-            lines.append(f"  join_rule: {ref['join_rule']}")
-        cols = ref.get("recommended_columns", {})
-        if cols:
-            lines.append("  column_hints:")
-            for key, value in cols.items():
-                lines.append(f"    - {key}: {value}")
-        rules = ref.get("rules", [])
-        if rules:
-            lines.append("  rules:")
-            for rule in rules[:5]:
-                lines.append(f"    - {rule}")
-        if ref.get("sql_pattern"):
-            lines.append(f"  sql_pattern:\n{ref['sql_pattern'].strip()}")
-        lines.append("")
-    return "\n".join(lines)
-
-
 _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_]+")
 
 
@@ -357,17 +328,6 @@ def build_domain_context(schema: dict, domain_name: str, max_metrics: int = 8) -
         lines.append("- semantic_join_graph:")
         lines.append(join_context)
     return "\n".join(lines)
-
-
-def build_domain_routing_summary(schema: dict, max_domains: int = 8) -> str:
-    lines = []
-    for domain in schema.get("canonical_domains", [])[:max_domains]:
-        lines.append(f"- {domain.get('name')}: {domain.get('business_scope', '')}")
-        if domain.get("keywords"):
-            lines.append(f"  keywords: {', '.join(domain.get('keywords', []))}")
-        if domain.get("preferred_metrics"):
-            lines.append(f"  preferred_metrics: {', '.join(domain.get('preferred_metrics', []))}")
-    return "\n".join(lines) if lines else "(canonical_domains 없음)"
 
 
 def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
