@@ -1,6 +1,5 @@
 """PostgreSQL connection pool and guarded SELECT execution."""
 
-import os
 import re
 import time
 
@@ -9,6 +8,7 @@ import psycopg2.pool
 import sqlparse
 
 from .common_services import emit_module_event
+from .config import DB_DSN, DB_HOST, DB_NAME, DB_PASSWORD, DB_POOL_MAX, DB_PORT, DB_USER
 
 
 _DANGEROUS_SQL_RE = re.compile(
@@ -24,15 +24,18 @@ _pool: psycopg2.pool.ThreadedConnectionPool | None = None
 def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     global _pool
     if _pool is None or _pool.closed:
-        _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=int(os.getenv("DB_POOL_MAX", "10")),
-            host=os.getenv("DB_HOST", "localhost"),
-            port=int(os.getenv("DB_PORT", "5432")),
-            dbname=os.getenv("DB_NAME", "postgres"),
-            user=os.getenv("DB_USER", os.getenv("USER", "postgres")),
-            password=os.getenv("DB_PASSWORD", ""),
-        )
+        if DB_DSN:
+            _pool = psycopg2.pool.ThreadedConnectionPool(1, DB_POOL_MAX, DB_DSN)
+        else:
+            _pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=DB_POOL_MAX,
+                host=DB_HOST,
+                port=DB_PORT,
+                dbname=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+            )
     return _pool
 
 
@@ -105,7 +108,7 @@ def _log_db_query(
         target={
             "system": "postgres",
             "schema": "card_system",
-            "database": os.getenv("DB_NAME", "postgres"),
+            "database": DB_NAME,
         },
         data_scope={
             "query_type": "select",

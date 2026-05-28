@@ -126,8 +126,9 @@ uv pip install -r requirements.txt
 kbcard-agent-common[llm] @ git+ssh://git@github.com/kduk/kbcard-agent-common.git@main
 ```
 
-Getting Started의 단발 예제는 `from_config_path(...)`를 사용하지만, 이 서비스는 기존 `VLLM_*`
-환경 변수를 그대로 쓰기 위해 SDK의 직접 endpoint factory인 `KBCardOpenAI.from_endpoint(...)`를 사용합니다.
+이 서비스도 common SDK 방식에 맞춰 `KBCARD_CONFIG_PATH`가 있으면 agent YAML과 model registry YAML을
+먼저 읽습니다. LLM은 `KBCardOpenAI.from_config(...)`, embedding은 `EmbeddingClient.from_config(...)`를
+우선 사용하고, YAML이 없을 때만 기존 환경 변수 기반 endpoint 설정으로 fallback합니다.
 
 ## common 기능 사용 범위
 
@@ -137,7 +138,7 @@ Getting Started의 단발 예제는 `from_config_path(...)`를 사용하지만, 
 - Module audit logging: `observability_context` 안에서 common LLM/embedding 호출은 `llm_call`, `embedding_call` 이벤트를 자동 기록하고, `db.py`는 `db_query` 이벤트를 직접 기록합니다.
 - Errors: common SDK의 `ConfigurationError`, `ProviderError`, `RetryableProviderError`, `CapabilityNotSupportedError`, `KBCardAgentError`를 API 응답 status로 매핑합니다.
 
-이번 Text2SQL 과제는 업무 DB를 SQL로 조회하는 서비스이므로 common SDK의 retrieval, reranker, Markdown ingestion, pgvector provider, reindex/upsert API는 넣지 않았습니다.
+이번 Text2SQL 과제는 업무 DB를 SQL로 조회하는 서비스이므로 common SDK의 retrieval, reranker, Markdown ingestion, pgvector provider, reindex/upsert API는 넣지 않았습니다. 다만 Postgres secret은 common 예제처럼 `KBCARD_POSTGRES_DSN`을 우선 지원합니다.
 
 ## Docker 실행
 
@@ -149,31 +150,16 @@ docker run --rm -p 8080:8080 --env-file .env text2sql-webservice:v4
 
 ## 환경 변수
 
-필요한 값은 `.env` 또는 실행 환경 변수로 설정합니다.
+common SDK 문서 기준의 권장 방식은 `.env`에는 config 경로와 secret만 두고, endpoint/model 설정은 YAML에 두는 것입니다.
 
 ```bash
-LLM_BASE_URL=http://localhost:8000
-LLM_MODEL=gpt-oss
+KBCARD_CONFIG_PATH=config/agent.example.yaml
 LLM_API_KEY=EMPTY
-LLM_ENDPOINT_PATH=/v1/chat/completions
+KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
 
-EMBED_BASE_URL=http://localhost:8000
-EMBED_MODEL=embedding-model
-EMBED_API_KEY=EMPTY
-ENABLE_EMBEDDING_PRECOMPUTE=false
-EMBED_MATCH_THRESHOLD=0.75
-
-KBCARD_AGENT_ENV=local
-KBCARD_SERVICE_NAME=text2sql-v4
 KBCARD_LOG_FORMAT=jsonl
 KBCARD_LOG_LEVEL=INFO
 KBCARD_LOG_PAYLOAD_MODE=summary
-
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=postgres
-DB_USER=postgres
-DB_PASSWORD=
 ```
 
 기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
@@ -186,34 +172,77 @@ SEMANTIC_SCHEMA_PATH=/absolute/path/to/schema.yaml
 
 ### 로컬/회사 endpoint 분리
 
-코드는 기존 `VLLM_*` 이름을 계속 지원하면서, 회사/로컬 분리를 위해 더 일반적인 이름도 함께 읽습니다.
-Bedrock API key를 쓰는 경우 `~/.zshrc`나 실행 환경에 `AWS_BEARER_TOKEN_BEDROCK`를 둡니다.
-`KBCardOpenAI` 호환 경로로 실행하려면 OpenAI 호환 Chat Completions가 동작하는 리전을
-`BEDROCK_REGION`에 지정하고, `bedrock-runtime`의 `/openai/v1/chat/completions` endpoint를 사용합니다.
+기본 예시는 `config/agent.example.yaml`과 `config/models.example.yaml`입니다. 로컬 값은 복사해서
+`config/agent.local.yaml`, `config/models.local.yaml`로 두고 `.env.local`에서 `KBCARD_CONFIG_PATH`만 바꾸면 됩니다.
+
+```bash
+cp config/agent.example.yaml config/agent.local.yaml
+cp config/models.example.yaml config/models.local.yaml
+```
+
+`agent.local.yaml`:
+
+```yaml
+agent:
+  name: text2sql-v4
+  environment: local
+  service_name: text2sql-v4-local
+
+llm:
+  model_registry_path: models.local.yaml
+  default_model: local-chat
+  temperature: 0
+  max_tokens: 4096
+  timeout: 120
+
+embedding:
+  provider: tei
+  base_url: http://127.0.0.1:8001
+  model: bge-m3
+  api_key: null
+  timeout: 60
+
+retrieval:
+  store:
+    provider: postgres
+    dsn_env: KBCARD_POSTGRES_DSN
+    pool_max_size: 10
+```
+
+`models.local.yaml`:
+
+```yaml
+models:
+  local-chat:
+    provider: vllm
+    base_url: http://127.0.0.1:8000
+    endpoint_path: /v1/chat/completions
+    api_key_env: LLM_API_KEY
+    timeout: 120
+```
+
+Bedrock API key를 쓰는 경우에도 secret은 YAML에 쓰지 않고 `AWS_BEARER_TOKEN_BEDROCK` 환경 변수에 둡니다.
+`KBCardOpenAI` 호환 경로로 실행하려면 `models.local.yaml`의 기본 모델을 Bedrock runtime endpoint로 바꿉니다.
 
 ```bash
 AWS_BEARER_TOKEN_BEDROCK=...
-BEDROCK_REGION=us-east-1
-BEDROCK_ENDPOINT_KIND=runtime
-LLM_TRANSPORT=openai_chat
-LLM_MODEL=openai.gpt-oss-20b-1:0
-LLM_ENDPOINT_PATH=/openai/v1/chat/completions
-# 선택: 명시하고 싶으면 아래 값을 둡니다.
-# LLM_BASE_URL=https://bedrock-runtime.us-east-1.amazonaws.com
-
-EMBED_BASE_URL=http://127.0.0.1:8124
-EMBED_MODEL=intfloat/multilingual-e5-small
 ```
 
-서울 리전 `ap-northeast-2`에서 Anthropic Claude를 써야 하는 경우에는 `LLM_TRANSPORT=bedrock_converse`와
-Converse API 지원 모델 ID를 사용하면 됩니다. 이 경로는 `KBCardOpenAI` 호환이 아니라 Bedrock native 호출입니다.
+```yaml
+models:
+  "openai.gpt-oss-20b-1:0":
+    provider: bedrock
+    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+    endpoint_path: /openai/v1/chat/completions
+    api_key_env: AWS_BEARER_TOKEN_BEDROCK
+    timeout: 120
+```
 
 `AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code나 Anthropic용 bearer token을
 넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
 
-회사 환경에서는 위 값을 사내 LLM/embedding gateway URL로 바꾸면 됩니다. OpenAI 호환 gateway라면
-`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`만 바꿔도 됩니다. 로컬 전용 값은 `.env.local`에 둘 수 있고,
-이 파일은 Git에 올라가지 않도록 무시됩니다.
+기존 `LLM_BASE_URL`, `VLLM_BASE_URL`, `EMBED_BASE_URL`, `DB_HOST` 같은 환경 변수도 계속 지원하지만,
+`KBCARD_CONFIG_PATH` YAML을 두는 방식을 우선 권장합니다.
 
 `kbcard-agent-common` 문서 기준으로는 uv 환경을 권장합니다.
 

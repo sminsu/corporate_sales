@@ -102,13 +102,15 @@ def observability_context(*, context: Any, agent_name: str, user_id: str):
     logger = get_common_logger()
     if _common_observability_context is None or logger is None or context is None:
         return _null_context()
+    from .config import AGENT_ENVIRONMENT, AGENT_SERVICE_NAME
+
     return _common_observability_context(
         logger=logger,
         context=context,
         agent_name=agent_name,
         user_id=user_id,
-        environment=os.getenv("KBCARD_AGENT_ENV", "local"),
-        service_name=os.getenv("KBCARD_SERVICE_NAME", "text2sql-v4"),
+        environment=AGENT_ENVIRONMENT,
+        service_name=AGENT_SERVICE_NAME,
         payload_mode=os.getenv("KBCARD_LOG_PAYLOAD_MODE", "summary"),
     )
 

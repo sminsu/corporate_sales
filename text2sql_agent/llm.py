@@ -8,21 +8,27 @@ from urllib.parse import quote
 import requests
 
 from .config import (
+    COMMON_CONFIG,
     VLLM_API_KEY,
     VLLM_BASE_URL,
     VLLM_EMBED_API_KEY,
     VLLM_EMBED_MODEL,
+    VLLM_EMBED_TIMEOUT,
     VLLM_EMBED_URL,
     VLLM_ENDPOINT_PATH,
     VLLM_MODEL,
     VLLM_PROVIDER,
+    VLLM_TEMPERATURE,
+    VLLM_TIMEOUT,
     VLLM_TRANSPORT,
+    VLLM_MAX_TOKENS,
 )
 
 try:
-    from kbcard_agent_common.embedding import TEIEmbeddingClient
+    from kbcard_agent_common.embedding import EmbeddingClient, TEIEmbeddingClient
     from kbcard_agent_common.llm import KBCardOpenAI
 except ModuleNotFoundError:
+    EmbeddingClient = None
     KBCardOpenAI = None
     TEIEmbeddingClient = None
 
@@ -38,14 +44,17 @@ def _get_common_llm_client():
     if VLLM_TRANSPORT == "bedrock_converse" or KBCardOpenAI is None:
         return None
 
-    _COMMON_LLM_CLIENT = KBCardOpenAI.from_endpoint(
-        base_url=VLLM_BASE_URL,
-        default_model=VLLM_MODEL,
-        api_key=VLLM_API_KEY,
-        provider=VLLM_PROVIDER,
-        endpoint_path=VLLM_ENDPOINT_PATH,
-        timeout=120,
-    )
+    if COMMON_CONFIG is not None and COMMON_CONFIG.llm is not None:
+        _COMMON_LLM_CLIENT = KBCardOpenAI.from_config(COMMON_CONFIG, default_model=VLLM_MODEL)
+    else:
+        _COMMON_LLM_CLIENT = KBCardOpenAI.from_endpoint(
+            base_url=VLLM_BASE_URL,
+            default_model=VLLM_MODEL,
+            api_key=VLLM_API_KEY,
+            provider=VLLM_PROVIDER,
+            endpoint_path=VLLM_ENDPOINT_PATH,
+            timeout=VLLM_TIMEOUT,
+        )
     return _COMMON_LLM_CLIENT
 
 
@@ -57,12 +66,15 @@ def _get_common_embed_client():
     if TEIEmbeddingClient is None:
         return None
 
-    _COMMON_EMBED_CLIENT = TEIEmbeddingClient(
-        base_url=VLLM_EMBED_URL,
-        model=VLLM_EMBED_MODEL,
-        api_key=VLLM_EMBED_API_KEY,
-        timeout=60,
-    )
+    if COMMON_CONFIG is not None and COMMON_CONFIG.embedding is not None and EmbeddingClient is not None:
+        _COMMON_EMBED_CLIENT = EmbeddingClient.from_config(COMMON_CONFIG)
+    else:
+        _COMMON_EMBED_CLIENT = TEIEmbeddingClient(
+            base_url=VLLM_EMBED_URL,
+            model=VLLM_EMBED_MODEL,
+            api_key=VLLM_EMBED_API_KEY,
+            timeout=VLLM_EMBED_TIMEOUT,
+        )
     return _COMMON_EMBED_CLIENT
 
 
@@ -75,8 +87,9 @@ def _call_llm(prompt: str) -> str:
         response = common_client.chat.completions.create(
             model=VLLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            timeout=120,
+            temperature=VLLM_TEMPERATURE,
+            max_tokens=VLLM_MAX_TOKENS,
+            timeout=VLLM_TIMEOUT,
         )
         return _normalize_llm_text(response.content)
 
@@ -88,9 +101,10 @@ def _call_llm(prompt: str) -> str:
     data = {
         "model": VLLM_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0,
+        "temperature": VLLM_TEMPERATURE,
+        "max_tokens": VLLM_MAX_TOKENS,
     }
-    resp = requests.post(url, json=data, headers=headers, timeout=120)
+    resp = requests.post(url, json=data, headers=headers, timeout=VLLM_TIMEOUT)
     resp.raise_for_status()
     return _normalize_llm_text(resp.json()["choices"][0]["message"]["content"])
 
@@ -103,9 +117,9 @@ def _call_bedrock_converse(prompt: str) -> str:
     }
     data = {
         "messages": [{"role": "user", "content": [{"text": prompt}]}],
-        "inferenceConfig": {"temperature": 0, "maxTokens": 4096},
+        "inferenceConfig": {"temperature": VLLM_TEMPERATURE, "maxTokens": VLLM_MAX_TOKENS},
     }
-    resp = requests.post(url, json=data, headers=headers, timeout=120)
+    resp = requests.post(url, json=data, headers=headers, timeout=VLLM_TIMEOUT)
     resp.raise_for_status()
     return _normalize_llm_text(_extract_bedrock_converse_text(resp.json()))
 

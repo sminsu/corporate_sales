@@ -1,0 +1,24 @@
+agent:
+  name: text2sql-v4
+  environment: local
+  service_name: text2sql-v4-local
+
+llm:
+  model_registry_path: models.example.yaml
+  default_model: local-chat
+  temperature: 0
+  max_tokens: 4096
+  timeout: 120
+
+embedding:
+  provider: tei
+  base_url: http://127.0.0.1:8001
+  model: bge-m3
+  api_key: null
+  timeout: 60
+
+retrieval:
+  store:
+    provider: postgres
+    dsn_env: KBCARD_POSTGRES_DSN
+    pool_max_size: 10

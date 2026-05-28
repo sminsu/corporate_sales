@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .env
 .env.local
+config/*.local.yaml
 .local/
 .venv/
 venv/
