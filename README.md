@@ -17,7 +17,7 @@ flowchart TD
     API --> AGENT["text2sql_agent<br/>에이전트 패키지"]
     AGENT --> WF["workflow.py<br/>LangGraph 실행 흐름"]
 
-    WF --> LLM["llm.py<br/>vLLM 호출"]
+    WF --> LLM["llm.py<br/>LLM/embedding 호출"]
     WF --> SCHEMA["schema.py<br/>schema_v6_gptoss.yaml 로딩/검증"]
     WF --> TOOLS["tools/registry.py<br/>Tool 선택"]
     TOOLS --> SQLB["tools/sql_builders.py<br/>확정 SQL 생성"]
@@ -89,9 +89,10 @@ v4/
 로컬 Python 환경에서 실행:
 
 ```bash
-cd /Users/minsu/Documents/company/franchise/text2sql_v10/v4
-pip install -r requirements.txt
-uvicorn webservice_v1:app --host 0.0.0.0 --port 8080
+cd /Users/minsu/Documents/company/franchise/text2sql_v10/corporate_sales
+uv venv --python 3.12
+uv pip install -r requirements.txt
+uv run uvicorn webservice_v1:app --host 0.0.0.0 --port 8080
 ```
 
 브라우저에서 접속:
@@ -103,19 +104,20 @@ http://localhost:8080
 터미널 대화형 CLI로 실행:
 
 ```bash
-cd /Users/minsu/Documents/company/franchise/text2sql_v10/v4
-python -m text2sql_agent
+cd /Users/minsu/Documents/company/franchise/text2sql_v10/corporate_sales
+uv run python -m text2sql_agent
 ```
 
 ## kbcard-agent-common 연결
 
-common SDK 문서의 Getting Started 기준에 맞춰 Python `3.12`에서 pip 의존성으로 설치합니다.
+common SDK 문서의 Getting Started 기준에 맞춰 Python `3.12`에서 uv로 의존성을 설치합니다.
 문서에서는 사내 PyPI 설치를 기본으로 설명하지만, 현재 작업 환경은 SSH clone이 가능하므로
 `requirements.txt`에서 GitHub SSH dependency로 직접 연결했습니다.
 
 ```bash
-cd /Users/minsu/Documents/company/franchise/text2sql_v10/v4
-python -m pip install -r requirements.txt
+cd /Users/minsu/Documents/company/franchise/text2sql_v10/corporate_sales
+uv venv --python 3.12
+uv pip install -r requirements.txt
 ```
 
 의존성은 이 과제에서 쓰는 `llm` extra만 지정합니다.
@@ -140,7 +142,7 @@ Getting Started의 단발 예제는 `from_config_path(...)`를 사용하지만, 
 ## Docker 실행
 
 ```bash
-cd /Users/minsu/Documents/company/franchise/text2sql_v10/v4
+cd /Users/minsu/Documents/company/franchise/text2sql_v10/corporate_sales
 docker build -t text2sql-webservice:v4 .
 docker run --rm -p 8080:8080 --env-file .env text2sql-webservice:v4
 ```
@@ -150,13 +152,14 @@ docker run --rm -p 8080:8080 --env-file .env text2sql-webservice:v4
 필요한 값은 `.env` 또는 실행 환경 변수로 설정합니다.
 
 ```bash
-VLLM_BASE_URL=http://localhost:8000
-VLLM_MODEL=gpt-oss
-VLLM_API_KEY=EMPTY
+LLM_BASE_URL=http://localhost:8000
+LLM_MODEL=gpt-oss
+LLM_API_KEY=EMPTY
+LLM_ENDPOINT_PATH=/v1/chat/completions
 
-VLLM_EMBED_URL=http://localhost:8000
-VLLM_EMBED_MODEL=embedding-model
-VLLM_EMBED_API_KEY=EMPTY
+EMBED_BASE_URL=http://localhost:8000
+EMBED_MODEL=embedding-model
+EMBED_API_KEY=EMPTY
 ENABLE_EMBEDDING_PRECOMPUTE=false
 EMBED_MATCH_THRESHOLD=0.75
 
@@ -173,7 +176,7 @@ DB_USER=postgres
 DB_PASSWORD=
 ```
 
-기본 schema는 `v4/schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
+기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
 기업영업 가맹점/특수채권/대손충당금 테이블과 예시는 이 파일에 병합했고, 중복 파일은 제거했습니다.
 다른 schema를 쓰려면 다음 환경 변수를 지정하면 됩니다.
 
@@ -184,17 +187,28 @@ SEMANTIC_SCHEMA_PATH=/absolute/path/to/schema.yaml
 ### 로컬/회사 endpoint 분리
 
 코드는 기존 `VLLM_*` 이름을 계속 지원하면서, 회사/로컬 분리를 위해 더 일반적인 이름도 함께 읽습니다.
+Bedrock API key를 쓰는 경우 `~/.zshrc`나 실행 환경에 `AWS_BEARER_TOKEN_BEDROCK`와 `AWS_REGION`
+또는 `AWS_DEFAULT_REGION`을 둡니다. `ap-northeast-2`처럼 mantle 미지원 리전은
+`bedrock-runtime.{region}.amazonaws.com`의 OpenAI 호환 Chat Completions endpoint를 자동 사용합니다.
 
 ```bash
-LLM_BASE_URL=https://api.openai.com
-LLM_MODEL=gpt-4.1-mini
-OPENAI_API_KEY=...
+AWS_BEARER_TOKEN_BEDROCK=...
+AWS_REGION=ap-northeast-2
+LLM_MODEL=global.anthropic.claude-sonnet-4-6
+LLM_ENDPOINT_PATH=/openai/v1/chat/completions
+# 선택: 명시하고 싶으면 아래 값을 둡니다.
+# LLM_BASE_URL=https://bedrock-runtime.ap-northeast-2.amazonaws.com
 
 EMBED_BASE_URL=http://127.0.0.1:8124
 EMBED_MODEL=intfloat/multilingual-e5-small
 ```
 
-회사 환경에서는 위 값을 사내 LLM/embedding gateway URL로 바꾸면 됩니다. 로컬 전용 값은 `.env.local`에 둘 수 있고, 이 파일은 Git에 올라가지 않도록 무시됩니다.
+`AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code나 Anthropic용 bearer token을
+넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
+
+회사 환경에서는 위 값을 사내 LLM/embedding gateway URL로 바꾸면 됩니다. OpenAI 호환 gateway라면
+`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`만 바꿔도 됩니다. 로컬 전용 값은 `.env.local`에 둘 수 있고,
+이 파일은 Git에 올라가지 않도록 무시됩니다.
 
 `kbcard-agent-common` 문서 기준으로는 uv 환경을 권장합니다.
 

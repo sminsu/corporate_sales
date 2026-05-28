@@ -1,4 +1,4 @@
-"""vLLM chat and embedding clients."""
+"""LLM chat and embedding clients."""
 
 import math
 from typing import Any
@@ -11,7 +11,9 @@ from .config import (
     VLLM_EMBED_API_KEY,
     VLLM_EMBED_MODEL,
     VLLM_EMBED_URL,
+    VLLM_ENDPOINT_PATH,
     VLLM_MODEL,
+    VLLM_PROVIDER,
 )
 
 try:
@@ -37,6 +39,8 @@ def _get_common_llm_client():
         base_url=VLLM_BASE_URL,
         default_model=VLLM_MODEL,
         api_key=VLLM_API_KEY,
+        provider=VLLM_PROVIDER,
+        endpoint_path=VLLM_ENDPOINT_PATH,
         timeout=120,
     )
     return _COMMON_LLM_CLIENT
@@ -70,7 +74,7 @@ def _call_llm(prompt: str) -> str:
         )
         return response.content
 
-    url = f"{VLLM_BASE_URL}/v1/chat/completions"
+    url = f"{VLLM_BASE_URL.rstrip('/')}/{VLLM_ENDPOINT_PATH.lstrip('/')}"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {VLLM_API_KEY}",

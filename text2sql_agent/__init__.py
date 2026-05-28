@@ -10,7 +10,15 @@ from .common_services import (
     emit_execution_log,
     observability_context,
 )
-from .config import BAD_DEBT_OUTPUT_DIR, REPORT_DIR, VLLM_API_KEY, VLLM_BASE_URL, VLLM_MODEL
+from .config import (
+    BAD_DEBT_OUTPUT_DIR,
+    REPORT_DIR,
+    VLLM_API_KEY,
+    VLLM_BASE_URL,
+    VLLM_ENDPOINT_PATH,
+    VLLM_MODEL,
+    VLLM_PROVIDER,
+)
 from .exports import _get_source_label, export_all, export_to_csv, export_to_text, export_to_word
 from .llm import _call_llm
 from .workflow import (
@@ -24,7 +32,9 @@ __all__ = [
     "REPORT_DIR",
     "VLLM_API_KEY",
     "VLLM_BASE_URL",
+    "VLLM_ENDPOINT_PATH",
     "VLLM_MODEL",
+    "VLLM_PROVIDER",
     "_call_llm",
     "_get_source_label",
     "_new_initial_state",

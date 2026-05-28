@@ -940,7 +940,7 @@ def _llm_chat_probe() -> dict[str, Any]:
         }
     ).encode("utf-8")
     request = urllib.request.Request(
-        f"{agent.VLLM_BASE_URL.rstrip('/')}/v1/chat/completions",
+        f"{agent.VLLM_BASE_URL.rstrip('/')}/{agent.VLLM_ENDPOINT_PATH.lstrip('/')}",
         data=body,
         headers=_llm_request_headers(),
         method="POST",
@@ -971,16 +971,22 @@ def _llm_chat_probe() -> dict[str, Any]:
         }
 
 
+def _llm_models_url() -> str:
+    endpoint_path = agent.VLLM_ENDPOINT_PATH.strip("/")
+    if endpoint_path.endswith("chat/completions"):
+        models_path = endpoint_path[: -len("chat/completions")] + "models"
+    else:
+        models_path = "v1/models"
+    return f"{agent.VLLM_BASE_URL.rstrip('/')}/{models_path.lstrip('/')}"
+
+
 def _llm_health() -> dict[str, Any]:
     now = time.time()
     cached = _LLM_HEALTH_CACHE.get("data")
     if cached and now - float(_LLM_HEALTH_CACHE.get("checked_at", 0.0)) < _LLM_HEALTH_TTL_SECONDS:
         return dict(cached)
 
-    model_request = urllib.request.Request(
-        f"{agent.VLLM_BASE_URL.rstrip('/')}/v1/models",
-        headers=_llm_request_headers(),
-    )
+    model_request = urllib.request.Request(_llm_models_url(), headers=_llm_request_headers())
     try:
         with urllib.request.urlopen(model_request, timeout=2.0):
             data = {
