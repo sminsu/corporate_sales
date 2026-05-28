@@ -59,7 +59,11 @@ def _default_bedrock_region() -> str | None:
     return None
 
 
-def _default_llm_model() -> str:
+def _default_llm_model(base_url: str, transport: str) -> str:
+    if transport == "bedrock_converse":
+        return "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    if "bedrock-runtime." in base_url:
+        return "openai.gpt-oss-20b-1:0"
     return os.getenv("ANTHROPIC_DEFAULT_SONNET_MODEL") or "gpt-oss"
 
 
@@ -69,8 +73,15 @@ def _default_llm_endpoint_path(base_url: str) -> str:
     return "/v1/chat/completions"
 
 
+def _default_llm_transport(base_url: str) -> str:
+    if "bedrock-runtime.ap-northeast-2.amazonaws.com" in base_url:
+        return "bedrock_converse"
+    return "openai_chat"
+
+
 LLM_BASE_URL = _env("LLM_BASE_URL", "VLLM_BASE_URL", default=_default_llm_base_url())
-LLM_MODEL = _env("LLM_MODEL", "VLLM_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", default=_default_llm_model())
+LLM_TRANSPORT = _env("LLM_TRANSPORT", "LLM_API_MODE", "VLLM_TRANSPORT", default=_default_llm_transport(LLM_BASE_URL))
+LLM_MODEL = _env("LLM_MODEL", "VLLM_MODEL", "BEDROCK_MODEL", default=_default_llm_model(LLM_BASE_URL, LLM_TRANSPORT))
 LLM_API_KEY = _env(
     "LLM_API_KEY",
     "OPENAI_API_KEY",
@@ -79,6 +90,7 @@ LLM_API_KEY = _env(
     "VLLM_API_KEY",
     default="EMPTY",
 )
+
 LLM_ENDPOINT_PATH = _env("LLM_ENDPOINT_PATH", "VLLM_ENDPOINT_PATH", default=_default_llm_endpoint_path(LLM_BASE_URL))
 LLM_PROVIDER = _env("LLM_PROVIDER", default="bedrock" if "bedrock-" in LLM_BASE_URL else "openai_compatible")
 
@@ -92,6 +104,7 @@ VLLM_MODEL = LLM_MODEL
 VLLM_API_KEY = LLM_API_KEY
 VLLM_ENDPOINT_PATH = LLM_ENDPOINT_PATH
 VLLM_PROVIDER = LLM_PROVIDER
+VLLM_TRANSPORT = LLM_TRANSPORT
 
 VLLM_EMBED_URL = EMBED_BASE_URL
 VLLM_EMBED_MODEL = EMBED_MODEL

@@ -931,6 +931,24 @@ def _llm_request_headers() -> dict[str, str]:
 
 
 def _llm_chat_probe() -> dict[str, Any]:
+    if getattr(agent, "VLLM_TRANSPORT", "") == "bedrock_converse":
+        try:
+            result = agent._call_llm("Reply exactly OK").strip()
+            ready = bool(result)
+            return {
+                "llm_ready": ready,
+                "llm_status": "ready" if ready else "unknown",
+                "llm_detail": "bedrock converse probe succeeded" if ready else "bedrock converse response was empty",
+                "llm_probe": "bedrock_converse",
+            }
+        except Exception as exc:
+            return {
+                "llm_ready": False,
+                "llm_status": "unavailable",
+                "llm_detail": f"bedrock converse probe failed: {type(exc).__name__}: {exc}",
+                "llm_probe": "bedrock_converse",
+            }
+
     body = json.dumps(
         {
             "model": agent.VLLM_MODEL,
@@ -946,7 +964,7 @@ def _llm_chat_probe() -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=4.0) as response:
+        with urllib.request.urlopen(request, timeout=30.0) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
             ready = bool(payload.get("choices"))
             return {
@@ -986,9 +1004,15 @@ def _llm_health() -> dict[str, Any]:
     if cached and now - float(_LLM_HEALTH_CACHE.get("checked_at", 0.0)) < _LLM_HEALTH_TTL_SECONDS:
         return dict(cached)
 
+    if getattr(agent, "VLLM_TRANSPORT", "") == "bedrock_converse":
+        data = _llm_chat_probe()
+        _LLM_HEALTH_CACHE["checked_at"] = now
+        _LLM_HEALTH_CACHE["data"] = dict(data)
+        return data
+
     model_request = urllib.request.Request(_llm_models_url(), headers=_llm_request_headers())
     try:
-        with urllib.request.urlopen(model_request, timeout=2.0):
+        with urllib.request.urlopen(model_request, timeout=10.0):
             data = {
                 "llm_ready": True,
                 "llm_status": "ready",

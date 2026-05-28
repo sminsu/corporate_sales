@@ -187,21 +187,26 @@ SEMANTIC_SCHEMA_PATH=/absolute/path/to/schema.yaml
 ### 로컬/회사 endpoint 분리
 
 코드는 기존 `VLLM_*` 이름을 계속 지원하면서, 회사/로컬 분리를 위해 더 일반적인 이름도 함께 읽습니다.
-Bedrock API key를 쓰는 경우 `~/.zshrc`나 실행 환경에 `AWS_BEARER_TOKEN_BEDROCK`와 `AWS_REGION`
-또는 `AWS_DEFAULT_REGION`을 둡니다. `ap-northeast-2`처럼 mantle 미지원 리전은
-`bedrock-runtime.{region}.amazonaws.com`의 OpenAI 호환 Chat Completions endpoint를 자동 사용합니다.
+Bedrock API key를 쓰는 경우 `~/.zshrc`나 실행 환경에 `AWS_BEARER_TOKEN_BEDROCK`를 둡니다.
+`KBCardOpenAI` 호환 경로로 실행하려면 OpenAI 호환 Chat Completions가 동작하는 리전을
+`BEDROCK_REGION`에 지정하고, `bedrock-runtime`의 `/openai/v1/chat/completions` endpoint를 사용합니다.
 
 ```bash
 AWS_BEARER_TOKEN_BEDROCK=...
-AWS_REGION=ap-northeast-2
-LLM_MODEL=global.anthropic.claude-sonnet-4-6
+BEDROCK_REGION=us-east-1
+BEDROCK_ENDPOINT_KIND=runtime
+LLM_TRANSPORT=openai_chat
+LLM_MODEL=openai.gpt-oss-20b-1:0
 LLM_ENDPOINT_PATH=/openai/v1/chat/completions
 # 선택: 명시하고 싶으면 아래 값을 둡니다.
-# LLM_BASE_URL=https://bedrock-runtime.ap-northeast-2.amazonaws.com
+# LLM_BASE_URL=https://bedrock-runtime.us-east-1.amazonaws.com
 
 EMBED_BASE_URL=http://127.0.0.1:8124
 EMBED_MODEL=intfloat/multilingual-e5-small
 ```
+
+서울 리전 `ap-northeast-2`에서 Anthropic Claude를 써야 하는 경우에는 `LLM_TRANSPORT=bedrock_converse`와
+Converse API 지원 모델 ID를 사용하면 됩니다. 이 경로는 `KBCardOpenAI` 호환이 아니라 Bedrock native 호출입니다.
 
 `AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code나 Anthropic용 bearer token을
 넣으면 AWS가 `Invalid API Key format`으로 거절합니다.

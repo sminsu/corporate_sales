@@ -18,6 +18,7 @@ from .config import (
     VLLM_ENDPOINT_PATH,
     VLLM_MODEL,
     VLLM_PROVIDER,
+    VLLM_TRANSPORT,
 )
 from .exports import _get_source_label, export_all, export_to_csv, export_to_text, export_to_word
 from .llm import _call_llm
@@ -35,6 +36,7 @@ __all__ = [
     "VLLM_ENDPOINT_PATH",
     "VLLM_MODEL",
     "VLLM_PROVIDER",
+    "VLLM_TRANSPORT",
     "_call_llm",
     "_get_source_label",
     "_new_initial_state",

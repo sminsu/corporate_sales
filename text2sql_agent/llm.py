@@ -1,7 +1,9 @@
 """LLM chat and embedding clients."""
 
 import math
+import re
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -14,6 +16,7 @@ from .config import (
     VLLM_ENDPOINT_PATH,
     VLLM_MODEL,
     VLLM_PROVIDER,
+    VLLM_TRANSPORT,
 )
 
 try:
@@ -32,7 +35,7 @@ def _get_common_llm_client():
     if _COMMON_LLM_CLIENT is not None:
         return _COMMON_LLM_CLIENT
 
-    if KBCardOpenAI is None:
+    if VLLM_TRANSPORT == "bedrock_converse" or KBCardOpenAI is None:
         return None
 
     _COMMON_LLM_CLIENT = KBCardOpenAI.from_endpoint(
@@ -64,6 +67,9 @@ def _get_common_embed_client():
 
 
 def _call_llm(prompt: str) -> str:
+    if VLLM_TRANSPORT == "bedrock_converse":
+        return _call_bedrock_converse(prompt)
+
     common_client = _get_common_llm_client()
     if common_client is not None:
         response = common_client.chat.completions.create(
@@ -72,7 +78,7 @@ def _call_llm(prompt: str) -> str:
             temperature=0,
             timeout=120,
         )
-        return response.content
+        return _normalize_llm_text(response.content)
 
     url = f"{VLLM_BASE_URL.rstrip('/')}/{VLLM_ENDPOINT_PATH.lstrip('/')}"
     headers = {
@@ -86,7 +92,33 @@ def _call_llm(prompt: str) -> str:
     }
     resp = requests.post(url, json=data, headers=headers, timeout=120)
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    return _normalize_llm_text(resp.json()["choices"][0]["message"]["content"])
+
+
+def _call_bedrock_converse(prompt: str) -> str:
+    url = f"{VLLM_BASE_URL.rstrip('/')}/model/{quote(VLLM_MODEL, safe='')}/converse"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {VLLM_API_KEY}",
+    }
+    data = {
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"temperature": 0, "maxTokens": 4096},
+    }
+    resp = requests.post(url, json=data, headers=headers, timeout=120)
+    resp.raise_for_status()
+    return _normalize_llm_text(_extract_bedrock_converse_text(resp.json()))
+
+
+def _normalize_llm_text(text: str) -> str:
+    return re.sub(r"<reasoning>.*?</reasoning>\s*", "", text, flags=re.DOTALL).strip()
+
+
+def _extract_bedrock_converse_text(payload: dict[str, Any]) -> str:
+    content = payload.get("output", {}).get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return ""
+    return "".join(item.get("text", "") for item in content if isinstance(item, dict))
 
 
 def _get_embedding(text: str) -> list[float]:
