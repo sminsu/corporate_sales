@@ -572,9 +572,27 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
     }
 
 
-def _stream_graph(req: CompatibleQueryRequest, state: dict[str, Any]):
+def _stream_graph(
+    req: CompatibleQueryRequest,
+    state: dict[str, Any],
+    *,
+    context: Any | None = None,
+    agent_name: str = "manual",
+    user_id: str = "ui",
+):
     result = dict(state)
-    for update in _get_graph().stream(state, stream_mode="updates"):
+    updates = _get_graph().stream(state, stream_mode="updates")
+    while True:
+        try:
+            if context is None:
+                update = next(updates)
+            else:
+                # Keep the common ContextVar binding only around graph work.
+                # Holding it across SSE yields can reset the token in another context.
+                with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
+                    update = next(updates)
+        except StopIteration:
+            break
         if not isinstance(update, dict):
             continue
         for node_name, payload in update.items():
@@ -643,13 +661,18 @@ def _stream_query(
     context = agent.create_trace_context(session_id=session["id"], message_id=message_id)
     yield _sse("start", {"message": "질문을 분석 중입니다...", "data": {"session_id": session["id"], "message_id": message_id, "conversation_id": _conversation_id(session["id"])}})
     try:
-        with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
-            state = _state_from_request(req, session)
-            final_result = dict(state)
-            for node_name, result in _stream_graph(req, state):
-                final_result = result
-                yield _sse("text2sql_progress", _progress_payload(node_name, req, final_result))
-            data = _result_payload(final_result, session, message_id, req.top_k)
+        state = _state_from_request(req, session)
+        final_result = dict(state)
+        for node_name, result in _stream_graph(
+            req,
+            state,
+            context=context,
+            agent_name=agent_name,
+            user_id=user_id,
+        ):
+            final_result = result
+            yield _sse("text2sql_progress", _progress_payload(node_name, req, final_result))
+        data = _result_payload(final_result, session, message_id, req.top_k)
     except Exception as exc:
         agent.emit_execution_log(
             context=context,
@@ -853,25 +876,33 @@ def _stream_followup(
     try:
         with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
             intent = _classify_followup_intent(req.question)
-            if intent in {"rewrite_sql", "new_sql"}:
-                route_message = "후속 요청을 기존 SQL 재작성으로 분류했습니다." if intent == "rewrite_sql" else "후속 요청을 새 SQL 실행으로 분류했습니다."
-                yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message})
-                state = _followup_query_state(base_result, req.question)
-                compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
-                followup_result = dict(state)
-                for node_name, result in _stream_graph(compatible, state):
-                    followup_result = result
-                    payload = _progress_payload(node_name, compatible, followup_result)
-                    yield _sse("progress", {"step": node_name, "title": payload["data"]["title"], "message": payload["message"]})
-                answer = followup_result.get("answer", "")
-                final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, "후속 SQL")
-                source = "후속 SQL"
-            else:
-                yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 기존 결과 분석으로 분류했습니다."})
-                yield _sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 SQL 결과와 대화 이력을 기반으로 답변을 생성합니다."})
+
+        if intent in {"rewrite_sql", "new_sql"}:
+            route_message = "후속 요청을 기존 SQL 재작성으로 분류했습니다." if intent == "rewrite_sql" else "후속 요청을 새 SQL 실행으로 분류했습니다."
+            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message})
+            state = _followup_query_state(base_result, req.question)
+            compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
+            followup_result = dict(state)
+            for node_name, result in _stream_graph(
+                compatible,
+                state,
+                context=context,
+                agent_name=agent_name,
+                user_id=user_id,
+            ):
+                followup_result = result
+                payload = _progress_payload(node_name, compatible, followup_result)
+                yield _sse("progress", {"step": node_name, "title": payload["data"]["title"], "message": payload["message"]})
+            answer = followup_result.get("answer", "")
+            final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, "후속 SQL")
+            source = "후속 SQL"
+        else:
+            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 기존 결과 분석으로 분류했습니다."})
+            yield _sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 SQL 결과와 대화 이력을 기반으로 답변을 생성합니다."})
+            with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
                 answer = _followup_analysis(base_result, req.question)
-                final_result = _finalize_followup_result(base_result, req.question, dict(base_result), answer, "analysis", "후속 분석")
-                source = "후속 분석"
+            final_result = _finalize_followup_result(base_result, req.question, dict(base_result), answer, "analysis", "후속 분석")
+            source = "후속 분석"
         data = _result_payload(final_result, session, message_id, 10, source_override=source)
         data = _finalize_assistant_message(session, data, message_id)
     except Exception as exc:

@@ -76,7 +76,7 @@ def get_common_logger():
         return _LOGGER
     if KBCardLogger is None:
         return None
-    _LOGGER = KBCardLogger.configure()
+    _LOGGER = KBCardLogger.configure(level=os.getenv("KBCARD_LOG_LEVEL", "INFO"))
     return _LOGGER
 
 
