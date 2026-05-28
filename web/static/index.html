@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KB카드 법인영업 Text2SQL</title>
+    <script>
+      if (window.location.protocol === "file:") {
+        window.location.replace("http://127.0.0.1:8090/");
+      }
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">KB</div>
+          <div>
+            <h1>법인영업 분석</h1>
+            <p id="serviceStatus">연결 확인 중</p>
+          </div>
+        </div>
+
+        <section class="side-section">
+          <div class="section-title">대화 세션</div>
+          <button id="newSessionBtn" class="secondary" type="button">새 대화</button>
+          <div id="sessionList" class="session-list"></div>
+        </section>
+
+        <section class="side-section">
+          <div class="section-title">예시 질문</div>
+          <div id="examples" class="example-list"></div>
+        </section>
+
+        <section class="side-section">
+          <div class="section-title">보고서</div>
+          <div class="export-grid">
+            <button class="secondary" data-export="all" disabled>전체</button>
+            <button class="secondary" data-export="word" disabled>Word</button>
+            <button class="secondary" data-export="csv" disabled>CSV</button>
+            <button class="secondary" data-export="text" disabled>Text</button>
+          </div>
+          <div id="downloadList" class="download-list"></div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">Text2SQL Agent v10</div>
+            <h2>질문하면 SQL 실행, 결과 요약, 파일 생성까지 한 번에 처리합니다.</h2>
+          </div>
+          <button id="clearBtn" class="ghost">현재 대화 비우기</button>
+        </header>
+
+        <section class="query-panel">
+          <label for="questionInput">질문</label>
+          <div class="query-row">
+            <textarea
+              id="questionInput"
+              rows="3"
+              placeholder="질문을 입력하세요. 이어지는 질문은 같은 세션 안에서 계속 처리됩니다."
+            ></textarea>
+            <button id="submitBtn" class="primary">전송</button>
+          </div>
+        </section>
+
+        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="paramTitle">
+          <div class="param-card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">추가 입력</div>
+                <h3 id="paramTitle">필수 값 입력</h3>
+              </div>
+              <button id="cancelParamsBtn" class="ghost" type="button">닫기</button>
+            </div>
+            <p class="param-help">필요한 값을 채우면 같은 질문을 이어서 실행합니다. 창을 닫고 아래 채팅창에 자연어로 입력해도 됩니다.</p>
+            <form id="paramForm" class="param-form"></form>
+          </div>
+        </section>
+
+        <section id="progressPanel" class="progress-panel hidden" aria-live="polite">
+          <div class="progress-head">
+            <div>
+              <div class="eyebrow">진행 상태</div>
+              <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
+            </div>
+            <div id="elapsedTime" class="elapsed-time">0초</div>
+          </div>
+          <div class="progress-bar"><span id="progressFill"></span></div>
+          <ol id="progressSteps" class="progress-steps"></ol>
+        </section>
+
+        <section id="resultPanel" class="result-panel hidden">
+          <div class="result-header">
+            <div>
+              <div id="sourceLabel" class="eyebrow"></div>
+              <h3 id="resultTitle">분석 결과</h3>
+            </div>
+            <div id="resultBadges" class="badges"></div>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="answer">답변</button>
+            <button class="tab" data-tab="table">데이터</button>
+            <button class="tab" data-tab="sql">SQL</button>
+            <button class="tab" data-tab="history">이력</button>
+          </div>
+
+          <article id="tab-answer" class="tab-page active">
+            <div id="compactSummary" class="compact-summary hidden"></div>
+            <div id="answerBox" class="answer-box"></div>
+            <div id="excelBox" class="excel-box hidden"></div>
+            <div id="followupBox" class="followup-box hidden">
+              <div class="followup-head">
+                <div>
+                  <div class="eyebrow">멀티턴 분석</div>
+                  <h4>이 결과로 이어서 분석하기</h4>
+                </div>
+              </div>
+              <div id="suggestionList" class="suggestion-list"></div>
+              <div class="followup-row">
+                <input
+                  id="followupInput"
+                  autocomplete="off"
+                  placeholder="예: 이 결과에서 이상치가 있는지 찾아줘"
+                />
+                <button id="followupBtn" class="primary" type="button">질문</button>
+              </div>
+            </div>
+          </article>
+
+          <article id="tab-table" class="tab-page">
+            <div id="tableMeta" class="table-meta"></div>
+            <div class="table-wrap">
+              <table id="resultTable"></table>
+            </div>
+          </article>
+
+          <article id="tab-sql" class="tab-page">
+            <pre id="sqlBox" class="sql-box"></pre>
+          </article>
+
+          <article id="tab-history" class="tab-page">
+            <div id="historyBox" class="history-box"></div>
+          </article>
+        </section>
+
+        <section id="emptyState" class="empty-state">
+          <div class="empty-card">
+            <h3>내부 데이터 분석 콘솔</h3>
+            <p>매출, 가맹점, 심사, 한도, 연체, 대손비용률 질문을 입력하세요.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <script>
+const state = {
+  sessionId: null,
+  continuation: null,
+  lastResultId: null,
+  canFollowup: false,
+  pendingQuestion: "",
+  conversation: [],
+};
+
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+const queryPanel = $(".query-panel");
+const questionInput = $("#questionInput");
+const submitBtn = $("#submitBtn");
+const clearBtn = $("#clearBtn");
+const newSessionBtn = $("#newSessionBtn");
+const sessionList = $("#sessionList");
+const paramPanel = $("#paramPanel");
+const paramForm = $("#paramForm");
+const cancelParamsBtn = $("#cancelParamsBtn");
+const resultPanel = $("#resultPanel");
+const emptyState = $("#emptyState");
+const answerBox = $("#answerBox");
+const sqlBox = $("#sqlBox");
+const historyBox = $("#historyBox");
+const resultTable = $("#resultTable");
+const tableMeta = $("#tableMeta");
+const sourceLabel = $("#sourceLabel");
+const resultBadges = $("#resultBadges");
+const downloadList = $("#downloadList");
+const excelBox = $("#excelBox");
+const toast = $("#toast");
+const progressPanel = $("#progressPanel");
+const progressTitle = $("#progressTitle");
+const progressSteps = $("#progressSteps");
+const progressFill = $("#progressFill");
+const elapsedTime = $("#elapsedTime");
+const compactSummary = $("#compactSummary");
+const followupBox = $("#followupBox");
+const suggestionList = $("#suggestionList");
+const followupInput = $("#followupInput");
+const followupBtn = $("#followupBtn");
+
+const progressLabels = [
+  ["질문 분석", "업무 범위와 조회 의도를 분류합니다."],
+  ["도구 선택", "Tool, 검증 쿼리, 자동 SQL 경로를 판단합니다."],
+  ["SQL 실행", "DB 조회와 결과 검증을 수행합니다."],
+  ["결과 정리", "표와 핵심 요약 형태로 답변을 압축합니다."],
+];
+const followupProgressLabels = [
+  ["이전 결과 확인", "직전 SQL 결과와 답변을 불러옵니다."],
+  ["후속 의도 분석", "분석형 질문인지 새 SQL이 필요한 요청인지 판단합니다."],
+  ["실행 또는 재해석", "필요하면 새 SQL을 실행하고, 아니면 결과를 재해석합니다."],
+  ["추천 질문 생성", "다음으로 이어질 질문을 정리합니다."],
+];
+let activeProgressLabels = progressLabels;
+let progressTimer = null;
+let progressStartedAt = 0;
+
+function showToast(message) {
+  toast.textContent = message;
+  toast.classList.remove("hidden");
+  window.clearTimeout(showToast.timer);
+  showToast.timer = window.setTimeout(() => toast.classList.add("hidden"), 6500);
+}
+
+function eventErrorMessage(data, fallback) {
+  return data?.detail || data?.data?.error || data?.message || fallback;
+}
+
+function setBusy(isBusy) {
+  submitBtn.disabled = isBusy;
+  submitBtn.textContent = isBusy ? "처리 중" : state.continuation ? "계속" : "전송";
+}
+
+function setFollowupBusy(isBusy) {
+  followupBtn.disabled = isBusy;
+  followupBtn.textContent = isBusy ? "분석 중" : "질문";
+}
+
+function setProgressStep(index) {
+  progressSteps.querySelectorAll("li").forEach((item, idx) => {
+    item.classList.toggle("done", idx < index);
+    item.classList.toggle("active", idx === index);
+  });
+  const safeIndex = Math.min(index, activeProgressLabels.length - 1);
+  progressTitle.textContent = activeProgressLabels[safeIndex][1];
+  progressFill.style.width = `${Math.min(95, 12 + safeIndex * 26)}%`;
+}
+
+function renderProgressEvent(progress) {
+  const step = progress.step || progress.title || "progress";
+  let item = progressSteps.querySelector(`[data-step="${CSS.escape(step)}"]`);
+  if (!item) {
+    item = document.createElement("li");
+    item.dataset.step = step;
+    progressSteps.appendChild(item);
+  }
+  progressSteps.querySelectorAll("li").forEach((node) => {
+    node.classList.add("done");
+    node.classList.remove("active");
+  });
+  item.classList.add("active");
+  item.classList.remove("done");
+  item.innerHTML = `<strong>${escapeHtml(progress.title || step)}</strong><br />${escapeHtml(progress.message || "")}`;
+  progressTitle.textContent = progress.message || progress.title || "처리 중입니다.";
+  const total = Math.max(progressSteps.querySelectorAll("li").length, 4);
+  const current = Array.from(progressSteps.querySelectorAll("li")).indexOf(item) + 1;
+  progressFill.style.width = `${Math.min(96, Math.max(12, Math.round((current / total) * 96)))}%`;
+}
+
+function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
+  const seedLabels = Array.isArray(labels) ? labels : [];
+  activeProgressLabels = seedLabels.length ? seedLabels : fallbackLabels;
+  progressStartedAt = Date.now();
+  elapsedTime.textContent = "0초";
+  progressFill.style.width = "12%";
+  progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
+  progressSteps.innerHTML = seedLabels
+    .map(([title, desc]) => `<li data-step="${escapeHtml(title)}"><strong>${escapeHtml(title)}</strong><br />${escapeHtml(desc)}</li>`)
+    .join("");
+  progressPanel.classList.remove("hidden");
+  emptyState.classList.add("hidden");
+  if (hideCurrentResult) resultPanel.classList.add("hidden");
+  paramPanel.classList.add("hidden");
+  if (seedLabels.length) setProgressStep(0);
+  window.clearInterval(progressTimer);
+  progressTimer = window.setInterval(() => {
+    const seconds = Math.floor((Date.now() - progressStartedAt) / 1000);
+    elapsedTime.textContent = `${seconds}초`;
+  }, 1000);
+}
+
+function finishProgress() {
+  window.clearInterval(progressTimer);
+  progressTimer = null;
+  progressFill.style.width = "100%";
+  progressSteps.querySelectorAll("li").forEach((item) => {
+    item.classList.add("done");
+    item.classList.remove("active");
+  });
+  window.setTimeout(() => progressPanel.classList.add("hidden"), 300);
+}
+
+function stopProgress() {
+  window.clearInterval(progressTimer);
+  progressTimer = null;
+  progressPanel.classList.add("hidden");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatCell(value) {
+  if (typeof value === "number") {
+    return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 }).format(value);
+  }
+  return String(value ?? "");
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
+  }
+  return body;
+}
+
+async function streamApi(path, payload, onEvent) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
+  }
+  if (!response.body) {
+    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    for (const rawEvent of events) {
+      const lines = rawEvent.split("\n");
+      const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim() || "message";
+      const dataText = lines
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+      if (!dataText) continue;
+      onEvent(eventName, JSON.parse(dataText));
+    }
+  }
+}
+
+async function loadHealth() {
+  try {
+    const data = await api("api/health");
+    const status = data.llm_status || (data.llm_ready === false ? "unavailable" : "ready");
+    const label =
+      status === "ready"
+        ? "연결됨"
+        : status === "auth_error"
+          ? "인증 확인 필요"
+          : "연결 확인 필요";
+    $("#serviceStatus").textContent = `${data.model} · ${label}`;
+  } catch {
+    $("#serviceStatus").textContent = "서비스 확인 필요";
+  }
+}
+
+async function loadExamples() {
+  const box = $("#examples");
+  try {
+    const data = await api("api/examples");
+    box.innerHTML = "";
+    data.examples.forEach((item) => {
+      const button = document.createElement("button");
+      button.className = "example";
+      button.type = "button";
+      button.textContent = item;
+      button.addEventListener("click", () => {
+        questionInput.value = item;
+        questionInput.focus();
+      });
+      box.appendChild(button);
+    });
+  } catch {
+    box.innerHTML = "";
+  }
+}
+
+async function createSession() {
+  const data = await api("api/sessions", { method: "POST", body: JSON.stringify({}) });
+  state.sessionId = data.session.id;
+  state.lastResultId = "";
+  state.canFollowup = false;
+  state.continuation = null;
+  state.pendingQuestion = "";
+  state.conversation = [];
+  renderConversation();
+  await loadSessions();
+  return data.session;
+}
+
+async function loadSessions() {
+  try {
+    const data = await api("api/sessions");
+    renderSessions(data.sessions || []);
+  } catch {
+    sessionList.innerHTML = "";
+  }
+}
+
+function renderSessions(sessions) {
+  sessionList.innerHTML = "";
+  if (!sessions.length) {
+    sessionList.innerHTML = `<div class="session-empty">아직 세션이 없습니다.</div>`;
+    return;
+  }
+  sessions.forEach((session) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+    button.innerHTML = `
+      <span>${escapeHtml(session.title || "새 대화")}</span>
+      <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
+    `;
+    button.addEventListener("click", () => loadSession(session.id));
+    sessionList.appendChild(button);
+  });
+}
+
+async function loadSession(sessionId) {
+  const data = await api(`api/sessions/${encodeURIComponent(sessionId)}`);
+  state.sessionId = data.session.id;
+  state.lastResultId = data.session.last_result_id || "";
+  state.canFollowup = Boolean(state.lastResultId);
+  state.continuation = null;
+  state.pendingQuestion = "";
+  state.conversation = (data.messages || []).map((message) => ({
+    role: message.role,
+    text: message.text,
+    status: message.status,
+    missing_params: message.missing_params,
+    continuation: message.continuation,
+  }));
+  const pendingMessage = [...state.conversation].reverse().find((message) => message.status === "requires_params" && message.continuation);
+  if (pendingMessage) {
+    state.continuation = pendingMessage.continuation;
+    state.pendingQuestion = pendingMessage.continuation?.question || "";
+    const labels = (pendingMessage.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
+    queryPanel.classList.add("awaiting-param");
+    submitBtn.textContent = "계속";
+    questionInput.placeholder = labels
+      ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
+      : "필요한 추가 정보를 채팅하듯 입력하세요";
+    openParamDialog(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+  } else {
+    queryPanel.classList.remove("awaiting-param");
+    submitBtn.textContent = "전송";
+    questionInput.placeholder = "질문을 입력하세요";
+    closeParamDialog();
+  }
+  renderConversation();
+  renderHistory({ question: "", original_answer: "", analysis_history: [] });
+  emptyState.classList.add("hidden");
+  resultPanel.classList.remove("hidden");
+  await loadSessions();
+}
+
+function renderMissingParams(data) {
+  state.continuation = data.continuation;
+  state.pendingQuestion = data.continuation?.question || state.pendingQuestion;
+  if (data.session_id) state.sessionId = data.session_id;
+  if (data.messages?.length) {
+    state.conversation = data.messages.map((message) => ({
+      role: message.role,
+      text: message.text,
+      status: message.status,
+      missing_params: message.missing_params,
+      continuation: message.continuation,
+    }));
+  } else {
+    state.conversation.push({
+      role: "assistant",
+      text: "추가 입력이 필요합니다.",
+      status: "requires_params",
+      missing_params: data.missing_params,
+      continuation: data.continuation,
+    });
+  }
+  stopProgress();
+  emptyState.classList.add("hidden");
+  resultPanel.classList.remove("hidden");
+  renderConversation();
+  renderHistory({ question: "", original_answer: "", analysis_history: [] });
+  const labels = (data.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
+  queryPanel.classList.add("awaiting-param");
+  submitBtn.textContent = "계속";
+  questionInput.placeholder = labels
+    ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
+    : "필요한 추가 정보를 채팅하듯 입력하세요";
+  openParamDialog(data.missing_params || data.continuation?.missing_params || []);
+  loadSessions();
+}
+
+function paramPlaceholder(param) {
+  const key = String(param.name || param.label || "").toLowerCase();
+  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return "예: 202512";
+  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return "예: 2025";
+  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return "예: 2025-12-31";
+  return "값을 입력하세요";
+}
+
+function openParamDialog(params = []) {
+  const fields = params
+    .map((param, index) => {
+      const name = param.name || param.label || `param_${index + 1}`;
+      const label = param.label || param.name || `필수 값 ${index + 1}`;
+      const required = param.required === false ? "" : "required";
+      return `
+        <div class="field">
+          <label for="param-${index}">${escapeHtml(label)}</label>
+          <input
+            id="param-${index}"
+            name="${escapeHtml(name)}"
+            autocomplete="off"
+            placeholder="${escapeHtml(paramPlaceholder(param))}"
+            ${required}
+          />
+        </div>
+      `;
+    })
+    .join("");
+  paramForm.innerHTML = `
+    <div class="param-grid">
+      ${fields || `<div class="field"><label for="param-0">추가 정보</label><input id="param-0" name="_natural_input" autocomplete="off" placeholder="예: 2025년 12월로 해줘" required /></div>`}
+    </div>
+    <div class="param-actions">
+      <button class="primary" type="submit">이 값으로 계속</button>
+      <button class="secondary" type="button" data-close-params>채팅창에 입력</button>
+    </div>
+  `;
+  paramForm.querySelector("[data-close-params]")?.addEventListener("click", () => {
+    closeParamDialog();
+    questionInput.focus();
+  });
+  paramPanel.classList.remove("hidden");
+  window.setTimeout(() => paramForm.querySelector("input")?.focus(), 0);
+}
+
+function closeParamDialog() {
+  paramPanel.classList.add("hidden");
+}
+
+function setExportEnabled(enabled) {
+  $$("[data-export]").forEach((button) => {
+    button.disabled = !enabled;
+  });
+}
+
+function renderBadges(data) {
+  const badges = [];
+  if (data.selected_tool) badges.push(`Tool: ${data.selected_tool}`);
+  if (data.matched_query_name) badges.push(`VQ: ${data.matched_query_name}`);
+  if (data.selected_tables?.length) badges.push(`Table: ${data.selected_tables.join(", ")}`);
+  resultBadges.innerHTML = badges.map((b) => `<span class="badge">${escapeHtml(b)}</span>`).join("");
+}
+
+function renderTable(columns, rows) {
+  if (!columns?.length || !rows?.length) {
+    tableMeta.textContent = "조회 데이터가 없습니다.";
+    resultTable.innerHTML = "";
+    return;
+  }
+
+  tableMeta.textContent = `${rows.length.toLocaleString("ko-KR")}건 표시`;
+  const thead = `<thead><tr>${columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
+  const tbody = rows
+    .map((row) => {
+      const cells = columns
+        .map((_, idx) => {
+          const value = row[idx];
+          const cls = typeof value === "number" ? ' class="numeric"' : "";
+          return `<td${cls}>${escapeHtml(formatCell(value))}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+  resultTable.innerHTML = `${thead}<tbody>${tbody}</tbody>`;
+}
+
+function renderCompactSummary(columns, rows) {
+  if (!columns?.length || !rows?.length) {
+    compactSummary.classList.add("hidden");
+    compactSummary.innerHTML = "";
+    return;
+  }
+
+  const summaryColumns = columns.slice(0, Math.min(columns.length, 5));
+  const summaryRows = rows.slice(0, Math.min(rows.length, 3));
+  const header = summaryColumns.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+  const body = summaryRows
+    .map((row) => {
+      const cells = summaryColumns
+        .map((_, idx) => {
+          const value = row[idx];
+          const cls = typeof value === "number" ? ' class="numeric"' : "";
+          return `<td${cls}>${escapeHtml(formatCell(value))}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+
+  compactSummary.innerHTML = `
+    <div class="compact-summary-title">조회 결과 미리보기 (${rows.length.toLocaleString("ko-KR")}건)</div>
+    <table>
+      <thead><tr>${header}</tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+  compactSummary.classList.remove("hidden");
+}
+
+function renderAnswerHtml(text) {
+  const lines = String(text || "").split("\n");
+  const chunks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (!line) {
+      i += 1;
+      continue;
+    }
+
+    if (line.startsWith("### ")) {
+      chunks.push(`<h3>${escapeHtml(line.replace(/^###\s+/, ""))}</h3>`);
+      i += 1;
+      continue;
+    }
+
+    if (line.startsWith("|") && line.endsWith("|")) {
+      const tableLines = [];
+      while (i < lines.length && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
+        tableLines.push(lines[i].trim());
+        i += 1;
+      }
+      const cleaned = tableLines.filter((row) => !/^\|[\s:\-|]+\|$/.test(row));
+      const rowsHtml = cleaned
+        .map((row, rowIndex) => {
+          const cells = row.slice(1, -1).split("|").map((cell) => cell.trim());
+          const tag = rowIndex === 0 ? "th" : "td";
+          return `<tr>${cells.map((cell) => `<${tag}>${escapeHtml(cell)}</${tag}>`).join("")}</tr>`;
+        })
+        .join("");
+      chunks.push(`<table class="answer-table">${rowsHtml}</table>`);
+      continue;
+    }
+
+    if (line.startsWith("- ")) {
+      const items = [];
+      while (i < lines.length && lines[i].trim().startsWith("- ")) {
+        items.push(`<li>${escapeHtml(lines[i].trim().slice(2))}</li>`);
+        i += 1;
+      }
+      chunks.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    chunks.push(`<p>${escapeHtml(line)}</p>`);
+    i += 1;
+  }
+
+  return chunks.join("");
+}
+
+function rebuildConversationFromResult(data) {
+  if (data.messages?.length) {
+    return data.messages.map((message) => ({
+      role: message.role,
+      text: message.text,
+      status: message.status,
+      missing_params: message.missing_params,
+      continuation: message.continuation,
+    }));
+  }
+  const messages = [];
+  const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
+  if (originalQuestion) {
+    messages.push({ role: "user", text: originalQuestion });
+  }
+  if (data.original_answer) {
+    messages.push({ role: "assistant", text: data.original_answer });
+  }
+  (data.analysis_history || []).forEach((item) => {
+    if (item.question) messages.push({ role: "user", text: item.question });
+    if (item.answer) messages.push({ role: "assistant", text: item.answer });
+  });
+  return messages;
+}
+
+function renderConversation() {
+  if (!state.conversation.length) {
+    answerBox.innerHTML = "";
+    return;
+  }
+
+  answerBox.innerHTML = state.conversation
+    .map((message, index) => {
+      const label = message.role === "user" ? "내 질문" : "분석 답변";
+      const content =
+        message.role === "assistant"
+          ? `${renderAnswerHtml(message.text || "응답이 없습니다.")}`
+          : `<p>${escapeHtml(message.text || "")}</p>`;
+      return `
+        <div class="conversation-message ${message.role}">
+          <div class="message-label">${label}</div>
+          <div class="message-body">${content}</div>
+        </div>
+      `;
+    })
+    .join("");
+
+}
+
+function renderHistory(data) {
+  const entries = [];
+  const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
+  if (originalQuestion || data.original_answer) {
+    entries.push({
+      mode: "초기 질문",
+      question: originalQuestion,
+      answer: data.original_answer || data.answer || "",
+      sql: data.sql || "",
+      row_count: data.rows?.length || 0,
+      source: data.source || "",
+    });
+  }
+
+  (data.analysis_history || []).forEach((item, index) => {
+    entries.push({
+      mode: ["query", "rewrite_sql", "new_sql"].includes(item.mode) ? "후속 SQL" : "후속 분석",
+      question: item.question || "",
+      answer: item.answer || "",
+      sql: item.sql || "",
+      row_count: item.row_count ?? "",
+      source: item.source || "",
+      index: index + 1,
+    });
+  });
+
+  if (!entries.length) {
+    historyBox.innerHTML = `<div class="history-empty">아직 대화 이력이 없습니다.</div>`;
+    return;
+  }
+
+  historyBox.innerHTML = entries
+    .map((entry) => {
+      const sql = entry.sql ? `<pre>${escapeHtml(entry.sql)}</pre>` : `<span class="muted-text">SQL 없음</span>`;
+      return `
+        <section class="history-item">
+          <div class="history-head">
+            <strong>${escapeHtml(entry.mode)}</strong>
+            <span>${escapeHtml(entry.source || "")}</span>
+          </div>
+          <dl>
+            <dt>질문</dt>
+            <dd>${escapeHtml(entry.question || "")}</dd>
+            <dt>결과</dt>
+            <dd>${escapeHtml(String(entry.row_count || 0))}건</dd>
+            <dt>답변</dt>
+            <dd class="history-answer">${renderAnswerHtml(entry.answer || "응답 없음")}</dd>
+            <dt>SQL</dt>
+            <dd>${sql}</dd>
+          </dl>
+        </section>
+      `;
+    })
+    .join("");
+}
+
+function renderDownloads(files) {
+  if (!files?.length) return;
+  const html = files
+    .map(
+      (file) =>
+        `<a class="download-link" href="${file.url}" target="_blank" rel="noopener">${escapeHtml(
+          file.kind ? `${file.kind.toUpperCase()} · ${file.filename}` : file.filename,
+        )}</a>`,
+    )
+    .join("");
+  downloadList.insertAdjacentHTML("afterbegin", html);
+}
+
+function renderSuggestions(suggestions) {
+  suggestionList.innerHTML = "";
+  if (!suggestions?.length || !state.lastResultId || !state.canFollowup) {
+    followupBox.classList.add("hidden");
+    return;
+  }
+
+  suggestions.forEach((item) => {
+    const button = document.createElement("button");
+    button.className = "suggestion";
+    button.type = "button";
+    button.textContent = item;
+    button.addEventListener("click", () => submitFollowup(item));
+    suggestionList.appendChild(button);
+  });
+  followupInput.value = "";
+  followupBox.classList.remove("hidden");
+}
+
+function renderResult(data, context = {}) {
+  state.lastResultId = data.result_id;
+  state.canFollowup = Boolean(data.columns?.length && data.rows?.length);
+  if (data.session_id) state.sessionId = data.session_id;
+  state.continuation = null;
+  questionInput.placeholder = "질문을 입력하세요";
+  queryPanel.classList.remove("awaiting-param");
+  submitBtn.textContent = "전송";
+  finishProgress();
+  closeParamDialog();
+  emptyState.classList.add("hidden");
+  resultPanel.classList.remove("hidden");
+  setExportEnabled(true);
+
+  sourceLabel.textContent = data.source || data.question_type || "";
+  renderBadges(data);
+  if (data.messages?.length) {
+    state.conversation = rebuildConversationFromResult(data);
+  } else if (data.error) {
+    state.conversation.push({ role: "assistant", text: data.error });
+  } else if (context.mode === "followup") {
+    state.conversation.push({ role: "user", text: context.question });
+    state.conversation.push({ role: "assistant", text: data.answer || "응답이 없습니다." });
+  } else {
+    state.conversation = rebuildConversationFromResult(data);
+  }
+  renderConversation();
+  sqlBox.textContent = data.sql || "실행 SQL이 없습니다.";
+  renderHistory(data);
+  renderCompactSummary(data.columns, data.rows);
+  renderTable(data.columns, data.rows);
+  renderSuggestions(data.suggestions);
+  loadSessions();
+
+  excelBox.classList.add("hidden");
+  excelBox.innerHTML = "";
+  if (data.excel_file) {
+    excelBox.classList.remove("hidden");
+    excelBox.innerHTML = `<a class="download-link" href="${data.excel_file.url}" target="_blank" rel="noopener">${escapeHtml(
+      data.excel_file.filename,
+    )}</a>`;
+    renderDownloads([{ ...data.excel_file, kind: "excel" }]);
+  }
+}
+
+async function submitFollowup(question) {
+  const followupQuestion = String(question || followupInput.value || "").trim();
+  if (!followupQuestion) {
+    showToast("후속 질문을 입력해주세요.");
+    followupInput.focus();
+    return;
+  }
+  if (!state.lastResultId || !state.canFollowup) {
+    showToast("먼저 조회 결과가 있는 질문을 실행해주세요.");
+    return;
+  }
+
+  setFollowupBusy(true);
+  startProgress([], false, followupProgressLabels);
+  try {
+    await streamApi(
+      "api/followup/stream",
+      {
+        result_id: state.lastResultId,
+        question: followupQuestion,
+        session_id: state.sessionId,
+      },
+      (eventName, data) => {
+        if (eventName === "progress") {
+          renderProgressEvent(data);
+        } else if (eventName === "result") {
+          renderResult(data, { mode: "followup", question: followupQuestion });
+        } else if (eventName === "error") {
+          throw new Error(eventErrorMessage(data, "후속 질문 처리 중 오류가 발생했습니다."));
+        }
+      },
+    );
+  } catch (error) {
+    stopProgress();
+    showToast(error.message);
+  } finally {
+    setFollowupBusy(false);
+  }
+}
+
+async function submitQuestion(payload) {
+  setBusy(true);
+  startProgress();
+  try {
+    await streamApi("api/query/stream", { session_id: state.sessionId, ...payload }, (eventName, data) => {
+      if (eventName === "progress") {
+        renderProgressEvent(data);
+      } else if (eventName === "result") {
+        if (data.status === "requires_params") {
+          renderMissingParams(data);
+        } else {
+          renderResult(data, { mode: "query" });
+        }
+      } else if (eventName === "error") {
+        throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
+      }
+    });
+  } catch (error) {
+    stopProgress();
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+submitBtn.addEventListener("click", () => {
+  const question = questionInput.value.trim();
+  if (!question) {
+    showToast(state.continuation ? "추가 정보를 입력해주세요." : "질문을 입력해주세요.");
+    questionInput.focus();
+    return;
+  }
+  downloadList.innerHTML = "";
+  questionInput.value = "";
+  if (state.continuation) {
+    const naturalInput = question;
+    submitQuestion({
+      question: state.continuation.question || state.pendingQuestion || "추가 입력",
+      session_id: state.sessionId,
+      params: { _natural_input: naturalInput },
+      continuation: state.continuation,
+    });
+  } else if (state.lastResultId && state.canFollowup) {
+    state.pendingQuestion = question;
+    submitFollowup(question);
+  } else {
+    state.pendingQuestion = question;
+    submitQuestion({ question, session_id: state.sessionId });
+  }
+});
+
+questionInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    submitBtn.click();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    submitBtn.click();
+  }
+});
+
+paramForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const params = {};
+  new FormData(paramForm).forEach((value, key) => {
+    if (String(value).trim()) params[key] = String(value).trim();
+  });
+  submitQuestion({
+    question: state.pendingQuestion || questionInput.value.trim(),
+    session_id: state.sessionId,
+    params,
+    continuation: state.continuation,
+  });
+});
+
+cancelParamsBtn.addEventListener("click", () => {
+  closeParamDialog();
+  questionInput.focus();
+});
+
+paramPanel.addEventListener("click", (event) => {
+  if (event.target === paramPanel) {
+    closeParamDialog();
+    questionInput.focus();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !paramPanel.classList.contains("hidden")) {
+    closeParamDialog();
+    questionInput.focus();
+  }
+});
+
+followupBtn.addEventListener("click", () => submitFollowup());
+
+followupInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    submitFollowup();
+  }
+});
+
+newSessionBtn.addEventListener("click", async () => {
+  try {
+    await createSession();
+    questionInput.value = "";
+    answerBox.textContent = "";
+    sqlBox.textContent = "";
+    historyBox.innerHTML = "";
+    resultTable.innerHTML = "";
+    compactSummary.innerHTML = "";
+    compactSummary.classList.add("hidden");
+    followupInput.value = "";
+    suggestionList.innerHTML = "";
+    followupBox.classList.add("hidden");
+    stopProgress();
+    paramPanel.classList.add("hidden");
+    questionInput.placeholder = "질문을 입력하세요";
+    queryPanel.classList.remove("awaiting-param");
+    submitBtn.textContent = "전송";
+    resultPanel.classList.add("hidden");
+    emptyState.classList.remove("hidden");
+    setExportEnabled(false);
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+clearBtn.addEventListener("click", () => {
+  newSessionBtn.click();
+});
+
+$$(".tab").forEach((button) => {
+  button.addEventListener("click", () => {
+    $$(".tab").forEach((tab) => tab.classList.remove("active"));
+    $$(".tab-page").forEach((page) => page.classList.remove("active"));
+    button.classList.add("active");
+    $(`#tab-${button.dataset.tab}`).classList.add("active");
+  });
+});
+
+$$("[data-export]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (!state.lastResultId) return;
+    button.disabled = true;
+    try {
+      const data = await api("api/export", {
+        method: "POST",
+        body: JSON.stringify({
+          result_id: state.lastResultId,
+          format: button.dataset.export,
+        }),
+      });
+      renderDownloads(data.files);
+      showToast("보고서가 생성되었습니다.");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+
+loadHealth();
+loadExamples();
+createSession();
+    </script>
+  </body>
+</html>
