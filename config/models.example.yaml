@@ -7,12 +7,3 @@ models:
     timeout: 120
     capabilities:
       streaming: false
-
-  "openai.gpt-oss-20b-1:0":
-    provider: bedrock
-    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
-    endpoint_path: /openai/v1/chat/completions
-    api_key_env: AWS_BEARER_TOKEN_BEDROCK
-    timeout: 120
-    capabilities:
-      streaming: false

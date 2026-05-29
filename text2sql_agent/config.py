@@ -81,7 +81,10 @@ def _common_llm_model_config() -> Any | None:
     llm_settings = _common_llm_settings()
     if llm_settings is None or ModelRegistry is None:
         return None
-    return ModelRegistry.from_yaml(llm_settings.model_registry_path).get(llm_settings.default_model)
+    registry_path = Path(llm_settings.model_registry_path)
+    if not registry_path.is_absolute():
+        registry_path = (COMMON_CONFIG_PATH.parent if COMMON_CONFIG_PATH is not None else BASE_DIR) / registry_path
+    return ModelRegistry.from_yaml(registry_path).get(llm_settings.default_model)
 
 
 def _common_embedding_settings() -> Any | None:
@@ -123,6 +126,16 @@ def _common_embedding_value(name: str, default: str) -> str:
     return value if value not in (None, "") else default
 
 
+def _common_model_api_key() -> str:
+    if COMMON_LLM_MODEL_CONFIG is None:
+        return ""
+    explicit_key = getattr(COMMON_LLM_MODEL_CONFIG, "api_key", "")
+    if explicit_key:
+        return explicit_key
+    get_api_key = getattr(COMMON_LLM_MODEL_CONFIG, "get_api_key", None)
+    return get_api_key() if callable(get_api_key) else ""
+
+
 def _default_llm_base_url() -> str:
     common_base_url = _common_model_value("base_url", "")
     if common_base_url:
@@ -150,49 +163,72 @@ def _default_bedrock_region() -> str | None:
     return None
 
 
-def _default_llm_model(base_url: str, transport: str) -> str:
+def _looks_like_native_bedrock_model(model: str) -> bool:
+    return model.startswith(
+        (
+            "amazon.",
+            "anthropic.",
+            "cohere.",
+            "global.anthropic.",
+            "meta.",
+            "mistral.",
+            "us.amazon.",
+            "us.anthropic.",
+            "us.meta.",
+        )
+    )
+
+
+def _default_llm_model(base_url: str) -> str:
     if COMMON_LLM_SETTINGS is not None:
         return COMMON_LLM_SETTINGS.default_model
-    if transport == "bedrock_converse":
+    if "bedrock-runtime.ap-northeast-2.amazonaws.com" in base_url:
         return "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
     if "bedrock-runtime." in base_url:
         return "openai.gpt-oss-20b-1:0"
     return os.getenv("ANTHROPIC_DEFAULT_SONNET_MODEL") or "gpt-oss"
 
 
-def _default_llm_endpoint_path(base_url: str) -> str:
+def _default_llm_transport(base_url: str, model: str) -> str:
+    if "bedrock-runtime." in base_url and _looks_like_native_bedrock_model(model):
+        return "bedrock_converse"
+    return "openai_chat"
+
+
+def _default_llm_endpoint_path(base_url: str, transport: str) -> str:
     common_endpoint_path = _common_model_value("endpoint_path", "")
     if common_endpoint_path:
         return common_endpoint_path
+    if transport == "bedrock_converse":
+        return "/model/{model_id}/converse"
     if "bedrock-runtime." in base_url:
         return "/openai/v1/chat/completions"
     return "/v1/chat/completions"
 
 
-def _default_llm_transport(base_url: str) -> str:
-    if "bedrock-runtime.ap-northeast-2.amazonaws.com" in base_url:
-        return "bedrock_converse"
-    return "openai_chat"
-
-
 LLM_BASE_URL = _env("LLM_BASE_URL", "VLLM_BASE_URL", default=_default_llm_base_url())
-LLM_TRANSPORT = _env("LLM_TRANSPORT", "LLM_API_MODE", "VLLM_TRANSPORT", default=_default_llm_transport(LLM_BASE_URL))
-LLM_MODEL = _env("LLM_MODEL", "VLLM_MODEL", "BEDROCK_MODEL", default=_default_llm_model(LLM_BASE_URL, LLM_TRANSPORT))
+LLM_MODEL = _env("LLM_MODEL", "VLLM_MODEL", "BEDROCK_MODEL", default=_default_llm_model(LLM_BASE_URL))
+LLM_TRANSPORT = _env("LLM_TRANSPORT", "LLM_API_MODE", "VLLM_TRANSPORT", default=_default_llm_transport(LLM_BASE_URL, LLM_MODEL))
 LLM_API_KEY = _env(
     "LLM_API_KEY",
     "OPENAI_API_KEY",
     "AWS_BEARER_TOKEN_BEDROCK",
     "BEDROCK_API_KEY",
     "VLLM_API_KEY",
-    default=_common_model_value("api_key", "")
-    or (COMMON_LLM_MODEL_CONFIG.get_api_key() if COMMON_LLM_MODEL_CONFIG is not None else None)
-    or "EMPTY",
+    default=_common_model_api_key() or "EMPTY",
 )
 
-LLM_ENDPOINT_PATH = _env("LLM_ENDPOINT_PATH", "VLLM_ENDPOINT_PATH", default=_default_llm_endpoint_path(LLM_BASE_URL))
+LLM_ENDPOINT_PATH = _env("LLM_ENDPOINT_PATH", "VLLM_ENDPOINT_PATH", default=_default_llm_endpoint_path(LLM_BASE_URL, LLM_TRANSPORT))
 LLM_PROVIDER = _env(
     "LLM_PROVIDER",
     default=_common_model_value("provider", "bedrock" if "bedrock-" in LLM_BASE_URL else "openai_compatible"),
+)
+LLM_API_KEY_HEADER = _env("LLM_API_KEY_HEADER", "LLM_AUTH_HEADER", "VLLM_API_KEY_HEADER", default="Authorization")
+LLM_API_KEY_PREFIX = _env(
+    "LLM_API_KEY_PREFIX",
+    "LLM_AUTH_PREFIX",
+    "VLLM_API_KEY_PREFIX",
+    default="Bearer" if LLM_API_KEY_HEADER.lower() == "authorization" else "",
 )
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", default=str(COMMON_LLM_SETTINGS.temperature if COMMON_LLM_SETTINGS is not None else 0)))
 LLM_MAX_TOKENS = int(_env("LLM_MAX_TOKENS", default=str(COMMON_LLM_SETTINGS.max_tokens if COMMON_LLM_SETTINGS is not None and COMMON_LLM_SETTINGS.max_tokens else 4096)))
@@ -206,6 +242,8 @@ EMBED_BASE_URL = _env(
 )
 EMBED_MODEL = _env("EMBED_MODEL", "EMBEDDING_MODEL", "VLLM_EMBED_MODEL", default=_common_embedding_value("model", "embedding-model"))
 EMBED_API_KEY = _env("EMBED_API_KEY", "EMBEDDING_API_KEY", "VLLM_EMBED_API_KEY", default=_common_embedding_value("api_key", LLM_API_KEY))
+EMBED_API_KEY_HEADER = _env("EMBED_API_KEY_HEADER", "EMBEDDING_API_KEY_HEADER", "VLLM_EMBED_API_KEY_HEADER", default=LLM_API_KEY_HEADER)
+EMBED_API_KEY_PREFIX = _env("EMBED_API_KEY_PREFIX", "EMBEDDING_API_KEY_PREFIX", "VLLM_EMBED_API_KEY_PREFIX", default=LLM_API_KEY_PREFIX)
 EMBED_TIMEOUT = float(_env("EMBED_TIMEOUT", default=str(_common_embedding_value("timeout", "60"))))
 
 AGENT_NAME = _env("KBCARD_AGENT_NAME", default=_common_agent_value("name", "text2sql-v4"))
@@ -229,6 +267,8 @@ DB_POOL_MAX = int(_env("DB_POOL_MAX", default=str(getattr(COMMON_RETRIEVAL_STORE
 VLLM_BASE_URL = LLM_BASE_URL
 VLLM_MODEL = LLM_MODEL
 VLLM_API_KEY = LLM_API_KEY
+VLLM_API_KEY_HEADER = LLM_API_KEY_HEADER
+VLLM_API_KEY_PREFIX = LLM_API_KEY_PREFIX
 VLLM_ENDPOINT_PATH = LLM_ENDPOINT_PATH
 VLLM_PROVIDER = LLM_PROVIDER
 VLLM_TRANSPORT = LLM_TRANSPORT
@@ -239,6 +279,8 @@ VLLM_TIMEOUT = LLM_TIMEOUT
 VLLM_EMBED_URL = EMBED_BASE_URL
 VLLM_EMBED_MODEL = EMBED_MODEL
 VLLM_EMBED_API_KEY = EMBED_API_KEY
+VLLM_EMBED_API_KEY_HEADER = EMBED_API_KEY_HEADER
+VLLM_EMBED_API_KEY_PREFIX = EMBED_API_KEY_PREFIX
 VLLM_EMBED_TIMEOUT = EMBED_TIMEOUT
 EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.75"))
 ENABLE_EMBEDDING_PRECOMPUTE = os.getenv("ENABLE_EMBEDDING_PRECOMPUTE", "false").lower() == "true"

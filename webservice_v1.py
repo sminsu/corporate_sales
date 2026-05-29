@@ -961,25 +961,17 @@ def _llm_request_headers() -> dict[str, str]:
     }
 
 
-def _llm_chat_probe() -> dict[str, Any]:
-    if getattr(agent, "VLLM_TRANSPORT", "") == "bedrock_converse":
-        try:
-            result = agent._call_llm("Reply exactly OK").strip()
-            ready = bool(result)
-            return {
-                "llm_ready": ready,
-                "llm_status": "ready" if ready else "unknown",
-                "llm_detail": "bedrock converse probe succeeded" if ready else "bedrock converse response was empty",
-                "llm_probe": "bedrock_converse",
-            }
-        except Exception as exc:
-            return {
-                "llm_ready": False,
-                "llm_status": "unavailable",
-                "llm_detail": f"bedrock converse probe failed: {type(exc).__name__}: {exc}",
-                "llm_probe": "bedrock_converse",
-            }
+def _http_error_excerpt(exc: urllib.error.HTTPError, limit: int = 1200) -> str:
+    try:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    if len(detail) <= limit:
+        return detail
+    return f"{detail[:limit]}..."
 
+
+def _llm_chat_probe() -> dict[str, Any]:
     body = json.dumps(
         {
             "model": agent.VLLM_MODEL,
@@ -1005,10 +997,12 @@ def _llm_chat_probe() -> dict[str, Any]:
                 "llm_probe": "chat",
             }
     except urllib.error.HTTPError as exc:
+        detail = _http_error_excerpt(exc)
+        suffix = f"; response={detail}" if detail else ""
         return {
             "llm_ready": False,
             "llm_status": "auth_error" if exc.code in {401, 403} else "unavailable",
-            "llm_detail": f"chat completion probe returned HTTP {exc.code}",
+            "llm_detail": f"chat completion probe returned HTTP {exc.code}{suffix}",
             "llm_probe": "chat",
         }
     except Exception as exc:
@@ -1035,12 +1029,6 @@ def _llm_health() -> dict[str, Any]:
     if cached and now - float(_LLM_HEALTH_CACHE.get("checked_at", 0.0)) < _LLM_HEALTH_TTL_SECONDS:
         return dict(cached)
 
-    if getattr(agent, "VLLM_TRANSPORT", "") == "bedrock_converse":
-        data = _llm_chat_probe()
-        _LLM_HEALTH_CACHE["checked_at"] = now
-        _LLM_HEALTH_CACHE["data"] = dict(data)
-        return data
-
     model_request = urllib.request.Request(_llm_models_url(), headers=_llm_request_headers())
     try:
         with urllib.request.urlopen(model_request, timeout=10.0):
@@ -1054,10 +1042,12 @@ def _llm_health() -> dict[str, Any]:
         if exc.code in {404, 405}:
             data = _llm_chat_probe()
         else:
+            detail = _http_error_excerpt(exc)
+            suffix = f"; response={detail}" if detail else ""
             data = {
                 "llm_ready": False,
                 "llm_status": "auth_error" if exc.code in {401, 403} else "unavailable",
-                "llm_detail": f"models endpoint returned HTTP {exc.code}",
+                "llm_detail": f"models endpoint returned HTTP {exc.code}{suffix}",
                 "llm_probe": "models",
             }
     except Exception:
@@ -1118,6 +1108,7 @@ def health():
         "ok": True,
         "model": agent.VLLM_MODEL,
         "vllm_base_url": agent.VLLM_BASE_URL,
+        "vllm_endpoint_path": agent.VLLM_ENDPOINT_PATH,
         "bad_debt_output_dir": agent.BAD_DEBT_OUTPUT_DIR,
         "common": agent.common_package_status(),
         "common_features": agent.common_feature_status(),

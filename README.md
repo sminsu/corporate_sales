@@ -221,26 +221,6 @@ models:
     timeout: 120
 ```
 
-Bedrock API key를 쓰는 경우에도 secret은 YAML에 쓰지 않고 `AWS_BEARER_TOKEN_BEDROCK` 환경 변수에 둡니다.
-`KBCardOpenAI` 호환 경로로 실행하려면 `models.local.yaml`의 기본 모델을 Bedrock runtime endpoint로 바꿉니다.
-
-```bash
-AWS_BEARER_TOKEN_BEDROCK=...
-```
-
-```yaml
-models:
-  "openai.gpt-oss-20b-1:0":
-    provider: bedrock
-    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
-    endpoint_path: /openai/v1/chat/completions
-    api_key_env: AWS_BEARER_TOKEN_BEDROCK
-    timeout: 120
-```
-
-`AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code나 Anthropic용 bearer token을
-넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
-
 기존 `LLM_BASE_URL`, `VLLM_BASE_URL`, `EMBED_BASE_URL`, `DB_HOST` 같은 환경 변수도 계속 지원하지만,
 `KBCARD_CONFIG_PATH` YAML을 두는 방식을 우선 권장합니다.
 
