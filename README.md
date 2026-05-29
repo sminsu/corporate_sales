@@ -1,6 +1,6 @@
 # Text2SQL Webservice v4
 
-`v4`는 `v3`를 기준으로 하되, 이 과제에서 실제로 쓰는 LLM, embedding, observability, errors 공통 모듈만
+`v4`는 `v3`를 기준으로 하되, 이 과제에서 실제로 쓰는 LLM과 embedding 공통 모듈만
 [`kduk/kbcard-agent-common`](https://github.com/kduk/kbcard-agent-common/tree/main)에서
 가져오도록 만든 버전입니다. common SDK는 `requirements.txt`의 pip 의존성으로 설치합니다.
 
@@ -67,8 +67,8 @@ v4/
 ## 주요 파일 설명
 
 - `webservice_v1.py`: FastAPI 앱입니다. 브라우저 UI 제공, 세션 관리, 스트리밍 응답, 파일 다운로드, export API를 담당합니다.
-- `text2sql_agent/llm.py`: common SDK의 `KBCardOpenAI`, `TEIEmbeddingClient`를 사용합니다. common SDK가 없는 개발 환경에서는 기존 `requests` 호출로 LLM/embedding만 폴백합니다.
-- `text2sql_agent/common_services.py`: common SDK의 실행 로그, 모듈 audit 로그, 공통 error 매핑만 얇게 감싼 adapter입니다.
+- `text2sql_agent/llm.py`: common SDK 예제처럼 `KBCardOpenAI.from_config(...)`, `EmbeddingClient.from_config(...)`를 우선 사용합니다. common SDK가 없는 개발 환경에서는 기존 `requests` 호출로 LLM/embedding만 폴백합니다.
+- `text2sql_agent/common_services.py`: webservice가 쓰는 trace/logging 함수 형태만 유지하는 로컬 adapter입니다. common SDK의 observability/errors 모듈은 사용하지 않습니다.
 - `text2sql_agent/__init__.py`: 웹서비스나 외부 코드에서 사용할 주요 공개 API를 한 곳에서 제공합니다.
 - `text2sql_agent/__main__.py`: `python -m text2sql_agent` 실행 시 CLI를 시작하는 진입점입니다.
 - `text2sql_agent/workflow.py`: 질문 분류, 도메인 라우팅, Tool 선택, verified query 매칭, SQL 생성/검증/실행, 답변 생성을 LangGraph로 연결합니다.
@@ -133,12 +133,9 @@ kbcard-agent-common[llm] @ git+ssh://git@github.com/kduk/kbcard-agent-common.git
 ## common 기능 사용 범위
 
 - LLM Client: `KBCardOpenAI`로 OpenAI Chat Completions 호환 endpoint를 호출합니다.
-- Embedding: `TEIEmbeddingClient`로 `/v1/embeddings`를 호출합니다.
-- Agent 실행 로그: `TraceContext`, `observability_context`, `ExecutionLogRecord`로 요청 단위 실행 결과를 남깁니다.
-- Module audit logging: `observability_context` 안에서 common LLM/embedding 호출은 `llm_call`, `embedding_call` 이벤트를 자동 기록하고, `db.py`는 `db_query` 이벤트를 직접 기록합니다.
-- Errors: common SDK의 `ConfigurationError`, `ProviderError`, `RetryableProviderError`, `CapabilityNotSupportedError`, `KBCardAgentError`를 API 응답 status로 매핑합니다.
+- Embedding: `EmbeddingClient`로 TEI/OpenAI 호환 `/v1/embeddings` endpoint를 호출합니다. YAML 설정이 없을 때만 `TEIEmbeddingClient` 직접 생성으로 폴백합니다.
 
-이번 Text2SQL 과제는 업무 DB를 SQL로 조회하는 서비스이므로 common SDK의 retrieval, reranker, Markdown ingestion, pgvector provider, reindex/upsert API는 넣지 않았습니다. 다만 Postgres secret은 common 예제처럼 `KBCARD_POSTGRES_DSN`을 우선 지원합니다.
+이번 Text2SQL 과제는 업무 DB를 SQL로 조회하는 서비스이므로 common SDK의 retrieval, reranker, Markdown ingestion, pgvector provider, observability, errors API는 넣지 않았습니다. Postgres 접속 정보는 서비스 자체 설정으로 처리하되 `KBCARD_POSTGRES_DSN` 환경 변수도 계속 지원합니다.
 
 ## Docker 실행
 
@@ -156,10 +153,6 @@ common SDK 문서 기준의 권장 방식은 `.env`에는 config 경로와 secre
 KBCARD_CONFIG_PATH=config/agent.example.yaml
 LLM_API_KEY=EMPTY
 KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
-
-KBCARD_LOG_FORMAT=jsonl
-KBCARD_LOG_LEVEL=INFO
-KBCARD_LOG_PAYLOAD_MODE=summary
 ```
 
 기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
@@ -201,12 +194,6 @@ embedding:
   model: bge-m3
   api_key: null
   timeout: 60
-
-retrieval:
-  store:
-    provider: postgres
-    dsn_env: KBCARD_POSTGRES_DSN
-    pool_max_size: 10
 ```
 
 `models.local.yaml`:

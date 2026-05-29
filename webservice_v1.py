@@ -51,7 +51,7 @@ import text2sql_agent as agent  # noqa: E402
 
 app = FastAPI(
     title="KB Card Corporate Sales Text2SQL - WebApp API v4",
-    description="Text2SQL service using kbcard-agent-common LLM, embedding, observability, and errors.",
+    description="Text2SQL service using kbcard-agent-common LLM and embedding modules.",
     version="4.0.0",
 )
 

@@ -16,9 +16,3 @@ embedding:
   model: bge-m3
   api_key: null
   timeout: 60
-
-retrieval:
-  store:
-    provider: postgres
-    dsn_env: KBCARD_POSTGRES_DSN
-    pool_max_size: 10

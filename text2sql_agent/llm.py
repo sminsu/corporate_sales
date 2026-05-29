@@ -18,8 +18,11 @@ from .config import (
     VLLM_EMBED_MODEL,
     VLLM_EMBED_API_KEY_PREFIX,
     VLLM_EMBED_TIMEOUT,
+    VLLM_EMBED_EXTRA_HEADERS,
     VLLM_EMBED_URL,
     VLLM_ENDPOINT_PATH,
+    VLLM_EXTRA_BODY,
+    VLLM_EXTRA_HEADERS,
     VLLM_MODEL,
     VLLM_PROVIDER,
     VLLM_TEMPERATURE,
@@ -63,6 +66,14 @@ def _embedding_auth_headers() -> dict[str, str]:
     return _api_key_headers(VLLM_EMBED_API_KEY, VLLM_EMBED_API_KEY_HEADER, VLLM_EMBED_API_KEY_PREFIX)
 
 
+def _merged_headers(*headers: dict[str, str] | None) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for item in headers:
+        if item:
+            merged.update(item)
+    return merged
+
+
 def _response_excerpt(resp: requests.Response, limit: int = 1200) -> str:
     text = (resp.text or "").strip()
     if len(text) <= limit:
@@ -100,13 +111,21 @@ def _get_common_llm_client():
     if VLLM_TRANSPORT == "bedrock_converse" or KBCardOpenAI is None:
         return None
 
-    if _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX) and COMMON_CONFIG is not None and COMMON_CONFIG.llm is not None:
+    if (
+        _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX)
+        and COMMON_CONFIG is not None
+        and getattr(COMMON_CONFIG, "llm", None) is not None
+    ):
         _COMMON_LLM_CLIENT = KBCardOpenAI.from_config(COMMON_CONFIG, default_model=VLLM_MODEL)
     else:
         _COMMON_LLM_CLIENT = KBCardOpenAI.from_endpoint(
             base_url=VLLM_BASE_URL,
             default_model=VLLM_MODEL,
-            api_key=VLLM_API_KEY if _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX) else None,
+            api_key=(
+                VLLM_API_KEY
+                if _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX)
+                else None
+            ),
             provider=VLLM_PROVIDER,
             endpoint_path=VLLM_ENDPOINT_PATH,
             timeout=VLLM_TIMEOUT,
@@ -122,14 +141,31 @@ def _get_common_embed_client():
     if TEIEmbeddingClient is None:
         return None
 
-    if COMMON_CONFIG is not None and COMMON_CONFIG.embedding is not None and EmbeddingClient is not None:
+    if (
+        COMMON_CONFIG is not None
+        and getattr(COMMON_CONFIG, "embedding", None) is not None
+        and EmbeddingClient is not None
+    ):
         _COMMON_EMBED_CLIENT = EmbeddingClient.from_config(COMMON_CONFIG)
     else:
         _COMMON_EMBED_CLIENT = TEIEmbeddingClient(
             base_url=VLLM_EMBED_URL,
             model=VLLM_EMBED_MODEL,
-            api_key=VLLM_EMBED_API_KEY,
+            api_key=(
+                VLLM_EMBED_API_KEY
+                if _uses_default_bearer_auth(VLLM_EMBED_API_KEY_HEADER, VLLM_EMBED_API_KEY_PREFIX)
+                else None
+            ),
             timeout=VLLM_EMBED_TIMEOUT,
+            extra_headers=_merged_headers(
+                VLLM_EMBED_EXTRA_HEADERS,
+                None
+                if _uses_default_bearer_auth(
+                    VLLM_EMBED_API_KEY_HEADER,
+                    VLLM_EMBED_API_KEY_PREFIX,
+                )
+                else _embedding_auth_headers(),
+            ),
         )
     return _COMMON_EMBED_CLIENT
 
@@ -140,7 +176,12 @@ def _call_llm(prompt: str) -> str:
 
     common_client = _get_common_llm_client()
     if common_client is not None:
-        extra_headers = None if _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX) else _llm_auth_headers()
+        extra_headers = _merged_headers(
+            VLLM_EXTRA_HEADERS,
+            None
+            if _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX)
+            else _llm_auth_headers(),
+        )
         try:
             response = common_client.chat.completions.create(
                 model=VLLM_MODEL,
@@ -148,7 +189,8 @@ def _call_llm(prompt: str) -> str:
                 temperature=VLLM_TEMPERATURE,
                 max_tokens=VLLM_MAX_TOKENS,
                 timeout=VLLM_TIMEOUT,
-                extra_headers=extra_headers,
+                extra_body=VLLM_EXTRA_BODY,
+                extra_headers=extra_headers or None,
             )
         except Exception as exc:
             raise _annotate_common_llm_error(exc) from exc
@@ -157,13 +199,14 @@ def _call_llm(prompt: str) -> str:
     url = f"{VLLM_BASE_URL.rstrip('/')}/{VLLM_ENDPOINT_PATH.lstrip('/')}"
     headers = {
         "Content-Type": "application/json",
-        **_llm_auth_headers(),
+        **_merged_headers(VLLM_EXTRA_HEADERS, _llm_auth_headers()),
     }
     data = {
         "model": VLLM_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": VLLM_TEMPERATURE,
         "max_tokens": VLLM_MAX_TOKENS,
+        **VLLM_EXTRA_BODY,
     }
     resp = requests.post(url, json=data, headers=headers, timeout=VLLM_TIMEOUT)
     _raise_for_llm_status(resp, operation="LLM chat completion", url=url)
@@ -174,7 +217,7 @@ def _call_bedrock_converse(prompt: str) -> str:
     url = f"{VLLM_BASE_URL.rstrip('/')}/model/{quote(VLLM_MODEL, safe='')}/converse"
     headers = {
         "Content-Type": "application/json",
-        **_llm_auth_headers(),
+        **_merged_headers(VLLM_EXTRA_HEADERS, _llm_auth_headers()),
     }
     data = {
         "messages": [{"role": "user", "content": [{"text": prompt}]}],
@@ -204,7 +247,7 @@ def _get_embedding(text: str) -> list[float]:
     url = f"{VLLM_EMBED_URL}/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        **_embedding_auth_headers(),
+        **_merged_headers(VLLM_EMBED_EXTRA_HEADERS, _embedding_auth_headers()),
     }
     data = {"model": VLLM_EMBED_MODEL, "input": text}
     resp = requests.post(url, json=data, headers=headers, timeout=VLLM_EMBED_TIMEOUT)
@@ -220,7 +263,7 @@ def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
     url = f"{VLLM_EMBED_URL}/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
-        **_embedding_auth_headers(),
+        **_merged_headers(VLLM_EMBED_EXTRA_HEADERS, _embedding_auth_headers()),
     }
     data = {"model": VLLM_EMBED_MODEL, "input": texts}
     resp = requests.post(url, json=data, headers=headers, timeout=VLLM_EMBED_TIMEOUT)

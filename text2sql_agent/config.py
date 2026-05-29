@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import yaml
 from dotenv import load_dotenv
 
 try:
@@ -49,9 +50,10 @@ def _path_from_env(*names: str, default: Path | None = None) -> Path | None:
         if value not in (None, ""):
             path = Path(value)
             return path if path.is_absolute() else BASE_DIR / path
-    if default is None or not default.exists():
+    if default is None:
         return None
-    return default if default.is_absolute() else BASE_DIR / default
+    path = default if default.is_absolute() else BASE_DIR / default
+    return path if path.exists() else None
 
 
 COMMON_CONFIG_PATH = _path_from_env(
@@ -60,6 +62,17 @@ COMMON_CONFIG_PATH = _path_from_env(
     "AGENT_CONFIG_PATH",
     default=Path("config/agent.local.yaml"),
 )
+
+
+def _load_yaml(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as file:
+        data = yaml.safe_load(file) or {}
+    return data if isinstance(data, dict) else {}
+
+
+RAW_AGENT_CONFIG = _load_yaml(COMMON_CONFIG_PATH)
 
 
 def _load_common_config(path: Path | None) -> Any | None:
@@ -71,81 +84,114 @@ def _load_common_config(path: Path | None) -> Any | None:
 COMMON_CONFIG = _load_common_config(COMMON_CONFIG_PATH)
 
 
+def _raw_section(name: str) -> dict[str, Any]:
+    value = RAW_AGENT_CONFIG.get(name)
+    return value if isinstance(value, dict) else {}
+
+
+def _value(source: Any, name: str, default: Any) -> Any:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        value = source.get(name)
+    else:
+        value = getattr(source, name, None)
+    return default if value in (None, "") else value
+
+
+def _as_str(value: Any, default: str) -> str:
+    return str(default if value in (None, "") else value)
+
+
+RAW_AGENT_SETTINGS = _raw_section("agent")
+RAW_LLM_SETTINGS = _raw_section("llm")
+RAW_EMBEDDING_SETTINGS = _raw_section("embedding")
+
+
 def _common_llm_settings() -> Any | None:
-    if COMMON_CONFIG is None or COMMON_CONFIG.llm is None:
+    if COMMON_CONFIG is None:
+        return None
+    llm = getattr(COMMON_CONFIG, "llm", None)
+    if llm is None:
         return None
     return COMMON_CONFIG.get_llm_settings()
 
 
-def _common_llm_model_config() -> Any | None:
-    llm_settings = _common_llm_settings()
-    if llm_settings is None or ModelRegistry is None:
-        return None
-    registry_path = Path(llm_settings.model_registry_path)
-    if not registry_path.is_absolute():
-        registry_path = (COMMON_CONFIG_PATH.parent if COMMON_CONFIG_PATH is not None else BASE_DIR) / registry_path
-    return ModelRegistry.from_yaml(registry_path).get(llm_settings.default_model)
-
-
 def _common_embedding_settings() -> Any | None:
-    if COMMON_CONFIG is None or COMMON_CONFIG.embedding is None:
+    if COMMON_CONFIG is None:
+        return None
+    embedding = getattr(COMMON_CONFIG, "embedding", None)
+    if embedding is None:
         return None
     return COMMON_CONFIG.require_embedding()
 
 
-def _common_retrieval_store() -> Any | None:
-    if COMMON_CONFIG is None or COMMON_CONFIG.retrieval is None:
-        return None
-    return COMMON_CONFIG.retrieval.store
-
-
 COMMON_LLM_SETTINGS = _common_llm_settings()
-COMMON_LLM_MODEL_CONFIG = _common_llm_model_config()
 COMMON_EMBEDDING_SETTINGS = _common_embedding_settings()
-COMMON_RETRIEVAL_STORE = _common_retrieval_store()
 
 
-def _common_agent_value(name: str, default: str) -> str:
-    if COMMON_CONFIG is None:
-        return default
-    value = getattr(COMMON_CONFIG.agent, name, None)
-    return value or default
+def _agent_value(name: str, default: str) -> str:
+    source = getattr(COMMON_CONFIG, "agent", None) if COMMON_CONFIG is not None else RAW_AGENT_SETTINGS
+    return _as_str(_value(source, name, default), default)
 
 
-def _common_model_value(name: str, default: str) -> str:
-    if COMMON_LLM_MODEL_CONFIG is None:
-        return default
-    value = getattr(COMMON_LLM_MODEL_CONFIG, name, None)
-    return value if value not in (None, "") else default
+def _llm_value(name: str, default: Any) -> Any:
+    source = COMMON_LLM_SETTINGS if COMMON_LLM_SETTINGS is not None else RAW_LLM_SETTINGS
+    return _value(source, name, default)
 
 
-def _common_embedding_value(name: str, default: str) -> str:
-    if COMMON_EMBEDDING_SETTINGS is None:
-        return default
-    value = getattr(COMMON_EMBEDDING_SETTINGS, name, None)
-    return value if value not in (None, "") else default
+def _embedding_value(name: str, default: Any) -> Any:
+    source = (
+        COMMON_EMBEDDING_SETTINGS
+        if COMMON_EMBEDDING_SETTINGS is not None
+        else RAW_EMBEDDING_SETTINGS
+    )
+    return _value(source, name, default)
 
 
-def _common_model_api_key() -> str:
-    if COMMON_LLM_MODEL_CONFIG is None:
-        return ""
-    explicit_key = getattr(COMMON_LLM_MODEL_CONFIG, "api_key", "")
+def _model_registry_path() -> Path | None:
+    value = _llm_value("model_registry_path", "")
+    if not value:
+        return None
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    base = COMMON_CONFIG_PATH.parent if COMMON_CONFIG_PATH is not None else BASE_DIR
+    return (base / path).resolve()
+
+
+def _load_model_config() -> Any | None:
+    registry_path = _model_registry_path()
+    default_model = _llm_value("default_model", "")
+    if registry_path is None or not default_model:
+        return None
+    if ModelRegistry is not None:
+        return ModelRegistry.from_yaml(registry_path).get(str(default_model))
+
+    registry_data = _load_yaml(registry_path)
+    models = registry_data.get("models", registry_data)
+    if not isinstance(models, dict):
+        return None
+    model_config = models.get(str(default_model))
+    return model_config if isinstance(model_config, dict) else None
+
+
+COMMON_LLM_MODEL_CONFIG = _load_model_config()
+
+
+def _model_value(name: str, default: str) -> str:
+    return _as_str(_value(COMMON_LLM_MODEL_CONFIG, name, default), default)
+
+
+def _model_api_key() -> str:
+    explicit_key = _value(COMMON_LLM_MODEL_CONFIG, "api_key", "")
     if explicit_key:
-        return explicit_key
+        return str(explicit_key)
+    env_name = _value(COMMON_LLM_MODEL_CONFIG, "api_key_env", "")
+    if env_name:
+        return os.getenv(str(env_name), "")
     get_api_key = getattr(COMMON_LLM_MODEL_CONFIG, "get_api_key", None)
     return get_api_key() if callable(get_api_key) else ""
-
-
-def _default_llm_base_url() -> str:
-    common_base_url = _common_model_value("base_url", "")
-    if common_base_url:
-        return common_base_url
-    aws_region = _default_bedrock_region()
-    if os.getenv("AWS_BEARER_TOKEN_BEDROCK") and aws_region:
-        if _default_bedrock_endpoint_kind(aws_region) == "runtime":
-            return f"https://bedrock-runtime.{aws_region}.amazonaws.com"
-        return f"https://bedrock-mantle.{aws_region}.api.aws"
-    return "http://localhost:8000"
 
 
 def _default_bedrock_endpoint_kind(region: str) -> str:
@@ -161,6 +207,18 @@ def _default_bedrock_region() -> str | None:
         if region:
             return region
     return None
+
+
+def _default_llm_base_url() -> str:
+    model_base_url = _model_value("base_url", "")
+    if model_base_url:
+        return model_base_url
+    aws_region = _default_bedrock_region()
+    if os.getenv("AWS_BEARER_TOKEN_BEDROCK") and aws_region:
+        if _default_bedrock_endpoint_kind(aws_region) == "runtime":
+            return f"https://bedrock-runtime.{aws_region}.amazonaws.com"
+        return f"https://bedrock-mantle.{aws_region}.api.aws"
+    return "http://localhost:8000"
 
 
 def _looks_like_native_bedrock_model(model: str) -> bool:
@@ -180,8 +238,9 @@ def _looks_like_native_bedrock_model(model: str) -> bool:
 
 
 def _default_llm_model(base_url: str) -> str:
-    if COMMON_LLM_SETTINGS is not None:
-        return COMMON_LLM_SETTINGS.default_model
+    default_model = _llm_value("default_model", "")
+    if default_model:
+        return str(default_model)
     if "bedrock-runtime.ap-northeast-2.amazonaws.com" in base_url:
         return "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
     if "bedrock-runtime." in base_url:
@@ -196,9 +255,9 @@ def _default_llm_transport(base_url: str, model: str) -> str:
 
 
 def _default_llm_endpoint_path(base_url: str, transport: str) -> str:
-    common_endpoint_path = _common_model_value("endpoint_path", "")
-    if common_endpoint_path:
-        return common_endpoint_path
+    model_endpoint_path = _model_value("endpoint_path", "")
+    if model_endpoint_path:
+        return model_endpoint_path
     if transport == "bedrock_converse":
         return "/model/{model_id}/converse"
     if "bedrock-runtime." in base_url:
@@ -208,60 +267,106 @@ def _default_llm_endpoint_path(base_url: str, transport: str) -> str:
 
 LLM_BASE_URL = _env("LLM_BASE_URL", "VLLM_BASE_URL", default=_default_llm_base_url())
 LLM_MODEL = _env("LLM_MODEL", "VLLM_MODEL", "BEDROCK_MODEL", default=_default_llm_model(LLM_BASE_URL))
-LLM_TRANSPORT = _env("LLM_TRANSPORT", "LLM_API_MODE", "VLLM_TRANSPORT", default=_default_llm_transport(LLM_BASE_URL, LLM_MODEL))
+LLM_TRANSPORT = _env(
+    "LLM_TRANSPORT",
+    "LLM_API_MODE",
+    "VLLM_TRANSPORT",
+    default=_default_llm_transport(LLM_BASE_URL, LLM_MODEL),
+)
 LLM_API_KEY = _env(
     "LLM_API_KEY",
     "OPENAI_API_KEY",
     "AWS_BEARER_TOKEN_BEDROCK",
     "BEDROCK_API_KEY",
     "VLLM_API_KEY",
-    default=_common_model_api_key() or "EMPTY",
+    default=_model_api_key() or "EMPTY",
 )
-
-LLM_ENDPOINT_PATH = _env("LLM_ENDPOINT_PATH", "VLLM_ENDPOINT_PATH", default=_default_llm_endpoint_path(LLM_BASE_URL, LLM_TRANSPORT))
+LLM_ENDPOINT_PATH = _env(
+    "LLM_ENDPOINT_PATH",
+    "VLLM_ENDPOINT_PATH",
+    default=_default_llm_endpoint_path(LLM_BASE_URL, LLM_TRANSPORT),
+)
 LLM_PROVIDER = _env(
     "LLM_PROVIDER",
-    default=_common_model_value("provider", "bedrock" if "bedrock-" in LLM_BASE_URL else "openai_compatible"),
+    default=_model_value("provider", "bedrock" if "bedrock-" in LLM_BASE_URL else "openai_compatible"),
 )
-LLM_API_KEY_HEADER = _env("LLM_API_KEY_HEADER", "LLM_AUTH_HEADER", "VLLM_API_KEY_HEADER", default="Authorization")
+LLM_API_KEY_HEADER = _env(
+    "LLM_API_KEY_HEADER",
+    "LLM_AUTH_HEADER",
+    "VLLM_API_KEY_HEADER",
+    default="Authorization",
+)
 LLM_API_KEY_PREFIX = _env(
     "LLM_API_KEY_PREFIX",
     "LLM_AUTH_PREFIX",
     "VLLM_API_KEY_PREFIX",
     default="Bearer" if LLM_API_KEY_HEADER.lower() == "authorization" else "",
 )
-LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", default=str(COMMON_LLM_SETTINGS.temperature if COMMON_LLM_SETTINGS is not None else 0)))
-LLM_MAX_TOKENS = int(_env("LLM_MAX_TOKENS", default=str(COMMON_LLM_SETTINGS.max_tokens if COMMON_LLM_SETTINGS is not None and COMMON_LLM_SETTINGS.max_tokens else 4096)))
-LLM_TIMEOUT = float(_env("LLM_TIMEOUT", default=str(COMMON_LLM_SETTINGS.timeout if COMMON_LLM_SETTINGS is not None and COMMON_LLM_SETTINGS.timeout else 120)))
+LLM_TEMPERATURE = float(
+    _env("LLM_TEMPERATURE", default=_as_str(_llm_value("temperature", 0), "0"))
+)
+LLM_MAX_TOKENS = int(
+    _env("LLM_MAX_TOKENS", default=_as_str(_llm_value("max_tokens", 4096), "4096"))
+)
+LLM_TIMEOUT = float(
+    _env("LLM_TIMEOUT", default=_as_str(_llm_value("timeout", 120), "120"))
+)
+LLM_EXTRA_BODY = _llm_value("extra_body", {})
+if not isinstance(LLM_EXTRA_BODY, dict):
+    LLM_EXTRA_BODY = {}
+LLM_EXTRA_HEADERS = _llm_value("extra_headers", {})
+if not isinstance(LLM_EXTRA_HEADERS, dict):
+    LLM_EXTRA_HEADERS = {}
 
 EMBED_BASE_URL = _env(
     "EMBED_BASE_URL",
     "EMBEDDING_BASE_URL",
     "VLLM_EMBED_URL",
-    default=_common_embedding_value("base_url", LLM_BASE_URL),
+    default=_as_str(_embedding_value("base_url", LLM_BASE_URL), LLM_BASE_URL),
 )
-EMBED_MODEL = _env("EMBED_MODEL", "EMBEDDING_MODEL", "VLLM_EMBED_MODEL", default=_common_embedding_value("model", "embedding-model"))
-EMBED_API_KEY = _env("EMBED_API_KEY", "EMBEDDING_API_KEY", "VLLM_EMBED_API_KEY", default=_common_embedding_value("api_key", LLM_API_KEY))
-EMBED_API_KEY_HEADER = _env("EMBED_API_KEY_HEADER", "EMBEDDING_API_KEY_HEADER", "VLLM_EMBED_API_KEY_HEADER", default=LLM_API_KEY_HEADER)
-EMBED_API_KEY_PREFIX = _env("EMBED_API_KEY_PREFIX", "EMBEDDING_API_KEY_PREFIX", "VLLM_EMBED_API_KEY_PREFIX", default=LLM_API_KEY_PREFIX)
-EMBED_TIMEOUT = float(_env("EMBED_TIMEOUT", default=str(_common_embedding_value("timeout", "60"))))
-
-AGENT_NAME = _env("KBCARD_AGENT_NAME", default=_common_agent_value("name", "text2sql-v4"))
-AGENT_ENVIRONMENT = _env("KBCARD_AGENT_ENV", default=_common_agent_value("environment", "local"))
-AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=_common_agent_value("service_name", AGENT_NAME))
-
-DB_DSN_ENV = _env(
-    "KBCARD_POSTGRES_DSN_ENV",
-    "DB_DSN_ENV",
-    default=getattr(COMMON_RETRIEVAL_STORE, "dsn_env", "KBCARD_POSTGRES_DSN") if COMMON_RETRIEVAL_STORE is not None else "KBCARD_POSTGRES_DSN",
+EMBED_MODEL = _env(
+    "EMBED_MODEL",
+    "EMBEDDING_MODEL",
+    "VLLM_EMBED_MODEL",
+    default=_as_str(_embedding_value("model", "embedding-model"), "embedding-model"),
 )
+EMBED_API_KEY = _env(
+    "EMBED_API_KEY",
+    "EMBEDDING_API_KEY",
+    "VLLM_EMBED_API_KEY",
+    default=_as_str(_embedding_value("api_key", LLM_API_KEY), LLM_API_KEY),
+)
+EMBED_API_KEY_HEADER = _env(
+    "EMBED_API_KEY_HEADER",
+    "EMBEDDING_API_KEY_HEADER",
+    "VLLM_EMBED_API_KEY_HEADER",
+    default=LLM_API_KEY_HEADER,
+)
+EMBED_API_KEY_PREFIX = _env(
+    "EMBED_API_KEY_PREFIX",
+    "EMBEDDING_API_KEY_PREFIX",
+    "VLLM_EMBED_API_KEY_PREFIX",
+    default=LLM_API_KEY_PREFIX,
+)
+EMBED_TIMEOUT = float(
+    _env("EMBED_TIMEOUT", default=_as_str(_embedding_value("timeout", 60), "60"))
+)
+EMBED_EXTRA_HEADERS = _embedding_value("extra_headers", {})
+if not isinstance(EMBED_EXTRA_HEADERS, dict):
+    EMBED_EXTRA_HEADERS = {}
+
+AGENT_NAME = _env("KBCARD_AGENT_NAME", default=_agent_value("name", "text2sql-v4"))
+AGENT_ENVIRONMENT = _env("KBCARD_AGENT_ENV", default=_agent_value("environment", "local"))
+AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=_agent_value("service_name", AGENT_NAME))
+
+DB_DSN_ENV = _env("KBCARD_POSTGRES_DSN_ENV", "DB_DSN_ENV", default="KBCARD_POSTGRES_DSN")
 DB_DSN = _env("DATABASE_URL", "DB_DSN", "POSTGRES_DSN", DB_DSN_ENV, default="")
 DB_HOST = _env("DB_HOST", default="localhost")
 DB_PORT = int(_env("DB_PORT", default="5432"))
 DB_NAME = _env("DB_NAME", default="postgres")
 DB_USER = _env("DB_USER", default=os.getenv("USER", "postgres"))
 DB_PASSWORD = _env("DB_PASSWORD", default="")
-DB_POOL_MAX = int(_env("DB_POOL_MAX", default=str(getattr(COMMON_RETRIEVAL_STORE, "pool_max_size", 10))))
+DB_POOL_MAX = int(_env("DB_POOL_MAX", default="10"))
 
 # Backward-compatible names used by the current service code and README.
 VLLM_BASE_URL = LLM_BASE_URL
@@ -275,6 +380,8 @@ VLLM_TRANSPORT = LLM_TRANSPORT
 VLLM_TEMPERATURE = LLM_TEMPERATURE
 VLLM_MAX_TOKENS = LLM_MAX_TOKENS
 VLLM_TIMEOUT = LLM_TIMEOUT
+VLLM_EXTRA_BODY = LLM_EXTRA_BODY
+VLLM_EXTRA_HEADERS = LLM_EXTRA_HEADERS
 
 VLLM_EMBED_URL = EMBED_BASE_URL
 VLLM_EMBED_MODEL = EMBED_MODEL
@@ -282,6 +389,7 @@ VLLM_EMBED_API_KEY = EMBED_API_KEY
 VLLM_EMBED_API_KEY_HEADER = EMBED_API_KEY_HEADER
 VLLM_EMBED_API_KEY_PREFIX = EMBED_API_KEY_PREFIX
 VLLM_EMBED_TIMEOUT = EMBED_TIMEOUT
+VLLM_EMBED_EXTRA_HEADERS = EMBED_EXTRA_HEADERS
 EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.75"))
 ENABLE_EMBEDDING_PRECOMPUTE = os.getenv("ENABLE_EMBEDDING_PRECOMPUTE", "false").lower() == "true"
 
