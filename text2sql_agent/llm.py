@@ -1,5 +1,6 @@
 """LLM chat and embedding clients."""
 
+import json
 import math
 import re
 from typing import Any
@@ -274,8 +275,16 @@ def _call_bedrock_converse(prompt: str) -> str:
     return _normalize_llm_text(_extract_bedrock_converse_text(resp.json()))
 
 
-def _normalize_llm_text(text: str) -> str:
-    return re.sub(r"<reasoning>.*?</reasoning>\s*", "", text, flags=re.DOTALL).strip()
+def _normalize_llm_text(text: Any) -> str:
+    if isinstance(text, str):
+        value = text
+    elif isinstance(text, (dict, list)):
+        value = json.dumps(text, ensure_ascii=False)
+    elif text is None:
+        value = ""
+    else:
+        value = str(text)
+    return re.sub(r"<reasoning>.*?</reasoning>\s*", "", value, flags=re.DOTALL).strip()
 
 
 def _extract_bedrock_converse_text(payload: dict[str, Any]) -> str:

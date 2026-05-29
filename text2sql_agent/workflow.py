@@ -48,6 +48,35 @@ DOMAIN_EMBEDDINGS: dict[str, list[float]] = {}
 _EMBEDDINGS_INITIALIZED = False
 
 
+def _coerce_llm_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _strip_llm_code_fence(value: object) -> str:
+    text = _coerce_llm_text(value)
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    return text.strip()
+
+
+def _parse_llm_json(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    text = _strip_llm_code_fence(value)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _precompute_embeddings():
     global EMBEDDINGS_AVAILABLE, VQ_EMBEDDINGS, DOMAIN_EMBEDDINGS_AVAILABLE, DOMAIN_EMBEDDINGS, _EMBEDDINGS_INITIALIZED
     if _EMBEDDINGS_INITIALIZED:
@@ -151,7 +180,7 @@ def classify_question(state: Text2SQLState) -> dict:
 위 질문의 분류를 다음 형식으로만 반환하세요 (한 단어만):
 need_sql 또는 direct 또는 reject"""
 
-    raw = _call_llm(prompt).strip().lower()
+    raw = _coerce_llm_text(_call_llm(prompt)).lower()
     if "need_sql" in raw:
         qtype = "need_sql"
     elif "direct" in raw:
@@ -271,15 +300,8 @@ def select_tool(state: Text2SQLState) -> dict:
 
 JSON:"""
 
-    raw = _call_llm(prompt).strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"selected_tool": "", "tool_params": {}}
-    if not isinstance(result, dict):
+    result = _parse_llm_json(_call_llm(prompt))
+    if not result:
         return {"selected_tool": "", "tool_params": {}}
     tool_name = result.get("tool", "NONE")
     if tool_name == "NONE" or tool_name not in TOOL_MAP:
@@ -388,7 +410,7 @@ def _match_vq_by_llm(question: str) -> dict:
 
 가장 잘 매칭되는 쿼리의 인덱스 번호(숫자)만 반환하세요. 매칭되는 쿼리가 없으면 NONE만 반환하세요:"""
 
-    raw = _call_llm(match_prompt).strip()
+    raw = _coerce_llm_text(_call_llm(match_prompt))
     if "NONE" in raw.upper():
         return {"matched_query_name": ""}
     nums = re.findall(r"^\s*\[?(\d+)\]?", raw)
@@ -448,16 +470,7 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 {question}
 
 JSON:"""
-    raw_params = _call_llm(extract_prompt).strip()
-    if raw_params.startswith("```"):
-        lines = raw_params.split("\n")
-        raw_params = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
-    try:
-        extracted = json.loads(raw_params)
-        if not isinstance(extracted, dict):
-            extracted = {}
-    except json.JSONDecodeError:
-        extracted = {}
+    extracted = _parse_llm_json(_call_llm(extract_prompt))
     final_sql = _apply_params_to_vq(base_sql, extracted, vq_name, vq_params_def)
     return {"extracted_params": extracted, "final_sql": sqlparse.format(final_sql, reindent=True, keyword_case="upper")}
 
@@ -499,7 +512,7 @@ def direct_answer(state: Text2SQLState) -> dict:
 {question}
 
 답변:"""
-    return {"answer": _call_llm(prompt).strip()}
+    return {"answer": _coerce_llm_text(_call_llm(prompt))}
 
 
 def reject_answer(state: Text2SQLState) -> dict:
@@ -554,7 +567,7 @@ def analyze_question(state: Text2SQLState) -> dict:
 
 필요한 테이블명 (쉼표 구분):"""
 
-    table_names = [t.strip() for t in _call_llm(prompt).strip().split(",")]
+    table_names = [t.strip() for t in _coerce_llm_text(_call_llm(prompt)).split(",")]
     details = []
     for t in SCHEMA.get("tables", []):
         if t["name"] in table_names:
@@ -654,10 +667,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 {question}
 
 SQL:"""
-    sql = _call_llm(prompt).strip()
-    if sql.startswith("```"):
-        lines = sql.split("\n")
-        sql = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+    sql = _strip_llm_code_fence(_call_llm(prompt))
     return {"generated_sql": sql}
 
 
@@ -685,7 +695,7 @@ SQL:
 {chr(10).join(issues) if issues else "사전 검증 이슈 없음"}
 
 문제가 없으면 "VALID"만 반환. 문제가 있으면 구체적 목록을 반환."""
-    llm_result = _call_llm(validation_prompt).strip()
+    llm_result = _coerce_llm_text(_call_llm(validation_prompt))
     if llm_result.upper().startswith("VALID") and not issues:
         return {"validation_result": "VALID", "is_valid": True, "final_sql": sqlparse.format(sql, reindent=True, keyword_case="upper")}
     else:
@@ -758,7 +768,7 @@ def generate_answer(state: Text2SQLState) -> dict:
 6. 계산 요약의 row_count, 합계, 평균, 최소, 최대를 우선 활용하세요.
 
 답변:"""
-    return {"answer": _call_llm(prompt).strip()}
+    return {"answer": _coerce_llm_text(_call_llm(prompt))}
 
 
 def handle_error(state: Text2SQLState) -> dict:
