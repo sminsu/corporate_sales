@@ -55,6 +55,11 @@ app = FastAPI(
     version="4.0.0",
 )
 
+
+@app.on_event("shutdown")
+def _shutdown_common_clients() -> None:
+    agent.close_common_clients()
+
 _GRAPH = None
 _RESULTS: LRUCache = LRUCache(maxsize=500)
 _SESSIONS: LRUCache = LRUCache(maxsize=200)

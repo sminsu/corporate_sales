@@ -23,7 +23,7 @@ from .config import (
     VLLM_TRANSPORT,
 )
 from .exports import _get_source_label, export_all, export_to_csv, export_to_text, export_to_word
-from .llm import _call_llm
+from .llm import _call_llm, close_common_clients
 from .workflow import (
     _new_initial_state,
     build_graph,
@@ -49,6 +49,7 @@ __all__ = [
     "common_feature_status",
     "common_http_status",
     "common_package_status",
+    "close_common_clients",
     "create_trace_context",
     "emit_execution_log",
     "emit_module_event",

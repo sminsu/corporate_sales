@@ -9,6 +9,7 @@ import requests
 
 from .config import (
     COMMON_CONFIG,
+    COMMON_LLM_SETTINGS,
     VLLM_API_KEY,
     VLLM_API_KEY_HEADER,
     VLLM_API_KEY_PREFIX,
@@ -74,6 +75,37 @@ def _merged_headers(*headers: dict[str, str] | None) -> dict[str, str]:
     return merged
 
 
+def _common_llm_is_configured() -> bool:
+    return COMMON_CONFIG is not None and COMMON_LLM_SETTINGS is not None
+
+
+def _common_llm_request_settings() -> tuple[
+    str,
+    float | None,
+    int | None,
+    float | None,
+    dict[str, Any],
+    dict[str, str],
+]:
+    if COMMON_LLM_SETTINGS is None:
+        return (
+            VLLM_MODEL,
+            VLLM_TEMPERATURE,
+            VLLM_MAX_TOKENS,
+            VLLM_TIMEOUT,
+            VLLM_EXTRA_BODY,
+            VLLM_EXTRA_HEADERS,
+        )
+    return (
+        COMMON_LLM_SETTINGS.default_model,
+        COMMON_LLM_SETTINGS.temperature,
+        COMMON_LLM_SETTINGS.max_tokens,
+        COMMON_LLM_SETTINGS.timeout,
+        COMMON_LLM_SETTINGS.extra_body,
+        COMMON_LLM_SETTINGS.extra_headers,
+    )
+
+
 def _response_excerpt(resp: requests.Response, limit: int = 1200) -> str:
     text = (resp.text or "").strip()
     if len(text) <= limit:
@@ -113,10 +145,9 @@ def _get_common_llm_client():
 
     if (
         _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX)
-        and COMMON_CONFIG is not None
-        and getattr(COMMON_CONFIG, "llm", None) is not None
+        and _common_llm_is_configured()
     ):
-        _COMMON_LLM_CLIENT = KBCardOpenAI.from_config(COMMON_CONFIG, default_model=VLLM_MODEL)
+        _COMMON_LLM_CLIENT = KBCardOpenAI.from_config(COMMON_CONFIG)
     else:
         _COMMON_LLM_CLIENT = KBCardOpenAI.from_endpoint(
             base_url=VLLM_BASE_URL,
@@ -170,27 +201,42 @@ def _get_common_embed_client():
     return _COMMON_EMBED_CLIENT
 
 
+def close_common_clients() -> None:
+    global _COMMON_LLM_CLIENT, _COMMON_EMBED_CLIENT
+
+    for client in (_COMMON_LLM_CLIENT, _COMMON_EMBED_CLIENT):
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+    _COMMON_LLM_CLIENT = None
+    _COMMON_EMBED_CLIENT = None
+
+
 def _call_llm(prompt: str) -> str:
     if VLLM_TRANSPORT == "bedrock_converse":
         return _call_bedrock_converse(prompt)
 
     common_client = _get_common_llm_client()
     if common_client is not None:
+        model, temperature, max_tokens, timeout, extra_body, configured_headers = (
+            _common_llm_request_settings()
+        )
         extra_headers = _merged_headers(
-            VLLM_EXTRA_HEADERS,
+            configured_headers,
             None
             if _uses_default_bearer_auth(VLLM_API_KEY_HEADER, VLLM_API_KEY_PREFIX)
             else _llm_auth_headers(),
         )
         try:
             response = common_client.chat.completions.create(
-                model=VLLM_MODEL,
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=VLLM_TEMPERATURE,
-                max_tokens=VLLM_MAX_TOKENS,
-                timeout=VLLM_TIMEOUT,
-                extra_body=VLLM_EXTRA_BODY,
-                extra_headers=extra_headers or None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                extra_body=extra_body,
+                extra_headers=extra_headers,
             )
         except Exception as exc:
             raise _annotate_common_llm_error(exc) from exc
