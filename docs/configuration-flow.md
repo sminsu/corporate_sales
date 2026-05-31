@@ -58,37 +58,33 @@ models:
 
 우선순위는 "환경 변수 override -> common YAML/model registry -> 코드 기본값"입니다.
 
-- `COMMON_CONFIG_PATH`: `KBCARD_CONFIG_PATH`, `KBCARD_AGENT_CONFIG_PATH`, `AGENT_CONFIG_PATH`를 차례로 확인합니다.
-- `COMMON_CONFIG`: common SDK가 설치되어 있고 YAML이 있으면 `KBCardConfig.from_yaml(...)`로 읽습니다.
-- `COMMON_LLM_SETTINGS`: `COMMON_CONFIG.get_llm_settings()` 결과입니다.
-- `COMMON_LLM_MODEL_CONFIG`: `llm.model_registry_path`를 읽고 `llm.default_model`에 해당하는 모델 설정을 찾습니다.
-- `COMMON_EMBEDDING_SETTINGS`: `COMMON_CONFIG.require_embedding()` 결과입니다.
-기존 코드와 호환되도록 아래 alias를 유지합니다.
-
-```python
-VLLM_BASE_URL = LLM_BASE_URL
-VLLM_MODEL = LLM_MODEL
-VLLM_API_KEY = LLM_API_KEY
-VLLM_ENDPOINT_PATH = LLM_ENDPOINT_PATH
-VLLM_PROVIDER = LLM_PROVIDER
-VLLM_TEMPERATURE = LLM_TEMPERATURE
-VLLM_MAX_TOKENS = LLM_MAX_TOKENS
-VLLM_TIMEOUT = LLM_TIMEOUT
-```
+- `COMMON_CONFIG_PATH`: `KBCARD_CONFIG_PATH`, `KBCARD_AGENT_CONFIG_PATH`, `AGENT_CONFIG_PATH`를
+  차례로 확인하고, 없으면 `config/agent.local.yaml`을 씁니다.
+- `COMMON_CONFIG`: `KBCardConfig.from_yaml(...)`로 읽은 agent 설정 객체입니다.
+- LLM 모델 endpoint는 `llm.model_registry_path`의 `ModelRegistry`에서 `llm.default_model`로 조회합니다.
+- 위 값들을 평탄한 상수(`LLM_MODEL`, `LLM_BASE_URL`, `LLM_ENDPOINT_PATH`, `LLM_PROVIDER`,
+  `LLM_API_KEY`, `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT`, `EMBED_*`, `DB_*`)로 노출합니다.
+  같은 이름의 환경 변수가 있으면 그 값이 YAML보다 우선합니다.
 
 ## `text2sql_agent/llm.py`
 
-LLM 호출은 common SDK를 우선 사용합니다.
+LLM과 embedding 호출은 모두 `kbcard-agent-common`의 OpenAI 호환 클라이언트를 단일 경로로 사용합니다.
+별도의 raw `requests` 폴백이나 Bedrock converse 경로는 없습니다.
 
-1. common YAML이 있으면 `KBCardOpenAI.from_config(COMMON_CONFIG, default_model=VLLM_MODEL)`를 사용합니다.
-2. YAML이 없지만 common SDK가 설치되어 있으면 `KBCardOpenAI.from_endpoint(...)`를 사용합니다.
-3. common SDK가 없는 개발 환경에서는 기존 `requests` 호출로 `/v1/chat/completions` 호환 endpoint에 폴백합니다.
+LLM client는 한 번만 만들어 재사용합니다.
 
-embedding도 같은 패턴입니다.
+1. common YAML(`llm` 섹션)이 있으면 `KBCardOpenAI.from_config(COMMON_CONFIG, default_model=LLM_MODEL)`.
+2. 없으면 `KBCardOpenAI.from_endpoint(base_url=, default_model=, api_key=, endpoint_path=, timeout=)`.
 
-1. common YAML이 있으면 `EmbeddingClient.from_config(COMMON_CONFIG)`를 사용합니다.
-2. YAML이 없지만 common SDK가 설치되어 있으면 `TEIEmbeddingClient(...)`를 사용합니다.
-3. common SDK가 없는 개발 환경에서는 기존 `requests` 호출로 `/v1/embeddings`에 폴백합니다.
+embedding client도 같은 패턴입니다.
+
+1. common YAML(`embedding` 섹션)이 있으면 `EmbeddingClient.from_config(COMMON_CONFIG)`.
+2. 없으면 `TEIEmbeddingClient(base_url=, model=, api_key=, timeout=)`.
+
+`_call_llm`은 system/user 두 메시지(역할 분리)로 호출하고, `RetryableProviderError`(타임아웃·일시
+오류·5xx)는 짧은 backoff로 자동 재시도합니다. `probe_llm`은 `/api/health`에서 쓰는 1-token readiness
+probe입니다. 그 외 surface는 `_normalize_llm_text`, `_get_embedding`, `_get_embeddings_batch`,
+`_cosine_similarity`입니다.
 
 ## `text2sql_agent/common_services.py`
 

@@ -3,7 +3,7 @@
 import json
 from decimal import Decimal
 
-from .config import BAD_DEBT_OUTPUT_DIR, VLLM_BASE_URL, VLLM_MODEL
+from .config import BAD_DEBT_OUTPUT_DIR, LLM_BASE_URL, LLM_MODEL
 from .exports import export_all, export_to_csv, export_to_text, export_to_word, format_number_for_report as format_number
 from .tools.registry import TOOLS
 from .workflow import EMBEDDINGS_AVAILABLE, run_agent_with_prompts
@@ -57,7 +57,7 @@ def main():
     print(" - 모든 경로에서 파라미터 부족 시 사용자 입력 요청")
     print(" - 보고서 내보내기 (Word/Text/CSV)")
     print("=" * 60)
-    print(f" LLM: {VLLM_MODEL} @ {VLLM_BASE_URL}")
+    print(f" LLM: {LLM_MODEL} @ {LLM_BASE_URL}")
     embed_status = "ON" if EMBEDDINGS_AVAILABLE else "OFF (LLM 폴백)"
     print(f" Embedding: {embed_status}")
     print(f" 등록된 Tool: {len(TOOLS)}개")

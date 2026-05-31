@@ -477,6 +477,22 @@ async function loadSession(sessionId) {
       ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
       : "필요한 추가 정보를 채팅하듯 입력하세요";
     openParamDialog(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+    renderConversation();
+    renderHistory({ question: "", original_answer: "", analysis_history: [] });
+    renderCompactSummary([], []);
+    renderTable([], []);
+    sqlBox.textContent = "";
+    sourceLabel.textContent = "";
+    resultBadges.innerHTML = "";
+    emptyState.classList.add("hidden");
+    resultPanel.classList.remove("hidden");
+    await loadSessions();
+    return;
+  }
+
+  if (data.last_result) {
+    renderResult(data.last_result);
+    return;
   } else {
     queryPanel.classList.remove("awaiting-param");
     submitBtn.textContent = "전송";
@@ -485,6 +501,11 @@ async function loadSession(sessionId) {
   }
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
+  renderCompactSummary([], []);
+  renderTable([], []);
+  sqlBox.textContent = "";
+  sourceLabel.textContent = "";
+  resultBadges.innerHTML = "";
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
   await loadSessions();

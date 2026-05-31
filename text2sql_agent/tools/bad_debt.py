@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 
 from ..config import BAD_DEBT_OUTPUT_DIR
 from ..db import execute_sql
-from ..llm import _call_llm
+from ..llm import _call_llm, _normalize_llm_text
 from .sql_builders import _calc_months_back, _escape_like, _sanitize_param
 
 # ---------------------------------------------------------------------------
@@ -433,7 +433,7 @@ def _tool_fn_대손비용률(params: dict) -> dict:
 답변:"""
 
     try:
-        answer = _call_llm(answer_prompt).strip()
+        answer = _normalize_llm_text(_call_llm(answer_prompt))
     except Exception:
         answer = f"'{merchant}' {yyyymm} 대손비용률 분석 결과가 엑셀 파일로 생성되었습니다."
     answer += f"\n\n상세 분석 엑셀 파일: {excel_path}"

@@ -1,8 +1,6 @@
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 import uuid
 from collections import OrderedDict
 from datetime import date, datetime
@@ -552,6 +550,55 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
     return data
 
 
+def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, Any] | None:
+    if session.get("pending_continuation"):
+        return None
+    result_id = session.get("last_result_id", "")
+    if not result_id:
+        return None
+    result = _RESULTS.get(result_id)
+    if not result:
+        return None
+
+    error = result.get("error_message", "") or result.get("query_error", "")
+    message_id = None
+    for message in reversed(session.get("messages", [])):
+        if message.get("role") == "assistant" and message.get("result_id") == result_id:
+            message_id = message.get("message_id")
+            break
+
+    data = {
+        "answer": result.get("answer", "") or result.get("error_message", ""),
+        "documents": _documents_from_result(result, top_k),
+        "session_id": session["id"],
+        "message_id": message_id,
+        "conversation_id": _conversation_id(session["id"]),
+        "images": [],
+        "insufficient_evidence": bool(error),
+        "status": "complete",
+        "result_id": result_id,
+        "question": result.get("question", ""),
+        "followup_question": result.get("followup_question", ""),
+        "question_type": result.get("question_type", ""),
+        "source": _source_label(result),
+        "selected_tool": result.get("selected_tool", ""),
+        "matched_query_name": result.get("matched_query_name", ""),
+        "selected_tables": result.get("selected_tables", []),
+        "sql": result.get("final_sql", ""),
+        "columns": result.get("query_columns", []),
+        "rows": result.get("query_rows", []),
+        "error": error,
+        "excel_file": _register_file(result.get("bad_debt_excel_path", "")),
+        "suggestions": _suggest_followups(result),
+        "original_answer": result.get("original_answer", result.get("answer", "")),
+        "analysis_history": result.get("analysis_history", []),
+        "followup_mode": result.get("followup_mode", ""),
+        "messages": session.get("messages", []),
+        "session": _session_summary(session),
+    }
+    return _jsonable(data)
+
+
 def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[str, Any]) -> dict[str, Any]:
     phase, title, message = NODE_LABELS.get(node_name, ("processing", node_name, f"{node_name} 단계를 처리하고 있습니다."))
     return {
@@ -959,107 +1006,14 @@ def _legacy_stream_adapter(chunks):
             yield chunk
 
 
-def _llm_request_headers() -> dict[str, str]:
-    return {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {agent.VLLM_API_KEY}",
-    }
-
-
-def _http_error_excerpt(exc: urllib.error.HTTPError, limit: int = 1200) -> str:
-    try:
-        detail = exc.read().decode("utf-8", errors="replace").strip()
-    except Exception:
-        return ""
-    if len(detail) <= limit:
-        return detail
-    return f"{detail[:limit]}..."
-
-
-def _llm_chat_probe() -> dict[str, Any]:
-    body = json.dumps(
-        {
-            "model": agent.VLLM_MODEL,
-            "messages": [{"role": "user", "content": "ping"}],
-            "temperature": 0,
-            "max_tokens": 1,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{agent.VLLM_BASE_URL.rstrip('/')}/{agent.VLLM_ENDPOINT_PATH.lstrip('/')}",
-        data=body,
-        headers=_llm_request_headers(),
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30.0) as response:
-            payload = json.loads(response.read().decode("utf-8") or "{}")
-            ready = bool(payload.get("choices"))
-            return {
-                "llm_ready": ready,
-                "llm_status": "ready" if ready else "unknown",
-                "llm_detail": "chat completion probe succeeded" if ready else "chat completion response had no choices",
-                "llm_probe": "chat",
-            }
-    except urllib.error.HTTPError as exc:
-        detail = _http_error_excerpt(exc)
-        suffix = f"; response={detail}" if detail else ""
-        return {
-            "llm_ready": False,
-            "llm_status": "auth_error" if exc.code in {401, 403} else "unavailable",
-            "llm_detail": f"chat completion probe returned HTTP {exc.code}{suffix}",
-            "llm_probe": "chat",
-        }
-    except Exception as exc:
-        return {
-            "llm_ready": False,
-            "llm_status": "unavailable",
-            "llm_detail": f"chat completion probe failed: {type(exc).__name__}: {exc}",
-            "llm_probe": "chat",
-        }
-
-
-def _llm_models_url() -> str:
-    endpoint_path = agent.VLLM_ENDPOINT_PATH.strip("/")
-    if endpoint_path.endswith("chat/completions"):
-        models_path = endpoint_path[: -len("chat/completions")] + "models"
-    else:
-        models_path = "v1/models"
-    return f"{agent.VLLM_BASE_URL.rstrip('/')}/{models_path.lstrip('/')}"
-
-
 def _llm_health() -> dict[str, Any]:
+    """Cached LLM readiness probe via the common client (see agent.probe_llm)."""
     now = time.time()
     cached = _LLM_HEALTH_CACHE.get("data")
     if cached and now - float(_LLM_HEALTH_CACHE.get("checked_at", 0.0)) < _LLM_HEALTH_TTL_SECONDS:
         return dict(cached)
 
-    model_request = urllib.request.Request(_llm_models_url(), headers=_llm_request_headers())
-    try:
-        with urllib.request.urlopen(model_request, timeout=10.0):
-            data = {
-                "llm_ready": True,
-                "llm_status": "ready",
-                "llm_detail": "models endpoint probe succeeded",
-                "llm_probe": "models",
-            }
-    except urllib.error.HTTPError as exc:
-        if exc.code in {404, 405}:
-            data = _llm_chat_probe()
-        else:
-            detail = _http_error_excerpt(exc)
-            suffix = f"; response={detail}" if detail else ""
-            data = {
-                "llm_ready": False,
-                "llm_status": "auth_error" if exc.code in {401, 403} else "unavailable",
-                "llm_detail": f"models endpoint returned HTTP {exc.code}{suffix}",
-                "llm_probe": "models",
-            }
-    except Exception:
-        # Some OpenAI-compatible servers do not expose /v1/models reliably, while
-        # /v1/chat/completions works. Use the real chat endpoint as the fallback.
-        data = _llm_chat_probe()
-
+    data = agent.probe_llm()
     _LLM_HEALTH_CACHE["checked_at"] = now
     _LLM_HEALTH_CACHE["data"] = dict(data)
     return data
@@ -1111,9 +1065,9 @@ def health():
     llm_health = _llm_health()
     return {
         "ok": True,
-        "model": agent.VLLM_MODEL,
-        "vllm_base_url": agent.VLLM_BASE_URL,
-        "vllm_endpoint_path": agent.VLLM_ENDPOINT_PATH,
+        "model": agent.LLM_MODEL,
+        "llm_base_url": agent.LLM_BASE_URL,
+        "llm_endpoint_path": agent.LLM_ENDPOINT_PATH,
         "bad_debt_output_dir": agent.BAD_DEBT_OUTPUT_DIR,
         "common": agent.common_package_status(),
         "common_features": agent.common_feature_status(),
@@ -1153,7 +1107,11 @@ def get_session(session_id: str):
     session = _SESSIONS.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
-    return {"session": _session_summary(session), "messages": _jsonable(session.get("messages", []))}
+    return {
+        "session": _session_summary(session),
+        "messages": _jsonable(session.get("messages", [])),
+        "last_result": _last_result_payload(session),
+    }
 
 
 @app.post("/api/query")

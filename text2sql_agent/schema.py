@@ -10,7 +10,7 @@ import yaml
 
 from .config import SCHEMA_PATH
 from .db import _DANGEROUS_SQL_RE
-from .llm import _call_llm
+from .llm import _call_llm, _normalize_llm_text
 
 # ---------------------------------------------------------------------------
 # 3. Semantic Layer 로더
@@ -508,7 +508,7 @@ def _adjudicate_domain_with_llm(question: str, candidates: list[dict], schema: d
 
 도메인명:"""
     try:
-        raw = _call_llm(prompt).strip()
+        raw = _normalize_llm_text(_call_llm(prompt))
     except Exception:
         return top_candidates[0]["domain"]
     for candidate in top_candidates:

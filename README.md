@@ -208,8 +208,9 @@ models:
     timeout: 120
 ```
 
-기존 `LLM_BASE_URL`, `VLLM_BASE_URL`, `EMBED_BASE_URL`, `DB_HOST` 같은 환경 변수도 계속 지원하지만,
-`KBCARD_CONFIG_PATH` YAML을 두는 방식을 우선 권장합니다.
+`LLM_BASE_URL`, `LLM_MODEL`, `EMBED_BASE_URL`, `DB_HOST` 같은 환경 변수로 YAML 값을 덮어쓸 수 있지만,
+`KBCARD_CONFIG_PATH` YAML을 두는 방식을 우선 권장합니다. (LLM/임베딩 호출은 모두
+`kbcard-agent-common`의 OpenAI 호환 클라이언트를 단일 경로로 사용합니다.)
 
 `kbcard-agent-common` 문서 기준으로는 uv 환경을 권장합니다.
 
