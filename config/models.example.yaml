@@ -1,4 +1,18 @@
 models:
+  # Amazon Bedrock OpenAI-compatible runtime (gpt-oss).
+  # 공통 모듈(KBCardOpenAI)이 base_url+endpoint_path로 호출하고,
+  # api_key_env에서 읽은 토큰을 Authorization: Bearer 로 전송한다.
+  # 인증은 환경변수 AWS_BEARER_TOKEN_BEDROCK(Amazon Bedrock API key)를 사용한다.
+  "openai.gpt-oss-20b-1:0":
+    provider: bedrock
+    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+    endpoint_path: /openai/v1/chat/completions
+    api_key_env: AWS_BEARER_TOKEN_BEDROCK
+    timeout: 120
+    capabilities:
+      streaming: false
+
+  # 로컬 vLLM 폴백 (호스트에서 모델 서버를 직접 띄울 때 사용).
   local-chat:
     provider: vllm
     base_url: http://127.0.0.1:8000

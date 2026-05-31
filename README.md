@@ -151,9 +151,15 @@ common SDK 문서 기준의 권장 방식은 `.env`에는 config 경로와 secre
 
 ```bash
 KBCARD_CONFIG_PATH=config/agent.example.yaml
+# Amazon Bedrock OpenAI 호환 gpt-oss를 쓸 때의 인증 토큰 (Amazon Bedrock API key).
+AWS_BEARER_TOKEN_BEDROCK=...
+# 로컬 vLLM을 쓸 때만 필요 (Bedrock 경로에서는 사용 안 함).
 LLM_API_KEY=EMPTY
 KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
 ```
+
+`AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code/Anthropic용 bearer token을
+넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
 
 기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
 기업영업 가맹점/특수채권/대손충당금 테이블과 예시는 이 파일에 병합했고, 중복 파일은 제거했습니다.
@@ -183,15 +189,17 @@ agent:
 
 llm:
   model_registry_path: models.local.yaml
-  default_model: local-chat
+  # 기본은 Bedrock OpenAI 호환 gpt-oss. 로컬 vLLM을 쓰려면 local-chat 으로 변경.
+  default_model: "openai.gpt-oss-20b-1:0"
   temperature: 0
   max_tokens: 4096
   timeout: 120
 
 embedding:
   provider: tei
-  base_url: http://127.0.0.1:8001
-  model: bge-m3
+  # OpenAI 호환 /v1/embeddings 를 노출하는 임베딩 서버.
+  base_url: http://127.0.0.1:8124
+  model: intfloat/multilingual-e5-small
   api_key: null
   timeout: 60
 ```
@@ -200,13 +208,40 @@ embedding:
 
 ```yaml
 models:
+  # Amazon Bedrock OpenAI 호환 runtime (gpt-oss).
+  # 공통 모듈(KBCardOpenAI)이 base_url+endpoint_path로 호출하고,
+  # api_key_env에서 읽은 토큰을 Authorization: Bearer 로 전송한다.
+  "openai.gpt-oss-20b-1:0":
+    provider: bedrock
+    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+    endpoint_path: /openai/v1/chat/completions
+    api_key_env: AWS_BEARER_TOKEN_BEDROCK
+    timeout: 120
+    capabilities:
+      streaming: false
+
+  # 로컬 vLLM 폴백.
   local-chat:
     provider: vllm
     base_url: http://127.0.0.1:8000
     endpoint_path: /v1/chat/completions
     api_key_env: LLM_API_KEY
     timeout: 120
+    capabilities:
+      streaming: false
 ```
+
+### 로컬 임베딩 서버
+
+임베딩은 작은 한국어 지원 모델 `intfloat/multilingual-e5-small`을 OpenAI 호환
+`/v1/embeddings` 형식으로 노출해 사용합니다. `sentence-transformers` 기반 서버를 띄웁니다.
+
+```bash
+uv run uvicorn embedding_server:app --app-dir .local --host 0.0.0.0 --port 8124
+```
+
+공통 모듈의 `TEIEmbeddingClient`가 이 endpoint를 그대로 호출하므로, 별도 코드 변경 없이
+`agent.local.yaml`의 `embedding.base_url`만 맞추면 됩니다.
 
 `LLM_BASE_URL`, `LLM_MODEL`, `EMBED_BASE_URL`, `DB_HOST` 같은 환경 변수로 YAML 값을 덮어쓸 수 있지만,
 `KBCARD_CONFIG_PATH` YAML을 두는 방식을 우선 권장합니다. (LLM/임베딩 호출은 모두
