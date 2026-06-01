@@ -166,6 +166,16 @@ FROM with_cost c CROSS JOIN total t ORDER BY c.구분""",
 }
 
 
+def _to_float(value) -> float:
+    """SQL 결과 셀을 float으로 변환한다. NULL/빈 값/변환 실패는 0.0으로 처리한다."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _build_bad_debt_sql(query_template: str, params: dict) -> str:
     merchant = _escape_like(params.get("가맹점명", ""))
     yyyymm = _sanitize_param(params.get("기준년월", ""))
@@ -362,8 +372,9 @@ def _tool_fn_대손비용률(params: dict) -> dict:
         col_map = {c: i for i, c in enumerate(summary_cols)}
         for row in summary_rows:
             grp = row[col_map.get("구분", 0)] if "구분" in col_map else ""
-            cost_rate = float(row[col_map["대손비용률_퍼센트"]]) if "대손비용률_퍼센트" in col_map else 0
-            corr = float(row[col_map["보정계수"]]) if "보정계수" in col_map else 0
+            # 보정계수/대손비용률은 구분·잔액 조건에 따라 SQL에서 NULL이 나올 수 있다.
+            cost_rate = _to_float(row[col_map["대손비용률_퍼센트"]]) if "대손비용률_퍼센트" in col_map else 0.0
+            corr = _to_float(row[col_map["보정계수"]]) if "보정계수" in col_map else 0.0
             summary_for_correction.append((grp, cost_rate, corr))
 
     if summary_for_correction:

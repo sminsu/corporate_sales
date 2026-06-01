@@ -189,8 +189,8 @@ agent:
 
 llm:
   model_registry_path: models.local.yaml
-  # 기본은 Bedrock OpenAI 호환 gpt-oss. 로컬 vLLM을 쓰려면 local-chat 으로 변경.
-  default_model: "openai.gpt-oss-20b-1:0"
+  # 기본은 Bedrock OpenAI 호환 gpt-oss-120b. 가벼운 20b나 로컬 vLLM(local-chat)으로 교체 가능.
+  default_model: "openai.gpt-oss-120b-1:0"
   temperature: 0
   max_tokens: 4096
   timeout: 120
@@ -211,6 +211,17 @@ models:
   # Amazon Bedrock OpenAI 호환 runtime (gpt-oss).
   # 공통 모듈(KBCardOpenAI)이 base_url+endpoint_path로 호출하고,
   # api_key_env에서 읽은 토큰을 Authorization: Bearer 로 전송한다.
+  # 기본은 120b. 작은 20b는 Tool 선택을 자주 놓쳐(예: 대손비용률) 120b를 표준으로 둔다.
+  "openai.gpt-oss-120b-1:0":
+    provider: bedrock
+    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+    endpoint_path: /openai/v1/chat/completions
+    api_key_env: AWS_BEARER_TOKEN_BEDROCK
+    timeout: 120
+    capabilities:
+      streaming: false
+
+  # 더 작고 빠른 폴백 모델.
   "openai.gpt-oss-20b-1:0":
     provider: bedrock
     base_url: https://bedrock-runtime.us-east-1.amazonaws.com

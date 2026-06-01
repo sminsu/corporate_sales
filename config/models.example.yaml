@@ -3,6 +3,18 @@ models:
   # 공통 모듈(KBCardOpenAI)이 base_url+endpoint_path로 호출하고,
   # api_key_env에서 읽은 토큰을 Authorization: Bearer 로 전송한다.
   # 인증은 환경변수 AWS_BEARER_TOKEN_BEDROCK(Amazon Bedrock API key)를 사용한다.
+  #
+  # 기본은 120b. 작은 20b는 Tool 선택을 자주 놓쳐(예: 대손비용률) 120b를 표준으로 둔다.
+  "openai.gpt-oss-120b-1:0":
+    provider: bedrock
+    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
+    endpoint_path: /openai/v1/chat/completions
+    api_key_env: AWS_BEARER_TOKEN_BEDROCK
+    timeout: 120
+    capabilities:
+      streaming: false
+
+  # 더 작고 빠른 폴백 모델.
   "openai.gpt-oss-20b-1:0":
     provider: bedrock
     base_url: https://bedrock-runtime.us-east-1.amazonaws.com

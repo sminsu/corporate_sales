@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import time
 import uuid
@@ -275,6 +276,26 @@ def _normalize_korean_year(text: str) -> str:
     return match.group(1) if match else text.strip()
 
 
+def _extract_named_value(name: str, text: str) -> str:
+    """'이름=값' / '이름은 값' / '이름 값' / '이름: 값' 패턴에서 값을 뽑는다.
+
+    LS/IS처럼 정형 규칙이 없는 숫자 파라미터를 LLM 없이 결정적으로 파싱하기 위함.
+    """
+    import re
+
+    escaped = re.escape(name)
+    # 값은 숫자(소수/퍼센트) 또는 공백 전까지의 토큰을 우선 시도한다.
+    patterns = [
+        rf"{escaped}\s*[=:]\s*(-?\d+(?:\.\d+)?)",
+        rf"{escaped}\s*(?:은|는|이|가|을|를|로|으로)?\s*(-?\d+(?:\.\d+)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> dict[str, Any]:
     import re
 
@@ -285,6 +306,12 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
     year_value = _normalize_korean_year(natural_input)
 
     for name in names:
+        # 1) '이름=값' 등 명시적 패턴이 있으면 최우선 채택 (LS/IS 같은 자유 숫자 파라미터 포함).
+        named = _extract_named_value(name, natural_input)
+        if named:
+            parsed[name] = named
+            continue
+
         lowered = name.lower()
         if any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
             parsed[name] = ym_value
@@ -334,7 +361,14 @@ JSON:"""
         if raw.startswith("```"):
             lines = raw.split("\n")
             raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
-        parsed = json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            # 모델이 설명 문장과 함께 JSON을 흘려보낸 경우 첫 번째 JSON object만 추출한다.
+            match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+            if not match:
+                return {}
+            parsed = json.loads(match.group(0))
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
@@ -460,12 +494,37 @@ def _compact_table_text(columns: list[Any], rows: list[Any], limit: int = 80) ->
     return "\n".join(lines)
 
 
+def _param_example_value(name: str) -> str:
+    """누락된 파라미터 이름에 맞는 예시 입력값을 만든다 (고정 문구 대신 동적 안내용)."""
+    lowered = name.lower()
+    if any(key in lowered for key in ["년월", "기준월", "ym", "base_ym"]):
+        return "기준년월=202512"
+    if any(key in lowered for key in ["기간_시작", "start", "시작", "from"]):
+        return "기간_시작=202501"
+    if any(key in lowered for key in ["기간_종료", "end", "종료", "to"]):
+        return "기간_종료=202512"
+    if any(key in lowered for key in ["year", "년도", "연도"]):
+        return "2025년"
+    if any(key in lowered for key in ["가맹점", "기업", "고객", "상호", "대상"]):
+        return f"{name}=한빛테크놀로지"
+    if name in ("LS", "IS") or "스프레드" in lowered:
+        return f"{name}=0.3"
+    if any(key in lowered for key in ["limit", "행수", "개수", "top", "상위"]):
+        return f"{name}=10"
+    return f"{name}=값"
+
+
 def _requires_params_answer(result: dict[str, Any]) -> str:
     missing = result.get("missing_params", []) or []
     if not missing:
         return "추가 입력이 필요해요. 이어서 채팅창에 필요한 정보를 적어 주세요."
     labels = [str(item.get("label") or item.get("name") or item) for item in missing]
-    return f"{', '.join(labels)} 값이 필요해요. 예: '2025년 12월로 해줘'처럼 아래 채팅창에 이어서 입력해 주세요."
+    names = [_param_name(item) for item in missing if _param_name(item)]
+    example = ", ".join(_param_example_value(name) for name in names) or "필요한 값"
+    return (
+        f"{', '.join(labels)} 값이 필요해요. "
+        f"예: '{example}'처럼 아래 채팅창에 이어서 입력해 주세요."
+    )
 
 
 def _result_payload(

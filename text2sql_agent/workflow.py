@@ -34,7 +34,7 @@ from .schema import (
     find_relevant_references,
 )
 from .state import Text2SQLState
-from .tools.registry import TOOL_MAP, _build_tool_descriptions
+from .tools.registry import TOOLS, TOOL_MAP, _build_tool_descriptions
 from .tools.sql_builders import VQ_PARAM_SPECS, _apply_params_to_vq, _current_date_context
 
 # ---------------------------------------------------------------------------
@@ -263,11 +263,87 @@ def route_domain(state: Text2SQLState) -> dict:
     }
 
 
+def _extract_ym_from_question(question: str) -> str:
+    """질문에서 기준년월을 YYYYMM으로 뽑는다 (예: '2025년 12월' -> '202512')."""
+    match = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월", question)
+    if match:
+        return f"{match.group(1)}{int(match.group(2)):02d}"
+    match = re.search(r"\b(20\d{2})(0[1-9]|1[0-2])\b", question)
+    if match:
+        return match.group(0)
+    return ""
+
+
+def _extract_merchant_from_question(question: str) -> str:
+    """질문에서 가맹점(기업)명을 뽑는다.
+
+    LLM이 파라미터 추출을 통째로 누락할 때를 대비한 결정적 보강용. 확신이 낮으면
+    빈 문자열을 돌려 사용자에게 되묻도록 둔다 (틀린 값으로 조용히 진행하지 않는다).
+    """
+    # 날짜/숫자/기간 표현과 대손 관련 키워드·동사·조사를 제거한 뒤 남는 명사구를 본다.
+    text = question
+    text = re.sub(r"20\d{2}\s*년\s*\d{1,2}\s*월", " ", text)
+    text = re.sub(r"20\d{2}\s*년", " ", text)
+    text = re.sub(r"\d{1,2}\s*월", " ", text)
+    text = re.sub(r"\b\d+\b", " ", text)
+    stop_words = [
+        "대손비용률", "대손비용율", "대손율", "대손률", "대손비율", "대손",
+        "분석", "분석해줘", "구해줘", "알려줘", "보여줘", "해줘", "조회", "기업", "회사",
+    ]
+    for word in stop_words:
+        text = text.replace(word, " ")
+    # 조사로 끝나는 토큰의 조사를 떼고, 한글/영문/숫자로 된 후보만 남긴다.
+    candidates = []
+    for token in text.split():
+        token = re.sub(r"(의|은|는|이|가|을|를|에|로|으로|와|과)$", "", token).strip()
+        if token and re.fullmatch(r"[가-힣A-Za-z0-9()]+", token):
+            candidates.append(token)
+    # 후보가 정확히 하나일 때만 채택 (모호하면 되묻기에 맡긴다).
+    return candidates[0] if len(candidates) == 1 else ""
+
+
+def _augment_bad_debt_params(question: str, params: dict) -> dict:
+    """대손비용률 Tool에서 LLM이 빠뜨린 가맹점명/기준년월을 질문에서 규칙으로 보강한다."""
+    augmented = dict(params)
+    if not augmented.get("기준년월"):
+        ym = _extract_ym_from_question(question)
+        if ym:
+            augmented["기준년월"] = ym
+    if not augmented.get("가맹점명"):
+        merchant = _extract_merchant_from_question(question)
+        if merchant:
+            augmented["가맹점명"] = merchant
+    return augmented
+
+
+def _rule_match_tool(question: str) -> str:
+    """질문에 Tool tags가 등장하는지로 Tool을 우선 매칭한다.
+
+    작은/큰 모델 모두 select_tool에서 핵심 Tool(예: 대손비용률)을 간헐적으로 놓치므로,
+    태그가 명확히 일치하는 Tool이 '단독 최다'일 때 LLM 판단보다 먼저 확정한다.
+    동점이거나 일치가 없으면 빈 문자열을 돌려 기존 LLM 선택 경로로 넘긴다.
+    """
+    scores: list[tuple[int, str]] = []
+    for tool in TOOLS:
+        hits = sum(1 for tag in tool.get("tags", []) if tag and tag in question)
+        if hits:
+            scores.append((hits, tool["name"]))
+    if not scores:
+        return ""
+    scores.sort(reverse=True)
+    top_score, top_name = scores[0]
+    # 최다 점수를 가진 Tool이 유일할 때만 규칙으로 확정 (모호하면 LLM에 위임).
+    if sum(1 for score, _ in scores if score == top_score) == 1:
+        return top_name
+    return ""
+
+
 def select_tool(state: Text2SQLState) -> dict:
     if state.get("selected_tool") and state.get("tool_params") is not None:
         return {"selected_tool": state["selected_tool"], "tool_params": state.get("tool_params", {})}
 
     question = state["question"]
+    forced_tool = _rule_match_tool(question)
     tool_desc = _build_tool_descriptions()
     domain_context = state.get("domain_context") or "(도메인 라우팅 결과 없음)"
     semantic_contract = build_semantic_contract_summary(SCHEMA)
@@ -301,12 +377,26 @@ def select_tool(state: Text2SQLState) -> dict:
 JSON:"""
 
     result = _parse_llm_json(_call_llm(prompt))
-    if not result:
-        return {"selected_tool": "", "tool_params": {}}
-    tool_name = result.get("tool", "NONE")
+    tool_name = result.get("tool", "NONE") if result else "NONE"
+    params = result.get("params", {}) if result else {}
+    if not isinstance(params, dict):
+        params = {}
+
+    # 규칙으로 Tool이 확정되면 LLM이 Tool을 놓치거나 다르게 골라도 그 Tool로 강제한다.
+    # (LLM 응답은 파라미터 추출 용도로만 신뢰한다.) LLM이 엉뚱한 Tool을 고른 경우라도
+    # 추출한 값 중 강제 Tool이 실제로 받는 파라미터만 추려 살린다 — 가맹점명/기준년월 등이
+    # 헛되이 누락 처리되는 것을 막는다.
+    if forced_tool:
+        valid_names = {p["name"] for p in TOOL_MAP[forced_tool]["parameters"]}
+        params = {k: v for k, v in params.items() if k in valid_names}
+        # LLM이 파라미터 추출을 비결정적으로 누락하므로, 핵심 값은 질문에서 직접 보강한다.
+        if forced_tool == "대손비용률_분석":
+            params = _augment_bad_debt_params(question, params)
+        return {"selected_tool": forced_tool, "tool_params": params}
+
     if tool_name == "NONE" or tool_name not in TOOL_MAP:
         return {"selected_tool": "", "tool_params": {}}
-    return {"selected_tool": tool_name, "tool_params": result.get("params", {})}
+    return {"selected_tool": tool_name, "tool_params": params}
 
 
 def check_tool_params(state: Text2SQLState) -> dict:

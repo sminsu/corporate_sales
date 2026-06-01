@@ -5,8 +5,8 @@ agent:
 
 llm:
   model_registry_path: models.example.yaml
-  # 기본은 Bedrock OpenAI 호환 gpt-oss. 로컬 vLLM을 쓰려면 local-chat 으로 변경.
-  default_model: "openai.gpt-oss-20b-1:0"
+  # 기본은 Bedrock OpenAI 호환 gpt-oss-120b. 더 가벼운 20b 또는 로컬 vLLM(local-chat)으로 교체 가능.
+  default_model: "openai.gpt-oss-120b-1:0"
   temperature: 0
   max_tokens: 4096
   timeout: 120
