@@ -92,6 +92,12 @@ v4/
 cd /Users/minsu/Documents/company/franchise/text2sql_v10/corporate_sales
 uv venv --python 3.12
 uv pip install -r requirements.txt
+
+# 최초 1회: 템플릿(.example)에서 로컬 설정 파일(.local)을 생성한 뒤 실제 값을 채운다.
+# .env.local / config/*.local.yaml 은 비밀·환경별 값이라 git에 올리지 않으므로(.gitignore)
+# clone 직후나 새 서버에서는 직접 만들어야 한다. 이미 있으면 건드리지 않는다(--force로 재생성).
+./scripts/setup-config.sh
+
 uv run uvicorn webservice_v1:app --host 0.0.0.0 --port 8080
 ```
 
