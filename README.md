@@ -188,6 +188,26 @@ Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명
   작성되어 있습니다 (`CAST(... AS DOUBLE/INTEGER)`, `LOWER() LIKE LOWER()`, `SUBSTR`).
 - LLM이 새로 생성하는 SQL은 `DB_BACKEND`에 따라 프롬프트가 PostgreSQL/Trino 방언을 자동 안내합니다.
 
+#### 테이블 스키마 prefix (`DB_SCHEMA`)
+
+테이블 참조에 붙는 스키마 한정자는 `DB_SCHEMA`로 설정합니다. PostgreSQL에서는 schema,
+Athena에서는 Glue **database** 이름으로 해석됩니다.
+
+- 미설정 시 기본값: `postgres`면 `card_system`, `athena`면 `ATHENA_DATABASE` 값.
+- `DB_SCHEMA`는 Tool SQL · SQL 검증(`schema.py`) · 생성 프롬프트 · schema YAML의
+  `physical_table`/verified-query SQL에 **일괄 적용**됩니다 (YAML 원본은 `card_system.`으로
+  두고 로드 시 메모리에서 동적 치환). 따라서 Glue DB 이름이 `card_system`이 아니어도
+  코드/YAML 수정 없이 `DB_SCHEMA`만 바꾸면 됩니다.
+
+```bash
+# 예: Glue 데이터베이스 이름이 kbcard_db 인 경우
+DB_BACKEND=athena
+DB_SCHEMA=kbcard_db
+
+# prefix 없이 테이블명만 쓰려면 (pyathena가 schema_name을 이미 알고 있을 때)
+DB_SCHEMA=none
+```
+
 기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
 기업영업 가맹점/특수채권/대손충당금 테이블과 예시는 이 파일에 병합했고, 중복 파일은 제거했습니다.
 다른 schema를 쓰려면 다음 환경 변수를 지정하면 됩니다.

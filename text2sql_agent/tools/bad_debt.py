@@ -7,7 +7,7 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from ..config import BAD_DEBT_OUTPUT_DIR
+from ..config import BAD_DEBT_OUTPUT_DIR, DB_SCHEMA, DB_SCHEMA_PREFIX
 from ..db import execute_sql
 from ..llm import _call_llm, _normalize_llm_text
 from .sql_builders import _calc_months_back, _escape_like, _sanitize_param
@@ -185,6 +185,10 @@ def _build_bad_debt_sql(query_template: str, params: dict) -> str:
     sql = sql.replace("{기준년월}", yyyymm)
     sql = sql.replace("{월초년월}", prev_month)
     sql = sql.replace("{시작년월}", start_month)
+    # 템플릿의 고정 prefix(card_system.)를 설정된 스키마 prefix로 치환한다.
+    # 기본 설정(card_system)이면 변화 없음, 다른 스키마면 교체, 빈 스키마면 prefix 제거.
+    if DB_SCHEMA != "card_system":
+        sql = sql.replace("card_system.", DB_SCHEMA_PREFIX)
     return sql
 
 

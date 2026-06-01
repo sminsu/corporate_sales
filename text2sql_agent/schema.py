@@ -8,7 +8,7 @@ from decimal import Decimal
 import sqlparse
 import yaml
 
-from .config import SCHEMA_PATH
+from .config import DB_SCHEMA, DB_SCHEMA_PREFIX, SCHEMA_PATH
 from .db import _DANGEROUS_SQL_RE
 from .llm import _call_llm, _normalize_llm_text
 
@@ -16,11 +16,31 @@ from .llm import _call_llm, _normalize_llm_text
 # 3. Semantic Layer 로더
 # ---------------------------------------------------------------------------
 
+def _rewrite_schema_prefix(node):
+    """로드된 스키마 트리의 모든 문자열에서 'card_system.' prefix를 설정값으로 치환한다.
+
+    YAML 원본은 card_system. 으로 고정돼 있지만, 실제 실행 대상(PostgreSQL schema 또는
+    Athena Glue database)의 이름이 다를 수 있다. 메모리에 올린 스키마(physical_table,
+    verified query sql, sql_pattern 등)를 일괄 치환해 프롬프트·검증·실행을 일관시킨다.
+    """
+    if isinstance(node, dict):
+        return {key: _rewrite_schema_prefix(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_rewrite_schema_prefix(item) for item in node]
+    if isinstance(node, str) and "card_system." in node:
+        return node.replace("card_system.", DB_SCHEMA_PREFIX)
+    return node
+
+
 def load_semantic_layer(path: str | None = None) -> dict:
     if path is None:
         path = os.getenv("SEMANTIC_SCHEMA_PATH", str(SCHEMA_PATH))
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        schema = yaml.safe_load(f)
+    # 기본 스키마(card_system)와 다를 때만 치환 비용을 들인다.
+    if DB_SCHEMA != "card_system":
+        schema = _rewrite_schema_prefix(schema)
+    return schema
 
 
 def build_table_summary(schema: dict) -> str:
@@ -540,8 +560,22 @@ def _schema_table_index(schema: dict) -> tuple[dict[str, dict], dict[str, set[st
     return tables, columns
 
 
+# 설정된 스키마 prefix 기준으로 테이블을 추출/검증한다 (예: "card_system." 또는 "").
+# prefix가 비어 있으면(스키마 미사용) FROM/JOIN의 테이블명을 직접 본다.
+_SCHEMA_TABLE_RE = (
+    re.compile(rf"\b{re.escape(DB_SCHEMA)}\.([a-zA-Z0-9_]+)\b") if DB_SCHEMA else None
+)
+
+
 def _extract_schema_tables(sql: str) -> set[str]:
-    return {match.group(1).lower() for match in re.finditer(r"\bcard_system\.([a-zA-Z0-9_]+)\b", sql)}
+    if _SCHEMA_TABLE_RE is not None:
+        return {match.group(1).lower() for match in _SCHEMA_TABLE_RE.finditer(sql)}
+    # prefix가 없을 때는 FROM/JOIN 뒤의 식별자를 테이블 후보로 본다.
+    return {
+        match.group(2).lower()
+        for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", sql, re.IGNORECASE)
+        if match.group(2).lower() != "select"
+    }
 
 
 def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[str]:
@@ -559,20 +593,23 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
     used_tables = _extract_schema_tables(stripped)
     unknown_tables = sorted(table for table in used_tables if table not in known_tables)
     for table in unknown_tables:
-        issues.append(f"스키마에 없는 테이블 card_system.{table} 이 사용되었습니다.")
+        issues.append(f"스키마에 없는 테이블 {DB_SCHEMA_PREFIX}{table} 이 사용되었습니다.")
 
-    for table in selected_tables:
-        table_lower = str(table).lower()
-        if len(table_lower) < 4:
-            continue
-        if table_lower in stripped.lower() and f"card_system.{table_lower}" not in stripped.lower():
-            issues.append(f"테이블 '{table}'에 card_system. prefix가 없습니다.")
+    # 스키마 prefix가 설정된 경우에만 prefix 누락을 검증한다.
+    if DB_SCHEMA_PREFIX:
+        prefix_lower = DB_SCHEMA_PREFIX.lower()
+        for table in selected_tables:
+            table_lower = str(table).lower()
+            if len(table_lower) < 4:
+                continue
+            if table_lower in stripped.lower() and f"{prefix_lower}{table_lower}" not in stripped.lower():
+                issues.append(f"테이블 '{table}'에 {DB_SCHEMA_PREFIX} prefix가 없습니다.")
 
-    for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", stripped, re.IGNORECASE):
-        table = match.group(2)
-        if table.lower() != "select" and f"card_system.{table.lower()}" not in stripped.lower():
-            if table.lower() in known_tables:
-                issues.append(f"테이블 '{table}'은 card_system.{table} 형태로 사용해야 합니다.")
+        for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", stripped, re.IGNORECASE):
+            table = match.group(2)
+            if table.lower() != "select" and f"{prefix_lower}{table.lower()}" not in stripped.lower():
+                if table.lower() in known_tables:
+                    issues.append(f"테이블 '{table}'은 {DB_SCHEMA_PREFIX}{table} 형태로 사용해야 합니다.")
 
     if re.search(r"\bSELECT\s+\*", stripped, re.IGNORECASE):
         issues.append("SELECT * 대신 필요한 컬럼만 명시하세요.")

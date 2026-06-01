@@ -9,7 +9,7 @@ import sqlparse
 import yaml
 from langgraph.graph import END, StateGraph
 
-from .config import DB_BACKEND, ENABLE_EMBEDDING_PRECOMPUTE, EMBED_MATCH_THRESHOLD
+from .config import DB_BACKEND, DB_SCHEMA, DB_SCHEMA_PREFIX, ENABLE_EMBEDDING_PRECOMPUTE, EMBED_MATCH_THRESHOLD
 from .db import execute_sql
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
@@ -692,6 +692,13 @@ def _sql_dialect_name() -> str:
     return "Trino/Presto (Amazon Athena)" if DB_BACKEND == "athena" else "PostgreSQL"
 
 
+def _schema_prefix_rule() -> str:
+    """테이블 참조 시 붙일 스키마 prefix 규칙 (스키마가 비면 prefix 없이 안내)."""
+    if DB_SCHEMA_PREFIX:
+        return f"모든 테이블은 {DB_SCHEMA_PREFIX} prefix를 붙여 참조 (예: {DB_SCHEMA_PREFIX}테이블명)."
+    return "테이블은 스키마 prefix 없이 테이블명만 사용."
+
+
 def _sql_dialect_rules() -> str:
     """백엔드별 SQL 작성 주의사항. Athena(Trino)는 PostgreSQL과 방언이 다르다."""
     if DB_BACKEND == "athena":
@@ -764,7 +771,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 3. 도메인 라우팅 결과의 canonical_metrics, required_filters, default_time_dimension을 우선 반영.
 4. JOIN이 필요하면 안전 조인 그래프 또는 Relationships에 있는 경로만 사용.
 5. 법인카드: 개인기업구분코드 = '2'. 6. 매출전표: 취소 건 제외.
-7. 기준년월 'YYYYMM', 기준년월일 'YYYYMMDD'. 8. card_system. 스키마 필수.
+7. 기준년월 'YYYYMM', 기준년월일 'YYYYMMDD'. 8. {_schema_prefix_rule()}
 9. 질의 작성 Reference가 질문과 맞으면 reference의 primary_table, filter, join_rule을 우선 적용.
 10. 질문에 없는 테이블명은 절대 만들지 말고, 위 테이블 상세/Reference/도메인 컨텍스트에 있는 실테이블만 사용.
 11. "신규/가입/등록 고객"은 tbdaaat01.최초등록년월일 기준으로 해석.

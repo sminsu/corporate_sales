@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from calendar import monthrange
 
+from ..config import DB_SCHEMA_PREFIX as _SCHEMA
+
 # ---------------------------------------------------------------------------
 # 4. 공통 Tool 유틸 및 확정적 SQL 생성
 # ---------------------------------------------------------------------------
@@ -323,7 +325,7 @@ def _tool_sql_심사승인율(params: dict) -> str:
     ROUND(CAST(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS DOUBLE)
         / NULLIF(COUNT(DISTINCT 신청서접수번호), 0) * 100, 2) AS 승인율_퍼센트,
     AVG(최종부여한도금액) AS 평균부여한도
-FROM card_system.tbdaaaf23 {where}
+FROM {_SCHEMA}tbdaaaf23 {where}
 GROUP BY 신용평가등급코드 ORDER BY 신용평가등급코드"""
     else:
         return f"""SELECT
@@ -333,7 +335,7 @@ GROUP BY 신용평가등급코드 ORDER BY 신용평가등급코드"""
     ROUND(CAST(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS DOUBLE)
         / NULLIF(COUNT(DISTINCT 신청서접수번호), 0) * 100, 2) AS 승인율_퍼센트,
     AVG(최종부여한도금액) AS 평균부여한도
-FROM card_system.tbdaaaf23 {where}"""
+FROM {_SCHEMA}tbdaaaf23 {where}"""
 
 
 def _tool_sql_월별이용금액(params: dict) -> str:
@@ -344,7 +346,7 @@ def _tool_sql_월별이용금액(params: dict) -> str:
     SUM(금월이용합계금액) AS 총이용금액, SUM(금월일시불이용금액) AS 일시불이용금액,
     SUM(금월할부이용금액) AS 할부이용금액, SUM(금월ca이용금액) AS CA이용금액,
     SUM(금월이용합계건수) AS 총이용건수
-FROM card_system.tmdaa3e16 {where}
+FROM {_SCHEMA}tmdaa3e16 {where}
 GROUP BY 기준년월 ORDER BY 기준년월"""
 
 
@@ -360,8 +362,8 @@ def _tool_sql_가맹점매출순위(params: dict) -> str:
     SUM(a.가맹점일시불매출금액 + a.가맹점할부매출금액) AS 총매출금액,
     SUM(a.가맹점일시불매출건수 + a.가맹점할부매출건수) AS 총매출건수,
     AVG(a.신용카드가맹점수수료율) AS 평균수수료율
-FROM card_system.tmdaa5e11 a
-JOIN card_system.tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
+FROM {_SCHEMA}tmdaa5e11 a
+JOIN {_SCHEMA}tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
 {where}
 GROUP BY a.가맹점번호, a.가맹점명, b.가맹점업종명, b.업종대분류코드명
 ORDER BY 총매출금액 DESC LIMIT {limit}"""
@@ -378,7 +380,7 @@ def _tool_sql_한도사용률(params: dict) -> str:
     CASE WHEN SUM(총한도금액) > 0
          THEN ROUND((CAST(SUM(카드이용합계금액) AS DOUBLE) / SUM(총한도금액)) * 100, 2) ELSE 0
     END AS 한도사용률_퍼센트
-FROM card_system.tbdaaha97 {where}
+FROM {_SCHEMA}tbdaaha97 {where}
 GROUP BY 상호명, 사업자등록번호 HAVING SUM(총한도금액) > 0
 ORDER BY 한도사용률_퍼센트 DESC LIMIT {limit}"""
 
@@ -393,8 +395,8 @@ def _tool_sql_업종별매출(params: dict) -> str:
     return f"""SELECT b.업종대분류코드명, b.가맹점업종명,
     SUM(a.매출금액) AS 총매출금액, COUNT(DISTINCT a.매출전표번호) AS 매출건수,
     AVG(a.매출금액) AS 건당평균금액
-FROM card_system.tbdaabt30 a
-JOIN card_system.tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
+FROM {_SCHEMA}tbdaabt30 a
+JOIN {_SCHEMA}tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
 {where}
 GROUP BY b.업종대분류코드명, b.가맹점업종명 ORDER BY 총매출금액 DESC {limit}"""
 
@@ -411,7 +413,7 @@ def _tool_sql_기업별연체현황(params: dict) -> str:
     CASE WHEN SUM(카드이용합계금액) > 0
          THEN ROUND((CAST(SUM(연체금액) AS DOUBLE) / SUM(카드이용합계금액)) * 100, 2) ELSE 0
     END AS 연체율_퍼센트
-FROM card_system.tbdaaha97 {where}
+FROM {_SCHEMA}tbdaaha97 {where}
 GROUP BY 상호명, 사업자등록번호 ORDER BY 연체금액 DESC LIMIT {limit}"""
 
 
@@ -425,7 +427,7 @@ def _tool_sql_카드등급별연체(params: dict) -> str:
     CASE WHEN SUM(금월이용합계금액) > 0
          THEN ROUND((CAST(SUM(연체원금) AS DOUBLE) / SUM(금월이용합계금액)) * 100, 2) ELSE 0
     END AS 연체율_퍼센트
-FROM card_system.tmdaa3e16 {where}
+FROM {_SCHEMA}tmdaa3e16 {where}
 GROUP BY 카드등급구분코드 ORDER BY 총연체원금 DESC"""
 
 
@@ -461,7 +463,7 @@ def _tool_sql_가맹점카드소지현황(params: dict) -> str:
         가맹점업종코드,
         가맹점업종명,
         업종대분류코드명
-    FROM card_system.tbdaadb17
+    FROM {_SCHEMA}tbdaadb17
     WHERE 사용여부 = '1'
 ),
 gm_base AS (
@@ -481,7 +483,7 @@ gm_base AS (
         a.체크카드가맹점수수료율,
         a.가맹점관리부점코드,
         a.가맹점상태구분코드
-    FROM card_system.tbdaadt01 a
+    FROM {_SCHEMA}tbdaadt01 a
     LEFT JOIN upjong b
         ON a.가맹점업종코드 = b.가맹점업종코드
     {base_where}
@@ -496,7 +498,7 @@ gm_perf AS (
         최근3개월가맹점매출금액,
         최근3개월가맹점매출건수,
         가맹점상태구분코드
-    FROM card_system.tmdaa5e11
+    FROM {_SCHEMA}tmdaa5e11
     WHERE 기준년월 = '{yyyymm}'
 ),
 card_base AS (
@@ -506,7 +508,7 @@ card_base AS (
         카드결제기관구분코드,
         상품중분류구분코드,
         CASE WHEN 카드결제기관구분코드 = '004' THEN '1' ELSE '0' END AS KB카드계좌여부
-    FROM card_system.tbdaaat05
+    FROM {_SCHEMA}tbdaaat05
     WHERE 실제카드만료년월일 > '{card_valid_after}'
       AND KB카드BC카드구분코드 = '1'
 ),

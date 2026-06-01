@@ -142,6 +142,20 @@ ATHENA_CATALOG = _env("ATHENA_CATALOG", default="AwsDataCatalog")
 ATHENA_PROFILE = _env("ATHENA_PROFILE", "AWS_PROFILE", default="")
 
 # ---------------------------------------------------------------------------
+# SQL schema/namespace qualifier (테이블 prefix)
+# ---------------------------------------------------------------------------
+# 모든 테이블 참조에 붙는 스키마 한정자. PostgreSQL은 schema, Athena는 Glue database로
+# 해석된다. DB_SCHEMA가 명시되면 최우선, 없으면 athena는 ATHENA_DATABASE를, postgres는
+# 기존 기본값 card_system을 쓴다. prefix를 완전히 빼려면 DB_SCHEMA=none(또는 "-")로 둔다
+# (pyathena는 schema_name을 이미 알고 있어 prefix 없이도 동작).
+_DEFAULT_SCHEMA = ATHENA_DATABASE if DB_BACKEND == "athena" else "card_system"
+DB_SCHEMA = _env("DB_SCHEMA", "DB_TABLE_SCHEMA", default=_DEFAULT_SCHEMA).strip()
+if DB_SCHEMA.lower() in ("none", "-", "null"):
+    DB_SCHEMA = ""
+# SQL에 쓰는 prefix 문자열 (스키마가 비면 prefix 없음). 예: "card_system." 또는 "".
+DB_SCHEMA_PREFIX = f"{DB_SCHEMA}." if DB_SCHEMA else ""
+
+# ---------------------------------------------------------------------------
 # Output paths
 # ---------------------------------------------------------------------------
 BAD_DEBT_OUTPUT_DIR = os.getenv("BAD_DEBT_OUTPUT_DIR", str(BASE_DIR / "output"))
