@@ -320,7 +320,7 @@ def _tool_sql_심사승인율(params: dict) -> str:
     COUNT(DISTINCT 신청서접수번호) AS 총심사건수,
     COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS 승인건수,
     COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '02' THEN 신청서접수번호 END) AS 거절건수,
-    ROUND(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END)::FLOAT
+    ROUND(CAST(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS DOUBLE)
         / NULLIF(COUNT(DISTINCT 신청서접수번호), 0) * 100, 2) AS 승인율_퍼센트,
     AVG(최종부여한도금액) AS 평균부여한도
 FROM card_system.tbdaaaf23 {where}
@@ -330,7 +330,7 @@ GROUP BY 신용평가등급코드 ORDER BY 신용평가등급코드"""
     COUNT(DISTINCT 신청서접수번호) AS 총심사건수,
     COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS 승인건수,
     COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '02' THEN 신청서접수번호 END) AS 거절건수,
-    ROUND(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END)::FLOAT
+    ROUND(CAST(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS DOUBLE)
         / NULLIF(COUNT(DISTINCT 신청서접수번호), 0) * 100, 2) AS 승인율_퍼센트,
     AVG(최종부여한도금액) AS 평균부여한도
 FROM card_system.tbdaaaf23 {where}"""
@@ -376,7 +376,7 @@ def _tool_sql_한도사용률(params: dict) -> str:
     return f"""SELECT 상호명, 사업자등록번호,
     SUM(총한도금액) AS 총한도, SUM(카드이용합계금액) AS 총이용금액,
     CASE WHEN SUM(총한도금액) > 0
-         THEN ROUND((SUM(카드이용합계금액)::FLOAT / SUM(총한도금액)) * 100, 2) ELSE 0
+         THEN ROUND((CAST(SUM(카드이용합계금액) AS DOUBLE) / SUM(총한도금액)) * 100, 2) ELSE 0
     END AS 한도사용률_퍼센트
 FROM card_system.tbdaaha97 {where}
 GROUP BY 상호명, 사업자등록번호 HAVING SUM(총한도금액) > 0
@@ -409,7 +409,7 @@ def _tool_sql_기업별연체현황(params: dict) -> str:
     return f"""SELECT 상호명, 사업자등록번호,
     SUM(총한도금액) AS 총한도, SUM(카드이용합계금액) AS 총이용금액, SUM(연체금액) AS 연체금액,
     CASE WHEN SUM(카드이용합계금액) > 0
-         THEN ROUND((SUM(연체금액)::FLOAT / SUM(카드이용합계금액)) * 100, 2) ELSE 0
+         THEN ROUND((CAST(SUM(연체금액) AS DOUBLE) / SUM(카드이용합계금액)) * 100, 2) ELSE 0
     END AS 연체율_퍼센트
 FROM card_system.tbdaaha97 {where}
 GROUP BY 상호명, 사업자등록번호 ORDER BY 연체금액 DESC LIMIT {limit}"""
@@ -423,7 +423,7 @@ def _tool_sql_카드등급별연체(params: dict) -> str:
     COUNT(DISTINCT 카드구분키번호) AS 카드수, SUM(금월이용합계금액) AS 총이용금액,
     SUM(연체원금) AS 총연체원금,
     CASE WHEN SUM(금월이용합계금액) > 0
-         THEN ROUND((SUM(연체원금)::FLOAT / SUM(금월이용합계금액)) * 100, 2) ELSE 0
+         THEN ROUND((CAST(SUM(연체원금) AS DOUBLE) / SUM(금월이용합계금액)) * 100, 2) ELSE 0
     END AS 연체율_퍼센트
 FROM card_system.tmdaa3e16 {where}
 GROUP BY 카드등급구분코드 ORDER BY 총연체원금 DESC"""

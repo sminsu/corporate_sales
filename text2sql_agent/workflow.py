@@ -9,7 +9,7 @@ import sqlparse
 import yaml
 from langgraph.graph import END, StateGraph
 
-from .config import ENABLE_EMBEDDING_PRECOMPUTE, EMBED_MATCH_THRESHOLD
+from .config import DB_BACKEND, ENABLE_EMBEDDING_PRECOMPUTE, EMBED_MATCH_THRESHOLD
 from .db import execute_sql
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
@@ -687,6 +687,25 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
     return {"missing_params": [], "param_stage": "done"}
 
 
+def _sql_dialect_name() -> str:
+    """LLM 프롬프트에 명시할 SQL 방언 이름."""
+    return "Trino/Presto (Amazon Athena)" if DB_BACKEND == "athena" else "PostgreSQL"
+
+
+def _sql_dialect_rules() -> str:
+    """백엔드별 SQL 작성 주의사항. Athena(Trino)는 PostgreSQL과 방언이 다르다."""
+    if DB_BACKEND == "athena":
+        return (
+            "16. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
+            "    - 타입 캐스트는 CAST(expr AS type)만 사용 (PostgreSQL의 expr::type 금지).\n"
+            "    - 실수 나눗셈은 CAST(... AS DOUBLE), 정수는 CAST(... AS INTEGER).\n"
+            "    - 대소문자 무시 검색은 LOWER(col) LIKE LOWER('%값%') 사용 (ILIKE 금지).\n"
+            "    - 문자열 부분추출은 SUBSTR(col, start, length) 사용 (LEFT/RIGHT 대신).\n"
+            "    - 날짜/문자 함수는 Trino 표준만 사용 (TO_CHAR, DATE_TRUNC 등 PG 전용 함수 금지)."
+        )
+    return ""
+
+
 def generate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
     table_details = state["table_details"]
@@ -709,7 +728,7 @@ def generate_sql(state: Text2SQLState) -> dict:
         user_params_context = f"\n## 사용자가 제공한 추가 정보\n{params_text}\n위 값을 SQL의 WHERE 조건이나 파라미터에 반영하세요.\n"
 
     prompt = f"""당신은 KB카드 법인영업 데이터베이스의 SQL 전문가입니다.
-사용자의 자연어 질문을 PostgreSQL SQL로 변환하세요.
+사용자의 자연어 질문을 {_sql_dialect_name()} SQL로 변환하세요.
 
 ## 도메인 라우팅 결과
 {domain_context}
@@ -752,6 +771,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 12. "여성 고객"은 성별구분코드 = '2'를 기본값으로 사용.
 13. 상세 목록 조회는 LIMIT 100 이하를 기본으로 둡니다. 집계 결과는 의미있는 순서로 정렬합니다.
 14. 읽기 쉬운 alias. 15. 순수 SQL만 반환.
+{_sql_dialect_rules()}
 
 ## 사용자 질문
 {question}

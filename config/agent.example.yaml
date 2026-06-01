@@ -18,3 +18,8 @@ embedding:
   model: intfloat/multilingual-e5-small
   api_key: null
   timeout: 60
+
+# Text2SQL 실행 백엔드는 DB_BACKEND 환경변수로 고른다 (postgres | athena).
+# Athena 사용 시 아래 값들을 환경변수(.env)로 주입한다 (AWS 자격증명은 표준 체인 사용):
+#   DB_BACKEND=athena
+#   ATHENA_REGION, ATHENA_S3_STAGING_DIR, ATHENA_WORKGROUP, ATHENA_DATABASE, ATHENA_CATALOG

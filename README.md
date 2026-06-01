@@ -74,7 +74,7 @@ v4/
 - `text2sql_agent/workflow.py`: 질문 분류, 도메인 라우팅, Tool 선택, verified query 매칭, SQL 생성/검증/실행, 답변 생성을 LangGraph로 연결합니다.
 - `text2sql_agent/schema.py`: `schema_v6_gptoss.yaml`을 읽고 테이블/메트릭/용어집/조인 그래프를 prompt context로 가공합니다.
 - `text2sql_agent/tools/`: 확정 SQL 기반 Tool을 관리합니다. 일반 Tool은 SQL 문자열을 만들고, 대손비용률 Tool은 SQL 실행과 Excel 생성까지 수행합니다.
-- `text2sql_agent/db.py`: 위험한 SQL 명령을 차단하고 PostgreSQL에서 읽기 전용 조회를 수행합니다.
+- `text2sql_agent/db.py`: 위험한 SQL 명령을 차단하고 읽기 전용 조회를 수행합니다. `DB_BACKEND`에 따라 PostgreSQL 또는 Amazon Athena(pyathena)로 실행되며, 검증 가드는 백엔드 공통입니다.
 - `text2sql_agent/exports.py`: 조회 결과를 Word, Text, CSV 파일로 저장합니다.
 
 ## 주요 Tool
@@ -160,6 +160,33 @@ KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres pass
 
 `AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code/Anthropic용 bearer token을
 넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
+
+### 데이터베이스 백엔드 (PostgreSQL / Amazon Athena)
+
+SQL 실행 백엔드는 `DB_BACKEND` 환경변수로 고릅니다 (`postgres` 기본, `athena` 선택).
+호출부(`execute_sql`)는 그대로이고 `db.py` 내부에서만 분기하므로 코드 변경 없이 전환됩니다.
+
+```bash
+# 기본: PostgreSQL
+DB_BACKEND=postgres
+KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
+
+# 전환: Amazon Athena (pyathena DB-API)
+DB_BACKEND=athena
+ATHENA_REGION=ap-northeast-2
+ATHENA_S3_STAGING_DIR=s3://your-athena-results-bucket/path/   # 쿼리 결과 저장 위치 (필수)
+ATHENA_WORKGROUP=primary
+ATHENA_DATABASE=card_system
+ATHENA_CATALOG=AwsDataCatalog
+# ATHENA_PROFILE=your-aws-profile   # 선택: 특정 AWS 프로필 사용 시
+```
+
+Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명 체인**(환경변수 `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, 또는 EC2/ECS IAM 역할)을 그대로 사용합니다.
+
+- 하드코딩된 Tool SQL(`bad_debt.py`/`sql_builders.py`)은 양쪽 DB에서 동작하도록 ANSI 표준으로
+  작성되어 있습니다 (`CAST(... AS DOUBLE/INTEGER)`, `LOWER() LIKE LOWER()`, `SUBSTR`).
+- LLM이 새로 생성하는 SQL은 `DB_BACKEND`에 따라 프롬프트가 PostgreSQL/Trino 방언을 자동 안내합니다.
 
 기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
 기업영업 가맹점/특수채권/대손충당금 테이블과 예시는 이 파일에 병합했고, 중복 파일은 제거했습니다.

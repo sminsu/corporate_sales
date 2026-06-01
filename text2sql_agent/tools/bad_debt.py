@@ -21,7 +21,7 @@ BAD_DEBT_QUERIES = {
     "월초충당금": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE "가맹점명" ILIKE '%{가맹점명}%'
+    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
 ),
 cm AS (
     SELECT 기준년월, 고객식별자,
@@ -43,7 +43,7 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     "월말충당금": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE "가맹점명" ILIKE '%{가맹점명}%'
+    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
 ),
 cm AS (
     SELECT 기준년월, 고객식별자,
@@ -65,14 +65,14 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     "상각내역": """WITH cor_table AS (
     SELECT DISTINCT a.기업고객식별자
     FROM card_system.tbdaadt01 a
-    WHERE a.가맹점상태구분코드 IN ('1', '01') AND a.가맹점명 ILIKE '%{가맹점명}%'
+    WHERE a.가맹점상태구분코드 IN ('1', '01') AND LOWER(a.가맹점명) LIKE LOWER('%{가맹점명}%')
 ),
 sd06 AS (
     SELECT 고객식별자,
         SUM(특수채권편입원금) AS 특수채권편입원금, SUM(특수채권편입가지급금) AS 특수채권편입가지급금,
         SUM(특수채권편입원금 + 특수채권편입가지급금) AS 상각금액
     FROM card_system.tbmaisd06
-    WHERE LEFT(특수채권편입기준년월일, 6)::int BETWEEN '{시작년월}'::int AND '{기준년월}'::int
+    WHERE CAST(SUBSTR(특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
       AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'
     GROUP BY 고객식별자
 ),
@@ -89,7 +89,7 @@ FROM sd06_a GROUP BY 구분 ORDER BY 구분""",
     "대손비용률종합": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE "가맹점명" ILIKE '%{가맹점명}%'
+    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
 ),
 cm_start AS (
     SELECT 고객식별자, SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
@@ -115,12 +115,12 @@ cm_end_flagged AS (
 ),
 cor_table_full AS (
     SELECT DISTINCT a.기업고객식별자 FROM card_system.tbdaadt01 a
-    WHERE a.가맹점상태구분코드 IN ('1', '01') AND a.가맹점명 ILIKE '%{가맹점명}%'
+    WHERE a.가맹점상태구분코드 IN ('1', '01') AND LOWER(a.가맹점명) LIKE LOWER('%{가맹점명}%')
 ),
 sd06 AS (
     SELECT 고객식별자, SUM(특수채권편입원금 + 특수채권편입가지급금) AS 상각금액
     FROM card_system.tbmaisd06
-    WHERE LEFT(특수채권편입기준년월일, 6)::int BETWEEN '{시작년월}'::int AND '{기준년월}'::int
+    WHERE CAST(SUBSTR(특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
       AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'
     GROUP BY 고객식별자
 ),

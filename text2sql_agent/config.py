@@ -111,6 +111,12 @@ AGENT_ENVIRONMENT = _env("KBCARD_AGENT_ENV", default=(_AGENT.environment if _AGE
 AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=((_AGENT.service_name if _AGENT else None) or AGENT_NAME))
 
 # ---------------------------------------------------------------------------
+# Database backend selection
+# ---------------------------------------------------------------------------
+# "postgres" (기본) 또는 "athena". execute_sql이 이 값으로 실행 백엔드를 분기한다.
+DB_BACKEND = _env("DB_BACKEND", default="postgres").strip().lower()
+
+# ---------------------------------------------------------------------------
 # PostgreSQL connection
 # ---------------------------------------------------------------------------
 DB_DSN_ENV = _env("KBCARD_POSTGRES_DSN_ENV", "DB_DSN_ENV", default="KBCARD_POSTGRES_DSN")
@@ -121,6 +127,19 @@ DB_NAME = _env("DB_NAME", default="postgres")
 DB_USER = _env("DB_USER", default=os.getenv("USER", "postgres"))
 DB_PASSWORD = _env("DB_PASSWORD", default="")
 DB_POOL_MAX = int(_env("DB_POOL_MAX", default="10"))
+
+# ---------------------------------------------------------------------------
+# Amazon Athena connection (DB_BACKEND=athena 일 때 사용)
+# ---------------------------------------------------------------------------
+# region/S3 staging/workgroup/database는 환경변수로 받는다. 인증은 표준 AWS 자격증명
+# 체인(환경변수/AWS_PROFILE/IAM 역할)을 그대로 사용하므로 키를 코드/설정에 두지 않는다.
+ATHENA_REGION = _env("ATHENA_REGION", "AWS_REGION", "AWS_DEFAULT_REGION", default="ap-northeast-2")
+ATHENA_S3_STAGING_DIR = _env("ATHENA_S3_STAGING_DIR", "ATHENA_S3_OUTPUT", default="")
+ATHENA_WORKGROUP = _env("ATHENA_WORKGROUP", default="primary")
+ATHENA_DATABASE = _env("ATHENA_DATABASE", "ATHENA_SCHEMA", default="card_system")
+ATHENA_CATALOG = _env("ATHENA_CATALOG", default="AwsDataCatalog")
+# 선택: profile 기반 자격증명을 쓰고 싶을 때만 지정 (없으면 기본 체인).
+ATHENA_PROFILE = _env("ATHENA_PROFILE", "AWS_PROFILE", default="")
 
 # ---------------------------------------------------------------------------
 # Output paths
