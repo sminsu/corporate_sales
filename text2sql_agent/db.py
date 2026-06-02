@@ -15,6 +15,7 @@ from .common_services import emit_module_event
 from .config import (
     ATHENA_CATALOG,
     ATHENA_DATABASE,
+    ATHENA_ENDPOINT_URL,
     ATHENA_PROFILE,
     ATHENA_REGION,
     ATHENA_S3_STAGING_DIR,
@@ -109,21 +110,29 @@ def _get_athena_connection():
 
     from pyathena import connect  # 지연 import: postgres 전용 배포에서 pyathena 미설치 허용.
 
-    if not ATHENA_S3_STAGING_DIR:
+    # 결과 위치는 (a) s3_staging_dir 직접 지정 또는 (b) 워크그룹의 managed/지정 결과 위치
+    # 둘 중 하나가 있어야 한다. 둘 다 없으면 쿼리가 실패하므로 미리 막는다.
+    if not ATHENA_S3_STAGING_DIR and not ATHENA_WORKGROUP:
         raise RuntimeError(
-            "ATHENA_S3_STAGING_DIR(또는 ATHENA_S3_OUTPUT)가 설정되지 않았습니다. "
-            "Athena 쿼리 결과를 저장할 s3:// 경로가 필요합니다."
+            "Athena 쿼리 결과 위치가 없습니다. ATHENA_S3_STAGING_DIR(s3:// 경로)를 지정하거나, "
+            "결과 위치가 설정된 ATHENA_WORKGROUP을 지정하세요."
         )
 
     kwargs = {
         "region_name": ATHENA_REGION,
-        "s3_staging_dir": ATHENA_S3_STAGING_DIR,
-        "work_group": ATHENA_WORKGROUP,
         "schema_name": ATHENA_DATABASE,
         "catalog_name": ATHENA_CATALOG,
     }
+    if ATHENA_WORKGROUP:
+        kwargs["work_group"] = ATHENA_WORKGROUP
+    # staging이 지정되면 전달, 없으면 워크그룹 결과 위치를 쓰도록 빈 문자열로 명시
+    # (pyathena가 AWS_ATHENA_S3_STAGING_DIR 환경변수로 폴백하는 것을 막는다).
+    kwargs["s3_staging_dir"] = ATHENA_S3_STAGING_DIR or ""
     if ATHENA_PROFILE:
         kwargs["profile_name"] = ATHENA_PROFILE
+    # VPC 엔드포인트/사내 프록시 등 커스텀 endpoint. pyathena가 boto3 athena client로 전달한다.
+    if ATHENA_ENDPOINT_URL:
+        kwargs["endpoint_url"] = ATHENA_ENDPOINT_URL
     _athena_conn = connect(**kwargs)
     return _athena_conn
 

@@ -180,15 +180,25 @@ KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres pass
 # 전환: Amazon Athena (pyathena DB-API)
 DB_BACKEND=athena
 ATHENA_REGION=ap-northeast-2
-ATHENA_S3_STAGING_DIR=s3://your-athena-results-bucket/path/   # 쿼리 결과 저장 위치 (필수)
+ATHENA_S3_STAGING_DIR=s3://your-athena-results-bucket/path/   # 결과 저장 위치 (워크그룹에 있으면 생략 가능)
 ATHENA_WORKGROUP=primary
 ATHENA_DATABASE=card_system
 ATHENA_CATALOG=AwsDataCatalog
-# ATHENA_PROFILE=your-aws-profile   # 선택: 특정 AWS 프로필 사용 시
+# ATHENA_PROFILE=your-aws-profile     # 선택: 특정 AWS 프로필 사용 시
+# ATHENA_ENDPOINT_URL=https://vpce-xxxx.athena.ap-northeast-2.vpce.amazonaws.com  # 선택: VPC 엔드포인트
 ```
 
 Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명 체인**(환경변수 `AWS_ACCESS_KEY_ID`/
 `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, 또는 EC2/ECS IAM 역할)을 그대로 사용합니다.
+
+##### VPC 엔드포인트 / 커스텀 endpoint URL
+
+사내망에서 VPC 엔드포인트(`vpce-...`)나 프록시를 통해 Athena에 접속한다면 `ATHENA_ENDPOINT_URL`을
+지정합니다. pyathena가 이 값을 boto3 athena client의 `endpoint_url`로 전달합니다.
+
+- 이 설정은 **Athena API 호출에만** 적용됩니다. 쿼리 결과는 S3에서, 자격증명은 STS에서 가져오므로,
+  완전 폐쇄망이면 **S3·STS용 VPC 엔드포인트도 별도로** 있어야 정상 동작합니다 (Athena 엔드포인트만으로는 부족).
+- 결과 위치는 `ATHENA_S3_STAGING_DIR` 또는 워크그룹 결과 위치 중 하나만 있으면 됩니다.
 
 - 하드코딩된 Tool SQL(`bad_debt.py`/`sql_builders.py`)은 양쪽 DB에서 동작하도록 ANSI 표준으로
   작성되어 있습니다 (`CAST(... AS DOUBLE/INTEGER)`, `LOWER() LIKE LOWER()`, `SUBSTR`).

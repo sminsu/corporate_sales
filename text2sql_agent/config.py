@@ -140,6 +140,9 @@ ATHENA_DATABASE = _env("ATHENA_DATABASE", "ATHENA_SCHEMA", default="card_system"
 ATHENA_CATALOG = _env("ATHENA_CATALOG", default="AwsDataCatalog")
 # 선택: profile 기반 자격증명을 쓰고 싶을 때만 지정 (없으면 기본 체인).
 ATHENA_PROFILE = _env("ATHENA_PROFILE", "AWS_PROFILE", default="")
+# 선택: VPC 엔드포인트나 사내 프록시 등 커스텀 Athena endpoint URL.
+# 비워두면 boto3가 region 기반 기본 endpoint를 사용한다.
+ATHENA_ENDPOINT_URL = _env("ATHENA_ENDPOINT_URL", default="")
 
 # ---------------------------------------------------------------------------
 # SQL schema/namespace qualifier (테이블 prefix)
