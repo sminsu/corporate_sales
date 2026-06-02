@@ -439,6 +439,30 @@ def _documents_from_result(result: dict[str, Any], top_k: int, source_override: 
     return documents[: max(top_k, 0)]
 
 
+def _result_conditions(result: dict[str, Any]) -> dict[str, Any]:
+    conditions: dict[str, Any] = {}
+    for key in ("tool_params", "extracted_params", "user_provided_params"):
+        value = result.get(key)
+        if isinstance(value, dict):
+            conditions.update({k: v for k, v in value.items() if v != "" and v is not None})
+    return conditions
+
+
+def _result_meta(result: dict[str, Any], source_override: str | None = None) -> dict[str, Any]:
+    rows = result.get("query_rows", []) or []
+    return {
+        "execution_path": _source_label(result, source_override),
+        "data_sources": result.get("selected_tables", []) or [],
+        "conditions": _result_conditions(result),
+        "displayed_rows": len(rows),
+        "display_row_limit": 100,
+        "rows_may_be_limited": len(rows) >= 100,
+        "selected_domain": result.get("selected_domain", ""),
+        "selected_tool": result.get("selected_tool", ""),
+        "matched_query_name": result.get("matched_query_name", ""),
+    }
+
+
 def _register_file(path: str) -> dict[str, str] | None:
     if not path:
         return None
@@ -462,7 +486,7 @@ def _suggest_followups(result: dict[str, Any]) -> list[str]:
             [
                 "이 결과에서 이상치가 있는지 찾아줘",
                 "상위/하위 항목의 차이를 비교해줘",
-                "영업 관점에서 바로 확인해야 할 대상을 골라줘",
+                "추가 확인이 필요한 구간을 골라줘",
                 "금액 기준 내림차순으로 다시 정렬해서 보여줘",
             ]
         )
@@ -471,7 +495,7 @@ def _suggest_followups(result: dict[str, Any]) -> list[str]:
     elif rows:
         suggestions.insert(1, "분포나 패턴이 눈에 띄는지 요약해줘")
     if any(key in col for col in columns for key in ["비율", "율", "rate", "ratio", "증감", "growth"]):
-        suggestions.append("비율이 높은 구간의 원인을 추정해줘")
+        suggestions.append("비율이 높은 구간의 근거 데이터를 요약해줘")
     return list(dict.fromkeys(suggestions))[:5]
 
 
@@ -574,6 +598,7 @@ def _result_payload(
         "sql": result.get("final_sql", ""),
         "columns": result.get("query_columns", []),
         "rows": result.get("query_rows", []),
+        "result_meta": _result_meta(result, source_override),
         "error": error,
         "excel_file": excel_file,
         "suggestions": _suggest_followups(result),
@@ -646,6 +671,7 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "sql": result.get("final_sql", ""),
         "columns": result.get("query_columns", []),
         "rows": result.get("query_rows", []),
+        "result_meta": _result_meta(result),
         "error": error,
         "excel_file": _register_file(result.get("bad_debt_excel_path", "")),
         "suggestions": _suggest_followups(result),

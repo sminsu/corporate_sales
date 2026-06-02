@@ -219,6 +219,14 @@ button:disabled {
   padding: 18px;
 }
 
+.query-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
 .query-panel.awaiting-param {
   border-color: #d6a400;
   background: #fff9df;
@@ -231,10 +239,38 @@ button:disabled {
 
 .query-panel label {
   display: block;
-  margin-bottom: 10px;
+  margin-bottom: 0;
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.query-mode {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.mode-option {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.mode-option.active {
+  background: #161616;
+  color: #fff;
+}
+
+.mode-option:disabled {
+  opacity: 0.45;
 }
 
 .query-row {
@@ -309,19 +345,8 @@ input:focus {
   background: var(--panel-muted);
 }
 
-.param-panel {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(23, 32, 42, 0.42);
-}
-
 .param-card {
-  width: min(560px, 100%);
-  max-height: min(80vh, 680px);
+  width: 100%;
   overflow: auto;
   padding: 20px;
   border-radius: 8px;
@@ -438,13 +463,77 @@ input:focus {
 
 .progress-steps li {
   padding: 10px;
-  min-height: 64px;
+  min-height: 92px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-muted);
   color: var(--muted);
   font-size: 13px;
   line-height: 1.35;
+}
+
+.progress-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.progress-card-desc {
+  margin-top: 6px;
+}
+
+.progress-count {
+  min-width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.progress-detail {
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.progress-detail summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.progress-detail-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.progress-detail-list li {
+  min-height: 0;
+  padding: 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.progress-detail-list span,
+.progress-detail-list small {
+  display: block;
+}
+
+.progress-detail-list span {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.progress-detail-list small {
+  margin-top: 2px;
+  color: var(--muted);
 }
 
 .progress-steps li.active {
@@ -466,6 +555,73 @@ input:focus {
 
 .result-header {
   padding: 18px 18px 0;
+}
+
+.error-panel {
+  padding: 18px;
+  border: 1px solid #f0b8ae;
+  border-radius: 8px;
+  background: #fff4f2;
+  color: #7a241b;
+}
+
+.error-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.error-head h3 {
+  margin: 4px 0 0;
+  font-size: 19px;
+}
+
+.error-panel p {
+  margin: 12px 0 0;
+  line-height: 1.55;
+}
+
+.result-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 16px 18px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.meta-item {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+}
+
+.meta-item:last-child {
+  border-right: 0;
+}
+
+.meta-item span,
+.meta-item small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.meta-item strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.meta-item small {
+  margin-top: 4px;
+  font-weight: 500;
 }
 
 .badges {
@@ -892,11 +1048,35 @@ td.numeric {
   }
 
   .query-row,
+  .query-head,
   .param-form,
   .param-grid,
   .followup-row,
-  .progress-steps {
+  .progress-steps,
+  .result-meta {
     grid-template-columns: 1fr;
+  }
+
+  .query-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .query-mode {
+    width: 100%;
+  }
+
+  .mode-option {
+    flex: 1;
+  }
+
+  .meta-item {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .meta-item:last-child {
+    border-bottom: 0;
   }
 
   .workspace {

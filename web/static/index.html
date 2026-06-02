@@ -55,27 +55,33 @@
         </header>
 
         <section class="query-panel">
-          <label for="questionInput">질문</label>
+          <div class="query-head">
+            <label for="questionInput">질문</label>
+            <div class="query-mode" role="group" aria-label="질문 처리 방식">
+              <button id="newQueryModeBtn" class="mode-option active" data-query-mode="new" type="button">새 조회</button>
+              <button id="followupModeBtn" class="mode-option" data-query-mode="followup" type="button" disabled>이어서 분석</button>
+            </div>
+          </div>
           <div class="query-row">
             <textarea
               id="questionInput"
               rows="3"
-              placeholder="질문을 입력하세요. 이어지는 질문은 같은 세션 안에서 계속 처리됩니다."
+              placeholder="새로 조회할 질문을 입력하세요."
             ></textarea>
-            <button id="submitBtn" class="primary">전송</button>
+            <button id="submitBtn" class="primary">조회</button>
           </div>
         </section>
 
-        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="paramTitle">
+        <section id="paramPanel" class="param-panel hidden" aria-live="polite" aria-labelledby="paramTitle">
           <div class="param-card">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">추가 입력</div>
                 <h3 id="paramTitle">필수 값 입력</h3>
               </div>
-              <button id="cancelParamsBtn" class="ghost" type="button">닫기</button>
+              <button id="cancelParamsBtn" class="ghost" type="button">채팅창으로 입력</button>
             </div>
-            <p class="param-help">필요한 값을 채우면 같은 질문을 이어서 실행합니다. 창을 닫고 아래 채팅창에 자연어로 입력해도 됩니다.</p>
+            <p class="param-help">부족한 값만 채우면 같은 질문을 이어서 실행합니다. 아래 질문창에 자연어로 답해도 됩니다.</p>
             <form id="paramForm" class="param-form"></form>
           </div>
         </section>
@@ -92,6 +98,16 @@
           <ol id="progressSteps" class="progress-steps"></ol>
         </section>
 
+        <section id="errorPanel" class="error-panel hidden" role="alert" aria-live="assertive">
+          <div class="error-head">
+            <div>
+              <div class="eyebrow">오류</div>
+              <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
+            </div>
+          </div>
+          <p id="errorMessage"></p>
+        </section>
+
         <section id="resultPanel" class="result-panel hidden">
           <div class="result-header">
             <div>
@@ -100,6 +116,7 @@
             </div>
             <div id="resultBadges" class="badges"></div>
           </div>
+          <div id="resultMeta" class="result-meta hidden"></div>
 
           <div class="tabs" role="tablist">
             <button class="tab active" data-tab="answer">답변</button>
@@ -165,6 +182,8 @@ const state = {
   canFollowup: false,
   pendingQuestion: "",
   conversation: [],
+  queryMode: "new",
+  isBusy: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -173,6 +192,7 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const queryPanel = $(".query-panel");
 const questionInput = $("#questionInput");
 const submitBtn = $("#submitBtn");
+const modeButtons = $$("[data-query-mode]");
 const clearBtn = $("#clearBtn");
 const newSessionBtn = $("#newSessionBtn");
 const sessionList = $("#sessionList");
@@ -196,6 +216,10 @@ const progressTitle = $("#progressTitle");
 const progressSteps = $("#progressSteps");
 const progressFill = $("#progressFill");
 const elapsedTime = $("#elapsedTime");
+const errorPanel = $("#errorPanel");
+const errorTitle = $("#errorTitle");
+const errorMessage = $("#errorMessage");
+const resultMeta = $("#resultMeta");
 const compactSummary = $("#compactSummary");
 const followupBox = $("#followupBox");
 const suggestionList = $("#suggestionList");
@@ -203,17 +227,40 @@ const followupInput = $("#followupInput");
 const followupBtn = $("#followupBtn");
 
 const progressLabels = [
-  ["질문 분석", "업무 범위와 조회 의도를 분류합니다."],
-  ["도구 선택", "Tool, 검증 쿼리, 자동 SQL 경로를 판단합니다."],
-  ["SQL 실행", "DB 조회와 결과 검증을 수행합니다."],
-  ["결과 정리", "표와 핵심 요약 형태로 답변을 압축합니다."],
+  ["요청 이해", "질문 의도와 업무 범위를 확인합니다."],
+  ["조회 준비", "사용할 경로, 데이터, 조건을 정리합니다."],
+  ["데이터 조회", "SQL 생성/검증과 DB 조회를 수행합니다."],
+  ["결과 정리", "표, 요약, 다음 분석 질문을 준비합니다."],
 ];
 const followupProgressLabels = [
-  ["이전 결과 확인", "직전 SQL 결과와 답변을 불러옵니다."],
-  ["후속 의도 분석", "분석형 질문인지 새 SQL이 필요한 요청인지 판단합니다."],
-  ["실행 또는 재해석", "필요하면 새 SQL을 실행하고, 아니면 결과를 재해석합니다."],
-  ["추천 질문 생성", "다음으로 이어질 질문을 정리합니다."],
+  ["맥락 확인", "직전 결과와 대화 이력을 확인합니다."],
+  ["요청 해석", "기존 결과 분석인지 추가 조회인지 판단합니다."],
+  ["분석 실행", "필요한 조회 또는 결과 재해석을 수행합니다."],
+  ["결과 정리", "답변과 다음 분석 질문을 준비합니다."],
 ];
+const progressGroupIndex = {
+  start: 0,
+  classify_question: 0,
+  route_domain: 0,
+  followup_route: 0,
+  select_tool: 1,
+  check_tool_params: 1,
+  match_verified_query: 1,
+  extract_and_apply_params: 1,
+  analyze_question: 1,
+  check_sql_gen_params: 1,
+  execute_tool: 2,
+  run_tool_query: 2,
+  run_matched_query: 2,
+  generate_sql: 2,
+  validate_sql: 2,
+  run_query: 2,
+  generate_answer: 3,
+  direct_answer: 3,
+  reject_answer: 3,
+  handle_error: 3,
+  complete: 3,
+};
 let activeProgressLabels = progressLabels;
 let progressTimer = null;
 let progressStartedAt = 0;
@@ -229,9 +276,40 @@ function eventErrorMessage(data, fallback) {
   return data?.detail || data?.data?.error || data?.message || fallback;
 }
 
+function canUseFollowupMode() {
+  return Boolean(state.lastResultId && state.canFollowup && !state.continuation);
+}
+
+function setQueryMode(mode) {
+  state.queryMode = mode === "followup" && canUseFollowupMode() ? "followup" : "new";
+  syncQueryModeUi();
+}
+
+function syncQueryModeUi() {
+  const followupAvailable = canUseFollowupMode();
+  if (!followupAvailable && state.queryMode === "followup") {
+    state.queryMode = "new";
+  }
+  modeButtons.forEach((button) => {
+    const mode = button.dataset.queryMode;
+    button.classList.toggle("active", mode === state.queryMode);
+    button.disabled = state.isBusy || (mode === "followup" && !followupAvailable);
+  });
+  if (state.continuation) {
+    submitBtn.textContent = state.isBusy ? "처리 중" : "계속";
+    return;
+  }
+  submitBtn.textContent = state.isBusy ? "처리 중" : state.queryMode === "followup" ? "분석" : "조회";
+  questionInput.placeholder =
+    state.queryMode === "followup" && followupAvailable
+      ? "이전 결과를 바탕으로 이어서 물어보세요."
+      : "새로 조회할 질문을 입력하세요.";
+}
+
 function setBusy(isBusy) {
+  state.isBusy = isBusy;
   submitBtn.disabled = isBusy;
-  submitBtn.textContent = isBusy ? "처리 중" : state.continuation ? "계속" : "전송";
+  syncQueryModeUi();
 }
 
 function setFollowupBusy(isBusy) {
@@ -249,42 +327,69 @@ function setProgressStep(index) {
   progressFill.style.width = `${Math.min(95, 12 + safeIndex * 26)}%`;
 }
 
+function progressIndexFor(step) {
+  const index = progressGroupIndex[step] ?? 1;
+  return Math.max(0, Math.min(index, activeProgressLabels.length - 1));
+}
+
+function appendProgressDetail(item, progress, step) {
+  const details = item.querySelector(".progress-detail");
+  const list = item.querySelector(".progress-detail-list");
+  if (!details || !list) return;
+  let detailItem = list.querySelector(`[data-step="${CSS.escape(step)}"]`);
+  if (!detailItem) {
+    detailItem = document.createElement("li");
+    detailItem.dataset.step = step;
+    list.appendChild(detailItem);
+  }
+  detailItem.innerHTML = `
+    <span>${escapeHtml(progress.title || step)}</span>
+    <small>${escapeHtml(progress.message || "")}</small>
+  `;
+  details.classList.remove("hidden");
+  const count = list.querySelectorAll("li").length;
+  item.querySelector(".progress-count").textContent = `${count}`;
+}
+
 function renderProgressEvent(progress) {
   const step = progress.step || progress.title || "progress";
-  let item = progressSteps.querySelector(`[data-step="${CSS.escape(step)}"]`);
-  if (!item) {
-    item = document.createElement("li");
-    item.dataset.step = step;
-    progressSteps.appendChild(item);
-  }
-  progressSteps.querySelectorAll("li").forEach((node) => {
-    node.classList.add("done");
-    node.classList.remove("active");
-  });
-  item.classList.add("active");
-  item.classList.remove("done");
-  item.innerHTML = `<strong>${escapeHtml(progress.title || step)}</strong><br />${escapeHtml(progress.message || "")}`;
+  const groupIndex = progressIndexFor(step);
+  const item = progressSteps.querySelector(`[data-progress-index="${groupIndex}"]`);
+  if (item) appendProgressDetail(item, progress, step);
+  setProgressStep(groupIndex);
   progressTitle.textContent = progress.message || progress.title || "처리 중입니다.";
-  const total = Math.max(progressSteps.querySelectorAll("li").length, 4);
-  const current = Array.from(progressSteps.querySelectorAll("li")).indexOf(item) + 1;
-  progressFill.style.width = `${Math.min(96, Math.max(12, Math.round((current / total) * 96)))}%`;
 }
 
 function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
-  const seedLabels = Array.isArray(labels) ? labels : [];
-  activeProgressLabels = seedLabels.length ? seedLabels : fallbackLabels;
+  const seedLabels = Array.isArray(labels) && labels.length ? labels : fallbackLabels;
+  activeProgressLabels = seedLabels;
   progressStartedAt = Date.now();
   elapsedTime.textContent = "0초";
   progressFill.style.width = "12%";
   progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
   progressSteps.innerHTML = seedLabels
-    .map(([title, desc]) => `<li data-step="${escapeHtml(title)}"><strong>${escapeHtml(title)}</strong><br />${escapeHtml(desc)}</li>`)
+    .map(
+      ([title, desc], index) => `
+        <li data-progress-index="${index}">
+          <div class="progress-card-title">
+            <strong>${escapeHtml(title)}</strong>
+            <span class="progress-count">0</span>
+          </div>
+          <div class="progress-card-desc">${escapeHtml(desc)}</div>
+          <details class="progress-detail hidden">
+            <summary>처리 상세</summary>
+            <ul class="progress-detail-list"></ul>
+          </details>
+        </li>
+      `,
+    )
     .join("");
   progressPanel.classList.remove("hidden");
+  clearInlineError();
   emptyState.classList.add("hidden");
   if (hideCurrentResult) resultPanel.classList.add("hidden");
   paramPanel.classList.add("hidden");
-  if (seedLabels.length) setProgressStep(0);
+  setProgressStep(0);
   window.clearInterval(progressTimer);
   progressTimer = window.setInterval(() => {
     const seconds = Math.floor((Date.now() - progressStartedAt) / 1000);
@@ -307,6 +412,38 @@ function stopProgress() {
   window.clearInterval(progressTimer);
   progressTimer = null;
   progressPanel.classList.add("hidden");
+}
+
+function clearInlineError() {
+  errorPanel.classList.add("hidden");
+  errorTitle.textContent = "요청을 처리하지 못했습니다.";
+  errorMessage.textContent = "";
+}
+
+function showInlineError(message, title = "요청을 처리하지 못했습니다.", appendMessage = true) {
+  const safeMessage = String(message || "알 수 없는 오류가 발생했습니다.");
+  errorTitle.textContent = title;
+  errorMessage.textContent = safeMessage;
+  errorPanel.classList.remove("hidden");
+  emptyState.classList.add("hidden");
+  resultPanel.classList.remove("hidden");
+  sourceLabel.textContent = "오류";
+  resultBadges.innerHTML = "";
+  renderResultMeta(null);
+  renderCompactSummary([], []);
+  renderTable([], []);
+  sqlBox.textContent = "실행 SQL이 없습니다.";
+  setExportEnabled(false);
+  if (appendMessage) {
+    const pending = state.pendingQuestion || "";
+    const last = state.conversation[state.conversation.length - 1];
+    if (pending && !(last?.role === "user" && last.text === pending)) {
+      state.conversation.push({ role: "user", text: pending });
+    }
+    state.conversation.push({ role: "assistant", text: `### ${title}\n${safeMessage}`, status: "error" });
+    renderConversation();
+    renderHistory({ question: pending, original_answer: safeMessage, analysis_history: [] });
+  }
 }
 
 function escapeHtml(value) {
@@ -419,7 +556,9 @@ async function createSession() {
   state.continuation = null;
   state.pendingQuestion = "";
   state.conversation = [];
+  state.queryMode = "new";
   renderConversation();
+  syncQueryModeUi();
   await loadSessions();
   return data.session;
 }
@@ -459,6 +598,7 @@ async function loadSession(sessionId) {
   state.canFollowup = Boolean(state.lastResultId);
   state.continuation = null;
   state.pendingQuestion = "";
+  state.queryMode = "new";
   state.conversation = (data.messages || []).map((message) => ({
     role: message.role,
     text: message.text,
@@ -472,15 +612,16 @@ async function loadSession(sessionId) {
     state.pendingQuestion = pendingMessage.continuation?.question || "";
     const labels = (pendingMessage.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
     queryPanel.classList.add("awaiting-param");
-    submitBtn.textContent = "계속";
     questionInput.placeholder = labels
       ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
       : "필요한 추가 정보를 채팅하듯 입력하세요";
+    syncQueryModeUi();
     openParamDialog(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
     renderConversation();
     renderHistory({ question: "", original_answer: "", analysis_history: [] });
     renderCompactSummary([], []);
     renderTable([], []);
+    renderResultMeta(null);
     sqlBox.textContent = "";
     sourceLabel.textContent = "";
     resultBadges.innerHTML = "";
@@ -495,14 +636,14 @@ async function loadSession(sessionId) {
     return;
   } else {
     queryPanel.classList.remove("awaiting-param");
-    submitBtn.textContent = "전송";
-    questionInput.placeholder = "질문을 입력하세요";
     closeParamDialog();
   }
+  syncQueryModeUi();
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
   renderCompactSummary([], []);
   renderTable([], []);
+  renderResultMeta(null);
   sqlBox.textContent = "";
   sourceLabel.textContent = "";
   resultBadges.innerHTML = "";
@@ -513,6 +654,7 @@ async function loadSession(sessionId) {
 
 function renderMissingParams(data) {
   state.continuation = data.continuation;
+  state.queryMode = "new";
   state.pendingQuestion = data.continuation?.question || state.pendingQuestion;
   if (data.session_id) state.sessionId = data.session_id;
   if (data.messages?.length) {
@@ -539,10 +681,10 @@ function renderMissingParams(data) {
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
   const labels = (data.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
   queryPanel.classList.add("awaiting-param");
-  submitBtn.textContent = "계속";
   questionInput.placeholder = labels
     ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
     : "필요한 추가 정보를 채팅하듯 입력하세요";
+  syncQueryModeUi();
   openParamDialog(data.missing_params || data.continuation?.missing_params || []);
   loadSessions();
 }
@@ -556,6 +698,7 @@ function paramPlaceholder(param) {
 }
 
 function openParamDialog(params = []) {
+  $("#paramTitle").textContent = params.length ? `필수 값 ${params.length}개 입력` : "추가 정보 입력";
   const fields = params
     .map((param, index) => {
       const name = param.name || param.label || `param_${index + 1}`;
@@ -604,10 +747,57 @@ function setExportEnabled(enabled) {
 
 function renderBadges(data) {
   const badges = [];
-  if (data.selected_tool) badges.push(`Tool: ${data.selected_tool}`);
-  if (data.matched_query_name) badges.push(`VQ: ${data.matched_query_name}`);
-  if (data.selected_tables?.length) badges.push(`Table: ${data.selected_tables.join(", ")}`);
+  if (data.selected_tool) badges.push(`전용 도구: ${data.selected_tool}`);
+  if (data.matched_query_name) badges.push(`검증 쿼리: ${data.matched_query_name}`);
+  if (data.selected_tables?.length) badges.push(`사용 데이터 ${data.selected_tables.length}개`);
   resultBadges.innerHTML = badges.map((b) => `<span class="badge">${escapeHtml(b)}</span>`).join("");
+}
+
+function formatConditions(conditions = {}) {
+  const entries = Object.entries(conditions).filter(([, value]) => value !== "" && value !== null && value !== undefined);
+  if (!entries.length) return "질문에서 추출된 조건 없음";
+  return entries
+    .map(([key, value]) => {
+      const formatted = typeof value === "object" ? JSON.stringify(value) : String(value);
+      return `${key}=${formatted}`;
+    })
+    .join(", ");
+}
+
+function renderResultMeta(data) {
+  if (!data) {
+    resultMeta.classList.add("hidden");
+    resultMeta.innerHTML = "";
+    return;
+  }
+  const meta = data.result_meta || {};
+  const displayedRows = meta.displayed_rows ?? data.rows?.length ?? 0;
+  const rowLimit = meta.display_row_limit || 100;
+  const rowText = `${displayedRows.toLocaleString("ko-KR")}건 표시 · 최대 ${rowLimit.toLocaleString("ko-KR")}건`;
+  const limitedText = meta.rows_may_be_limited ? "더 많은 결과가 있을 수 있습니다." : "표시 범위 안의 결과입니다.";
+  const dataSources = meta.data_sources?.length ? meta.data_sources.join(", ") : data.selected_tables?.join(", ") || "선택 데이터 없음";
+  const path = meta.execution_path || data.source || "처리 경로 없음";
+  const conditions = formatConditions(meta.conditions || {});
+  resultMeta.innerHTML = `
+    <div class="meta-item">
+      <span>사용 경로</span>
+      <strong>${escapeHtml(path)}</strong>
+    </div>
+    <div class="meta-item">
+      <span>표시 행</span>
+      <strong>${escapeHtml(rowText)}</strong>
+      <small>${escapeHtml(limitedText)}</small>
+    </div>
+    <div class="meta-item">
+      <span>사용 데이터</span>
+      <strong>${escapeHtml(dataSources)}</strong>
+    </div>
+    <div class="meta-item">
+      <span>적용 조건</span>
+      <strong>${escapeHtml(conditions)}</strong>
+    </div>
+  `;
+  resultMeta.classList.remove("hidden");
 }
 
 function renderTable(columns, rows) {
@@ -862,14 +1052,19 @@ function renderResult(data, context = {}) {
   state.canFollowup = Boolean(data.columns?.length && data.rows?.length);
   if (data.session_id) state.sessionId = data.session_id;
   state.continuation = null;
-  questionInput.placeholder = "질문을 입력하세요";
+  state.queryMode = "new";
   queryPanel.classList.remove("awaiting-param");
-  submitBtn.textContent = "전송";
+  syncQueryModeUi();
   finishProgress();
   closeParamDialog();
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
   setExportEnabled(true);
+  if (data.error) {
+    showInlineError(data.error, "조회 중 확인 필요", false);
+  } else {
+    clearInlineError();
+  }
 
   sourceLabel.textContent = data.source || data.question_type || "";
   renderBadges(data);
@@ -886,6 +1081,7 @@ function renderResult(data, context = {}) {
   renderConversation();
   sqlBox.textContent = data.sql || "실행 SQL이 없습니다.";
   renderHistory(data);
+  renderResultMeta(data);
   renderCompactSummary(data.columns, data.rows);
   renderTable(data.columns, data.rows);
   renderSuggestions(data.suggestions);
@@ -914,6 +1110,7 @@ async function submitFollowup(question) {
     return;
   }
 
+  state.pendingQuestion = followupQuestion;
   setFollowupBusy(true);
   startProgress([], false, followupProgressLabels);
   try {
@@ -936,6 +1133,7 @@ async function submitFollowup(question) {
     );
   } catch (error) {
     stopProgress();
+    showInlineError(error.message, "후속 질문 처리 오류");
     showToast(error.message);
   } finally {
     setFollowupBusy(false);
@@ -961,6 +1159,7 @@ async function submitQuestion(payload) {
     });
   } catch (error) {
     stopProgress();
+    showInlineError(error.message, "질문 처리 오류");
     showToast(error.message);
   } finally {
     setBusy(false);
@@ -984,7 +1183,7 @@ submitBtn.addEventListener("click", () => {
       params: { _natural_input: naturalInput },
       continuation: state.continuation,
     });
-  } else if (state.lastResultId && state.canFollowup) {
+  } else if (state.queryMode === "followup" && state.lastResultId && state.canFollowup) {
     state.pendingQuestion = question;
     submitFollowup(question);
   } else {
@@ -1056,20 +1255,26 @@ newSessionBtn.addEventListener("click", async () => {
     resultTable.innerHTML = "";
     compactSummary.innerHTML = "";
     compactSummary.classList.add("hidden");
+    renderResultMeta(null);
     followupInput.value = "";
     suggestionList.innerHTML = "";
     followupBox.classList.add("hidden");
     stopProgress();
+    clearInlineError();
     paramPanel.classList.add("hidden");
-    questionInput.placeholder = "질문을 입력하세요";
     queryPanel.classList.remove("awaiting-param");
-    submitBtn.textContent = "전송";
+    state.queryMode = "new";
+    syncQueryModeUi();
     resultPanel.classList.add("hidden");
     emptyState.classList.remove("hidden");
     setExportEnabled(false);
   } catch (error) {
     showToast(error.message);
   }
+});
+
+modeButtons.forEach((button) => {
+  button.addEventListener("click", () => setQueryMode(button.dataset.queryMode));
 });
 
 clearBtn.addEventListener("click", () => {
