@@ -72,16 +72,16 @@
           </div>
         </section>
 
-        <section id="paramPanel" class="param-panel hidden" aria-live="polite" aria-labelledby="paramTitle">
+        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-live="polite" aria-labelledby="paramTitle">
           <div class="param-card">
             <div class="panel-head">
               <div>
                 <div class="eyebrow">추가 입력</div>
                 <h3 id="paramTitle">필수 값 입력</h3>
               </div>
-              <button id="cancelParamsBtn" class="ghost" type="button">채팅창으로 입력</button>
+              <button id="cancelParamsBtn" class="ghost" type="button">닫기</button>
             </div>
-            <p class="param-help">부족한 값만 채우면 같은 질문을 이어서 실행합니다. 아래 질문창에 자연어로 답해도 됩니다.</p>
+            <p class="param-help">부족한 값만 알려주면 같은 질문을 이어서 실행합니다.</p>
             <form id="paramForm" class="param-form"></form>
           </div>
         </section>
@@ -189,6 +189,28 @@ const state = {
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
+function currentDateParts() {
+  const now = new Date();
+  return {
+    year: now.getFullYear(),
+    month: String(now.getMonth() + 1).padStart(2, "0"),
+  };
+}
+
+function currentYm() {
+  const { year, month } = currentDateParts();
+  return `${year}${month}`;
+}
+
+function currentYear() {
+  return String(currentDateParts().year);
+}
+
+function currentYmKorean() {
+  const { year, month } = currentDateParts();
+  return `${year}년 ${Number(month)}월`;
+}
+
 const queryPanel = $(".query-panel");
 const questionInput = $("#questionInput");
 const submitBtn = $("#submitBtn");
@@ -261,9 +283,29 @@ const progressGroupIndex = {
   handle_error: 3,
   complete: 3,
 };
+const progressPhaseGroupIndex = {
+  question_analysis: 0,
+  domain_routing: 0,
+  followup_route: 0,
+  tool_selection: 1,
+  parameter_check: 1,
+  verified_query_matching: 1,
+  parameter_extraction: 1,
+  table_selection: 1,
+  tool_execution: 2,
+  sql_generation: 2,
+  sql_validation: 2,
+  sql_execution: 2,
+  answer_generation: 3,
+  rejected: 3,
+  error: 3,
+  processing: 1,
+};
 let activeProgressLabels = progressLabels;
 let progressTimer = null;
 let progressStartedAt = 0;
+let progressCurrentIndex = 0;
+let progressHideTimer = null;
 
 function showToast(message) {
   toast.textContent = message;
@@ -318,17 +360,28 @@ function setFollowupBusy(isBusy) {
 }
 
 function setProgressStep(index) {
+  progressCurrentIndex = Math.max(progressCurrentIndex, index);
   progressSteps.querySelectorAll("li").forEach((item, idx) => {
-    item.classList.toggle("done", idx < index);
-    item.classList.toggle("active", idx === index);
+    item.classList.toggle("done", idx < progressCurrentIndex);
+    item.classList.toggle("active", idx === progressCurrentIndex);
   });
-  const safeIndex = Math.min(index, activeProgressLabels.length - 1);
+  const safeIndex = Math.min(progressCurrentIndex, activeProgressLabels.length - 1);
   progressTitle.textContent = activeProgressLabels[safeIndex][1];
   progressFill.style.width = `${Math.min(95, 12 + safeIndex * 26)}%`;
 }
 
-function progressIndexFor(step) {
-  const index = progressGroupIndex[step] ?? 1;
+function normalizeProgressEvent(progress) {
+  const data = progress?.data || {};
+  return {
+    step: progress?.step || progress?.text2sql_step || data.text2sql_step || data.step || "",
+    phase: progress?.phase || data.phase || "",
+    title: progress?.title || data.title || "",
+    message: progress?.message || data.message || "",
+  };
+}
+
+function progressIndexFor(step, phase = "") {
+  const index = progressGroupIndex[step] ?? progressPhaseGroupIndex[phase] ?? 1;
   return Math.max(0, Math.min(index, activeProgressLabels.length - 1));
 }
 
@@ -352,18 +405,22 @@ function appendProgressDetail(item, progress, step) {
 }
 
 function renderProgressEvent(progress) {
-  const step = progress.step || progress.title || "progress";
-  const groupIndex = progressIndexFor(step);
+  const normalized = normalizeProgressEvent(progress);
+  const step = normalized.step || normalized.phase || normalized.title || "progress";
+  const groupIndex = progressIndexFor(normalized.step, normalized.phase);
   const item = progressSteps.querySelector(`[data-progress-index="${groupIndex}"]`);
-  if (item) appendProgressDetail(item, progress, step);
+  if (item) appendProgressDetail(item, normalized, step);
   setProgressStep(groupIndex);
-  progressTitle.textContent = progress.message || progress.title || "처리 중입니다.";
+  progressTitle.textContent = normalized.message || normalized.title || "처리 중입니다.";
 }
 
 function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
   const seedLabels = Array.isArray(labels) && labels.length ? labels : fallbackLabels;
   activeProgressLabels = seedLabels;
   progressStartedAt = Date.now();
+  progressCurrentIndex = 0;
+  window.clearTimeout(progressHideTimer);
+  progressHideTimer = null;
   elapsedTime.textContent = "0초";
   progressFill.style.width = "12%";
   progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
@@ -401,16 +458,26 @@ function finishProgress() {
   window.clearInterval(progressTimer);
   progressTimer = null;
   progressFill.style.width = "100%";
+  progressCurrentIndex = activeProgressLabels.length - 1;
   progressSteps.querySelectorAll("li").forEach((item) => {
     item.classList.add("done");
     item.classList.remove("active");
   });
-  window.setTimeout(() => progressPanel.classList.add("hidden"), 300);
+  progressTitle.textContent = "결과를 화면에 표시합니다.";
+  const elapsed = Date.now() - progressStartedAt;
+  const delay = Math.max(300, 1200 - elapsed);
+  window.clearTimeout(progressHideTimer);
+  progressHideTimer = window.setTimeout(() => {
+    progressPanel.classList.add("hidden");
+    progressHideTimer = null;
+  }, delay);
 }
 
 function stopProgress() {
   window.clearInterval(progressTimer);
   progressTimer = null;
+  window.clearTimeout(progressHideTimer);
+  progressHideTimer = null;
   progressPanel.classList.add("hidden");
 }
 
@@ -610,35 +677,26 @@ async function loadSession(sessionId) {
   if (pendingMessage) {
     state.continuation = pendingMessage.continuation;
     state.pendingQuestion = pendingMessage.continuation?.question || "";
-    const labels = (pendingMessage.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
-    queryPanel.classList.add("awaiting-param");
-    questionInput.placeholder = labels
-      ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
-      : "필요한 추가 정보를 채팅하듯 입력하세요";
-    syncQueryModeUi();
-    openParamDialog(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
-    renderConversation();
-    renderHistory({ question: "", original_answer: "", analysis_history: [] });
-    renderCompactSummary([], []);
-    renderTable([], []);
-    renderResultMeta(null);
-    sqlBox.textContent = "";
-    sourceLabel.textContent = "";
-    resultBadges.innerHTML = "";
-    emptyState.classList.add("hidden");
-    resultPanel.classList.remove("hidden");
-    await loadSessions();
-    return;
-  }
-
-  if (data.last_result) {
-    renderResult(data.last_result);
-    return;
+    applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
   } else {
     queryPanel.classList.remove("awaiting-param");
     closeParamDialog();
   }
+
+  if (data.last_result) {
+    renderResult(data.last_result);
+    if (pendingMessage) {
+      state.continuation = pendingMessage.continuation;
+      state.pendingQuestion = pendingMessage.continuation?.question || "";
+      syncQueryModeUi();
+      applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+    }
+    return;
+  }
   syncQueryModeUi();
+  if (pendingMessage) {
+    applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+  }
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
   renderCompactSummary([], []);
@@ -679,22 +737,40 @@ function renderMissingParams(data) {
   resultPanel.classList.remove("hidden");
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
-  const labels = (data.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
-  queryPanel.classList.add("awaiting-param");
-  questionInput.placeholder = labels
-    ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
-    : "필요한 추가 정보를 채팅하듯 입력하세요";
   syncQueryModeUi();
+  applyPendingParamPrompt(data.missing_params || data.continuation?.missing_params || []);
   openParamDialog(data.missing_params || data.continuation?.missing_params || []);
   loadSessions();
 }
 
+function applyPendingParamPrompt(params = []) {
+  const labels = (params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
+  queryPanel.classList.add("awaiting-param");
+  questionInput.placeholder = labels
+    ? `${labels} 값을 채팅하듯 입력하세요. 예: ${currentYmKorean()}로 해줘`
+    : "필요한 추가 정보를 채팅하듯 입력하세요";
+}
+
 function paramPlaceholder(param) {
   const key = String(param.name || param.label || "").toLowerCase();
-  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return "예: 202512";
-  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return "예: 2025";
-  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return "예: 2025-12-31";
+  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return `예: ${currentYm()}`;
+  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return `예: ${currentYear()}`;
+  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return `예: ${currentYear()}-${currentDateParts().month}-01`;
   return "값을 입력하세요";
+}
+
+function paramNaturalPlaceholder(params = []) {
+  const names = params.map((param) => String(param.name || param.label || "").toLowerCase());
+  if (names.some((name) => name.includes("ls")) || names.some((name) => name.includes("is"))) {
+    return `예: 한빛테크놀로지 ${currentYmKorean()}, LS=0.3, IS=0.3`;
+  }
+  if (names.some((name) => name.includes("가맹점") || name.includes("기업"))) {
+    return "예: 한빛테크놀로지로 해줘";
+  }
+  if (names.some((name) => name.includes("년월") || name.includes("기준월") || name.includes("ym"))) {
+    return `예: ${currentYmKorean()}로 해줘`;
+  }
+  return "예: 필요한 값을 문장으로 입력";
 }
 
 function openParamDialog(params = []) {
@@ -703,36 +779,46 @@ function openParamDialog(params = []) {
     .map((param, index) => {
       const name = param.name || param.label || `param_${index + 1}`;
       const label = param.label || param.name || `필수 값 ${index + 1}`;
-      const required = param.required === false ? "" : "required";
+      const detail = [param.description, param.type ? `형식: ${param.type}` : ""].filter(Boolean).join(" · ");
       return `
         <div class="field">
           <label for="param-${index}">${escapeHtml(label)}</label>
+          ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
           <input
             id="param-${index}"
             name="${escapeHtml(name)}"
+            data-param-field
             autocomplete="off"
             placeholder="${escapeHtml(paramPlaceholder(param))}"
-            ${required}
           />
         </div>
       `;
     })
     .join("");
   paramForm.innerHTML = `
+    <div class="field param-natural">
+      <label for="param-natural-input">문장으로 답하기</label>
+      <input
+        id="param-natural-input"
+        name="_natural_input"
+        autocomplete="off"
+        placeholder="${escapeHtml(paramNaturalPlaceholder(params))}"
+      />
+    </div>
     <div class="param-grid">
-      ${fields || `<div class="field"><label for="param-0">추가 정보</label><input id="param-0" name="_natural_input" autocomplete="off" placeholder="예: 2025년 12월로 해줘" required /></div>`}
+      ${fields || ""}
     </div>
     <div class="param-actions">
-      <button class="primary" type="submit">이 값으로 계속</button>
-      <button class="secondary" type="button" data-close-params>채팅창에 입력</button>
+      <button class="primary" type="submit">계속</button>
+      <button class="secondary" type="button" data-use-chat-input>질문창에 적기</button>
     </div>
   `;
-  paramForm.querySelector("[data-close-params]")?.addEventListener("click", () => {
+  paramForm.querySelector("[data-use-chat-input]")?.addEventListener("click", () => {
     closeParamDialog();
     questionInput.focus();
   });
   paramPanel.classList.remove("hidden");
-  window.setTimeout(() => paramForm.querySelector("input")?.focus(), 0);
+  window.setTimeout(() => paramForm.querySelector("#param-natural-input")?.focus(), 0);
 }
 
 function closeParamDialog() {
@@ -1122,10 +1208,11 @@ async function submitFollowup(question) {
         session_id: state.sessionId,
       },
       (eventName, data) => {
-        if (eventName === "progress") {
+        if (eventName === "progress" || eventName === "text2sql_progress") {
           renderProgressEvent(data);
-        } else if (eventName === "result") {
-          renderResult(data, { mode: "followup", question: followupQuestion });
+        } else if (eventName === "result" || eventName === "done") {
+          const resultData = eventName === "done" ? data.data || data : data;
+          renderResult(resultData, { mode: "followup", question: followupQuestion });
         } else if (eventName === "error") {
           throw new Error(eventErrorMessage(data, "후속 질문 처리 중 오류가 발생했습니다."));
         }
@@ -1145,14 +1232,17 @@ async function submitQuestion(payload) {
   startProgress();
   try {
     await streamApi("api/query/stream", { session_id: state.sessionId, ...payload }, (eventName, data) => {
-      if (eventName === "progress") {
+      if (eventName === "progress" || eventName === "text2sql_progress") {
         renderProgressEvent(data);
-      } else if (eventName === "result") {
-        if (data.status === "requires_params") {
-          renderMissingParams(data);
+      } else if (eventName === "result" || eventName === "done") {
+        const resultData = eventName === "done" ? data.data || data : data;
+        if (resultData.status === "requires_params") {
+          renderMissingParams(resultData);
         } else {
-          renderResult(data, { mode: "query" });
+          renderResult(resultData, { mode: "query" });
         }
+      } else if (eventName === "parameter_required") {
+        renderMissingParams(data.data || data);
       } else if (eventName === "error") {
         throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
       }
@@ -1209,6 +1299,11 @@ paramForm.addEventListener("submit", (event) => {
   new FormData(paramForm).forEach((value, key) => {
     if (String(value).trim()) params[key] = String(value).trim();
   });
+  if (!Object.keys(params).length) {
+    showToast("필요한 값을 입력하거나 질문창에 이어서 적어주세요.");
+    paramForm.querySelector("input")?.focus();
+    return;
+  }
   submitQuestion({
     question: state.pendingQuestion || questionInput.value.trim(),
     session_id: state.sessionId,

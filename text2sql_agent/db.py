@@ -39,6 +39,183 @@ _MAX_ROWS = 500
 _STATEMENT_TIMEOUT_MS = 30_000
 
 
+def _is_identifier_char(char: str) -> bool:
+    return char == "_" or char.isalnum()
+
+
+def _quote_athena_non_ascii_identifiers(sql: str) -> str:
+    """Quote Korean/non-ASCII identifiers for Athena/Trino.
+
+    PostgreSQL accepts identifiers like 기준년월 without quotes, but Athena/Trino
+    requires delimited identifiers ("기준년월"). This scanner leaves string
+    literals, comments, and already quoted identifiers unchanged.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(sql):
+        char = sql[i]
+
+        if char == "'":
+            start = i
+            i += 1
+            while i < len(sql):
+                if sql[i] == "'":
+                    i += 1
+                    if i < len(sql) and sql[i] == "'":
+                        i += 1
+                        continue
+                    break
+                i += 1
+            out.append(sql[start:i])
+            continue
+
+        if char == '"':
+            start = i
+            i += 1
+            while i < len(sql):
+                if sql[i] == '"':
+                    i += 1
+                    if i < len(sql) and sql[i] == '"':
+                        i += 1
+                        continue
+                    break
+                i += 1
+            out.append(sql[start:i])
+            continue
+
+        if char == "-" and i + 1 < len(sql) and sql[i + 1] == "-":
+            start = i
+            i = sql.find("\n", i)
+            if i == -1:
+                out.append(sql[start:])
+                break
+            out.append(sql[start:i])
+            continue
+
+        if char == "/" and i + 1 < len(sql) and sql[i + 1] == "*":
+            start = i
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                out.append(sql[start:])
+                break
+            i = end + 2
+            out.append(sql[start:i])
+            continue
+
+        if _is_identifier_char(char):
+            start = i
+            i += 1
+            while i < len(sql) and _is_identifier_char(sql[i]):
+                i += 1
+            token = sql[start:i]
+            if any(ord(ch) > 127 for ch in token):
+                out.append(f'"{token}"')
+            else:
+                out.append(token)
+            continue
+
+        out.append(char)
+        i += 1
+
+    return "".join(out)
+
+
+def _normalize_common_sql_typos(sql: str) -> str:
+    """Normalize a few keyboard/IME artifacts that break otherwise valid SQL."""
+    out: list[str] = []
+    i = 0
+    while i < len(sql):
+        char = sql[i]
+
+        if char == "'":
+            start = i
+            i += 1
+            while i < len(sql):
+                if sql[i] == "'":
+                    i += 1
+                    if i < len(sql) and sql[i] == "'":
+                        i += 1
+                        continue
+                    break
+                i += 1
+            out.append(sql[start:i])
+            continue
+
+        if char == '"':
+            start = i
+            i += 1
+            while i < len(sql):
+                if sql[i] == '"':
+                    i += 1
+                    if i < len(sql) and sql[i] == '"':
+                        i += 1
+                        continue
+                    break
+                i += 1
+            out.append(sql[start:i])
+            continue
+
+        if char == "-" and i + 1 < len(sql) and sql[i + 1] == "-":
+            start = i
+            i = sql.find("\n", i)
+            if i == -1:
+                out.append(sql[start:])
+                break
+            out.append(sql[start:i])
+            continue
+
+        if char == "/" and i + 1 < len(sql) and sql[i + 1] == "*":
+            start = i
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                out.append(sql[start:])
+                break
+            i = end + 2
+            out.append(sql[start:i])
+            continue
+
+        # Korean IME can turn an intended one-letter alias reference `i.foo`
+        # into `ㅣ.foo`. This is never a meaningful unquoted SQL alias here.
+        if char == "ㅣ":
+            j = i + 1
+            while j < len(sql) and sql[j].isspace():
+                j += 1
+            if j < len(sql) and sql[j] == ".":
+                out.append("i.")
+                i = j + 1
+                continue
+
+        out.append(char)
+        i += 1
+
+    return "".join(out)
+
+
+def _normalize_athena_ilike(sql: str) -> str:
+    """Translate simple PostgreSQL ILIKE predicates to Athena-compatible SQL."""
+    ident = r'(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:"[^"]+"|[A-Za-z_가-힣][A-Za-z0-9_가-힣]*)'
+    string_literal = r"'(?:''|[^'])*'"
+    pattern = re.compile(
+        rf"(?P<lhs>{ident})\s+(?P<not>NOT\s+)?ILIKE\s+(?P<rhs>{string_literal})",
+        re.IGNORECASE,
+    )
+
+    def repl(match: re.Match) -> str:
+        op = "NOT LIKE" if match.group("not") else "LIKE"
+        return f"LOWER({match.group('lhs')}) {op} LOWER({match.group('rhs')})"
+
+    return pattern.sub(repl, sql)
+
+
+def prepare_sql_for_backend(sql: str) -> str:
+    """Apply backend-specific SQL normalization before validation/execution."""
+    sql = _normalize_common_sql_typos(sql)
+    if DB_BACKEND == "athena":
+        sql = _normalize_athena_ilike(sql)
+        return _quote_athena_non_ascii_identifiers(sql)
+    return sql
+
+
 # ---------------------------------------------------------------------------
 # PostgreSQL backend
 # ---------------------------------------------------------------------------
@@ -155,22 +332,23 @@ def _execute_athena(sql: str) -> tuple[list[str], list[tuple]]:
 def execute_sql(sql: str) -> tuple[list[str], list[tuple], str | None]:
     started = time.monotonic()
     stripped = sqlparse.format(sql, strip_comments=True).strip()
-    first_token = stripped.split(None, 1)[0].upper() if stripped.split() else ""
+    execution_sql = prepare_sql_for_backend(stripped)
+    first_token = execution_sql.split(None, 1)[0].upper() if execution_sql.split() else ""
     if first_token not in {"SELECT", "WITH"}:
         message = f"읽기 전용 SELECT/WITH 쿼리만 실행할 수 있습니다. (감지: {first_token})"
         _log_db_query(started, status="ERROR", result_count=0, error_message=message)
         return [], [], message
-    if _DANGEROUS_SQL_RE.search(stripped):
-        match = _DANGEROUS_SQL_RE.search(stripped)
-        if match and match.start() < len(stripped) * 0.1:
+    if _DANGEROUS_SQL_RE.search(execution_sql):
+        match = _DANGEROUS_SQL_RE.search(execution_sql)
+        if match and match.start() < len(execution_sql) * 0.1:
             message = f"안전하지 않은 SQL 명령({match.group()})은 실행할 수 없습니다."
             _log_db_query(started, status="ERROR", result_count=0, error_message=message)
             return [], [], message
     try:
         if DB_BACKEND == "athena":
-            columns, rows = _execute_athena(sql)
+            columns, rows = _execute_athena(execution_sql)
         else:
-            columns, rows = _execute_postgres(sql)
+            columns, rows = _execute_postgres(execution_sql)
         _log_db_query(started, status="SUCCESS", result_count=len(rows))
         return columns, rows, None
     except Exception as e:

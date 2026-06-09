@@ -1,10 +1,13 @@
 """Shared parameter helpers and deterministic SQL builders."""
 
 import re
-from datetime import datetime
 from calendar import monthrange
+from datetime import datetime
+from functools import lru_cache
 
-from ..config import DB_SCHEMA_PREFIX as _SCHEMA
+import yaml
+
+from ..config import DB_BACKEND, DB_SCHEMA_PREFIX as _SCHEMA, SCHEMA_PATH
 
 # ---------------------------------------------------------------------------
 # 4. 공통 Tool 유틸 및 확정적 SQL 생성
@@ -36,7 +39,7 @@ def _current_date_context() -> str:
     return (
         f"현재 {now.year}년 {now.month}월 기준, "
         f"올해 시작: {now.year}01, 현재월: {now.year}{now.month:02d}, "
-        f"지난달: {prev_year}{prev:02d}"
+        f"최근/이번달: {now.year}{now.month:02d}, 지난달: {prev_year}{prev:02d}"
     )
 
 
@@ -310,10 +313,209 @@ def _period_conds_daily(params: dict, col: str) -> list[str]:
     return conds
 
 
+@lru_cache(maxsize=1)
+def _athena_partition_index() -> dict[str, dict]:
+    """Load optional table-level Athena partition metadata from the semantic schema.
+
+    Expected schema shape:
+      athena_partition:
+        granularity: month | day
+        source_time_dimension: 기준년월
+        keys:
+        - name: year
+          data_type: string
+          format: YYYY
+        - name: month
+          data_type: string
+          format: MM
+        - name: daty
+          data_type: string
+          format: DD
+    """
+    try:
+        with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+            schema = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    index: dict[str, dict] = {}
+    for table in schema.get("tables", []):
+        if not isinstance(table, dict):
+            continue
+        partition = table.get("athena_partition")
+        if not isinstance(partition, dict):
+            continue
+        if partition.get("enabled") is False:
+            continue
+
+        logical_name = str(table.get("name") or "").strip()
+        physical_name = str(table.get("physical_table") or "").strip()
+        physical_short = physical_name.rsplit(".", 1)[-1] if physical_name else ""
+        for name in {logical_name, physical_name, physical_short}:
+            if name:
+                index[name.lower()] = partition
+    return index
+
+
+def _partition_key_def(partition: dict, *, fmt: str, names: tuple[str, ...]) -> dict | None:
+    keys = partition.get("keys") or []
+    normalized_keys = [{"name": key} if isinstance(key, str) else key for key in keys]
+    for key in normalized_keys:
+        if isinstance(key, dict) and str(key.get("format", "")).upper() == fmt:
+            return key
+    for key in normalized_keys:
+        if isinstance(key, dict) and str(key.get("name", "")).lower() in names:
+            return key
+    return None
+
+
+def _partition_key_expr(key: dict, alias: str = "") -> str:
+    name = str(key.get("name") or "").strip()
+    if not name:
+        return ""
+    expr = f'"{name}"' if DB_BACKEND == "athena" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) else name
+    return f"{alias}.{expr}" if alias else expr
+
+
+def _partition_literal(value: str, key: dict) -> str:
+    data_type = str(key.get("data_type", "string")).lower()
+    if data_type in {"int", "integer", "bigint", "smallint", "tinyint"}:
+        return str(int(value))
+    return f"'{value}'"
+
+
+def _normalize_partition_period(value: object) -> str:
+    value = _sanitize_param(str(value or ""))
+    if len(value) in {6, 8} and value.isdigit():
+        return value
+    return ""
+
+
+def _athena_partition_conds(
+    table_name: str,
+    *,
+    start: object = "",
+    end: object = "",
+    alias: str = "",
+) -> list[str]:
+    """Return Athena partition predicates for a table and period.
+
+    The helper is intentionally no-op outside Athena or when the semantic schema
+    does not define ``athena_partition`` for the table. Month-level periods add
+    year/month predicates. Day-level keys add the day predicate only when the
+    input period is day-specific.
+    """
+    try:
+        return _athena_partition_conds_inner(table_name, start=start, end=end, alias=alias)
+    except Exception:
+        return []
+
+
+def _athena_partition_conds_inner(
+    table_name: str,
+    *,
+    start: object = "",
+    end: object = "",
+    alias: str = "",
+) -> list[str]:
+    if DB_BACKEND != "athena":
+        return []
+
+    partition = _athena_partition_index().get(str(table_name).lower())
+    if not partition:
+        return []
+    if partition.get("enabled") is False:
+        return []
+
+    start_value = _normalize_partition_period(start)
+    end_value = _normalize_partition_period(end) or start_value
+    if not start_value and end_value:
+        start_value = end_value
+    if not start_value or not end_value:
+        return []
+    if int(start_value[:6]) > int(end_value[:6]):
+        start_value, end_value = end_value, start_value
+
+    year_key = _partition_key_def(partition, fmt="YYYY", names=("year", "yyyy"))
+    month_key = _partition_key_def(partition, fmt="MM", names=("month", "mm", "mnth"))
+    day_key = _partition_key_def(partition, fmt="DD", names=("day", "dd", "daty"))
+    if not year_key:
+        return []
+
+    year_expr = _partition_key_expr(year_key, alias)
+    month_expr = _partition_key_expr(month_key, alias) if month_key else ""
+    day_expr = _partition_key_expr(day_key, alias) if day_key else ""
+    if not year_expr:
+        return []
+
+    start_year, start_month = int(start_value[:4]), int(start_value[4:6])
+    end_year, end_month = int(end_value[:4]), int(end_value[4:6])
+
+    groups = []
+    for year in range(start_year, end_year + 1):
+        from_month = start_month if year == start_year else 1
+        to_month = end_month if year == end_year else 12
+        group = [f"{year_expr} = {_partition_literal(f'{year:04d}', year_key)}"]
+        if month_expr and not (from_month == 1 and to_month == 12):
+            if from_month == to_month:
+                group.append(f"{month_expr} = {_partition_literal(f'{from_month:02d}', month_key)}")
+            else:
+                group.append(
+                    f"{month_expr} BETWEEN {_partition_literal(f'{from_month:02d}', month_key)} "
+                    f"AND {_partition_literal(f'{to_month:02d}', month_key)}"
+                )
+        groups.append(" AND ".join(group))
+
+    condition = groups[0] if len(groups) == 1 else "(" + " OR ".join(f"({group})" for group in groups) + ")"
+
+    if (
+        day_expr
+        and len(start_value) == 8
+        and len(end_value) == 8
+        and start_value[:6] == end_value[:6]
+    ):
+        start_day, end_day = start_value[6:8], end_value[6:8]
+        if start_day == end_day:
+            condition += f" AND {day_expr} = {_partition_literal(start_day, day_key)}"
+        else:
+            condition += (
+                f" AND {day_expr} BETWEEN {_partition_literal(start_day, day_key)} "
+                f"AND {_partition_literal(end_day, day_key)}"
+            )
+
+    return [f"({condition})"]
+
+
+def _partition_conds_from_params(
+    table_name: str,
+    params: dict,
+    *,
+    alias: str = "",
+    daily: bool = False,
+) -> list[str]:
+    start = params.get("기간_시작")
+    end = params.get("기간_종료")
+    if start:
+        start = _sanitize_param(start)
+        if daily and len(start) == 6:
+            start = start + "01"
+    if end:
+        end = _sanitize_param(end)
+        if daily and len(end) == 6:
+            end = end + "31"
+    return _athena_partition_conds(table_name, start=start, end=end, alias=alias)
+
+
+def _partition_conds_for_month(table_name: str, yyyymm: str, *, alias: str = "") -> list[str]:
+    yyyymm = _sanitize_param(yyyymm)
+    return _athena_partition_conds(table_name, start=yyyymm, end=yyyymm, alias=alias)
+
+
 # -- 기존 Tool SQL 함수들 --
 
 def _tool_sql_심사승인율(params: dict) -> str:
     conds = _period_conds_daily(params, "최종심사년월일")
+    conds.extend(_partition_conds_from_params("tbdaaaf23", params, daily=True))
     if params.get("신용등급"):
         conds.append(f"신용평가등급코드 = '{_sanitize_param(params['신용등급'])}'")
     where = _build_where(conds)
@@ -341,6 +543,7 @@ FROM {_SCHEMA}tbdaaaf23 {where}"""
 def _tool_sql_월별이용금액(params: dict) -> str:
     conds = ["개인기업구분코드 = '2'"]
     conds.extend(_period_conds(params, "기준년월"))
+    conds.extend(_partition_conds_from_params("tmdaa3e16", params))
     where = _build_where(conds)
     return f"""SELECT 기준년월,
     SUM(금월이용합계금액) AS 총이용금액, SUM(금월일시불이용금액) AS 일시불이용금액,
@@ -352,6 +555,7 @@ GROUP BY 기준년월 ORDER BY 기준년월"""
 
 def _tool_sql_가맹점매출순위(params: dict) -> str:
     conds = _period_conds(params, "a.기준년월")
+    conds.extend(_partition_conds_from_params("tmdaa5e11", params, alias="a"))
     if params.get("업종"):
         conds.append(f"b.업종대분류코드명 LIKE '%{_escape_like(params['업종'])}%' ESCAPE '\\'")
     if params.get("가맹점명"):
@@ -371,6 +575,7 @@ ORDER BY 총매출금액 DESC LIMIT {limit}"""
 
 def _tool_sql_한도사용률(params: dict) -> str:
     conds = _period_conds(params, "작업기준년월")
+    conds.extend(_partition_conds_from_params("tbdaaha97", params))
     if params.get("기업명"):
         conds.append(f"상호명 LIKE '%{_escape_like(params['기업명'])}%' ESCAPE '\\'")
     where = _build_where(conds)
@@ -388,6 +593,7 @@ ORDER BY 한도사용률_퍼센트 DESC LIMIT {limit}"""
 def _tool_sql_업종별매출(params: dict) -> str:
     conds = ["a.개인기업구분코드 = '2'", "(a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')"]
     conds.extend(_period_conds_daily(params, "a.전표매출년월일"))
+    conds.extend(_partition_conds_from_params("tbdaabt30", params, alias="a", daily=True))
     if params.get("업종"):
         conds.append(f"b.업종대분류코드명 LIKE '%{_escape_like(params['업종'])}%' ESCAPE '\\'")
     where = _build_where(conds)
@@ -404,6 +610,7 @@ GROUP BY b.업종대분류코드명, b.가맹점업종명 ORDER BY 총매출금�
 def _tool_sql_기업별연체현황(params: dict) -> str:
     conds = ["연체금액 > 0"]
     conds.extend(_period_conds(params, "작업기준년월"))
+    conds.extend(_partition_conds_from_params("tbdaaha97", params))
     if params.get("기업명"):
         conds.append(f"상호명 LIKE '%{_escape_like(params['기업명'])}%' ESCAPE '\\'")
     where = _build_where(conds)
@@ -420,6 +627,7 @@ GROUP BY 상호명, 사업자등록번호 ORDER BY 연체금액 DESC LIMIT {limi
 def _tool_sql_카드등급별연체(params: dict) -> str:
     conds = ["개인기업구분코드 = '2'"]
     conds.extend(_period_conds(params, "기준년월"))
+    conds.extend(_partition_conds_from_params("tmdaa3e16", params))
     where = _build_where(conds)
     return f"""SELECT 카드등급구분코드,
     COUNT(DISTINCT 카드구분키번호) AS 카드수, SUM(금월이용합계금액) AS 총이용금액,
@@ -435,6 +643,8 @@ def _tool_sql_가맹점카드소지현황(params: dict) -> str:
     yyyymm = _sanitize_param(params["기준년월"])
     card_valid_after = _sanitize_param(params.get("카드만료기준일") or _month_end_yyyymmdd(yyyymm))
     limit = int(params.get("limit", 100))
+    perf_partition_conds = _partition_conds_for_month("tmdaa5e11", yyyymm)
+    perf_partition_sql = "".join(f"\n      AND {cond}" for cond in perf_partition_conds)
 
     base_conds = []
     if params.get("가맹점명"):
@@ -499,7 +709,7 @@ gm_perf AS (
         최근3개월가맹점매출건수,
         가맹점상태구분코드
     FROM {_SCHEMA}tmdaa5e11
-    WHERE 기준년월 = '{yyyymm}'
+    WHERE 기준년월 = '{yyyymm}'{perf_partition_sql}
 ),
 card_base AS (
     SELECT DISTINCT

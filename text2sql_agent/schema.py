@@ -61,6 +61,15 @@ def build_table_summary(schema: dict) -> str:
         tds = t.get("time_dimensions", [])
         if tds:
             lines.append(f"  time_dimensions: {', '.join(td['name'] for td in tds)}")
+        partition = t.get("athena_partition")
+        if isinstance(partition, dict) and partition.get("enabled") is not False:
+            keys = partition.get("keys") or []
+            key_names = [key if isinstance(key, str) else key.get("name", "") for key in keys]
+            key_names = [name for name in key_names if name]
+            if key_names:
+                source_time = partition.get("source_time_dimension", "")
+                source_note = f" from {source_time}" if source_time else ""
+                lines.append(f"  athena_partition: {', '.join(key_names)}{source_note}")
         filters = t.get("filters", [])
         if filters:
             f_strs = [fl["name"] + ": " + fl["expr"] for fl in filters]
@@ -567,14 +576,28 @@ _SCHEMA_TABLE_RE = (
 )
 
 
+def _extract_cte_names(sql: str) -> set[str]:
+    """Return names introduced by a WITH clause so they are not treated as tables."""
+    return {
+        (match.group(1) or match.group(2)).lower()
+        for match in re.finditer(
+            r'(?:\bWITH|,)\s+(?:"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*(?:\([^)]*\))?\s+AS\s*\(',
+            sql,
+            re.IGNORECASE,
+        )
+        if match.group(1) or match.group(2)
+    }
+
+
 def _extract_schema_tables(sql: str) -> set[str]:
+    cte_names = _extract_cte_names(sql)
     if _SCHEMA_TABLE_RE is not None:
-        return {match.group(1).lower() for match in _SCHEMA_TABLE_RE.finditer(sql)}
+        return {match.group(1).lower() for match in _SCHEMA_TABLE_RE.finditer(sql) if match.group(1).lower() not in cte_names}
     # prefix가 없을 때는 FROM/JOIN 뒤의 식별자를 테이블 후보로 본다.
     return {
         match.group(2).lower()
         for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", sql, re.IGNORECASE)
-        if match.group(2).lower() != "select"
+        if match.group(2).lower() not in {"select", *cte_names}
     }
 
 
@@ -600,6 +623,8 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
         prefix_lower = DB_SCHEMA_PREFIX.lower()
         for table in selected_tables:
             table_lower = str(table).lower()
+            if table_lower.startswith(prefix_lower):
+                table_lower = table_lower[len(prefix_lower):]
             if len(table_lower) < 4:
                 continue
             if table_lower in stripped.lower() and f"{prefix_lower}{table_lower}" not in stripped.lower():

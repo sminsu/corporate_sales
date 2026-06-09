@@ -1841,6 +1841,19 @@ tables:
     description: 데이터 기준 년월
     expr: 기준년월
     data_type: VARCHAR
+  athena_partition:
+    source_time_dimension: 전표매출년월일
+    source_format: YYYYMMDD
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
+    - name: day
+      format: DD
+      data_type: string
   dimensions:
   - name: 매출전표번호
     description: 매출전표 고유번호
@@ -2415,6 +2428,16 @@ tables:
     data_type: VARCHAR
     synonyms:
     - 기준월
+  athena_partition:
+    source_time_dimension: 기준년월
+    source_format: YYYYMM
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
   dimensions:
   - name: 고객식별자
     description: 기업고객 식별자
@@ -2565,6 +2588,16 @@ tables:
     description: 실적 기준 년월
     expr: 기준년월
     data_type: VARCHAR
+  athena_partition:
+    source_time_dimension: 기준년월
+    source_format: YYYYMM
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
   dimensions:
   - name: 카드구분키번호
     description: 카드 구분 키 번호
@@ -2737,6 +2770,16 @@ tables:
     description: 기준 년월
     expr: 기준년월
     data_type: VARCHAR
+  athena_partition:
+    source_time_dimension: 기준년월
+    source_format: YYYYMM
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
   dimensions:
   - name: 가맹점번호
     description: 가맹점 번호
@@ -2811,6 +2854,16 @@ tables:
     data_type: VARCHAR
     synonyms:
     - 기준월
+  athena_partition:
+    source_time_dimension: 기준년월
+    source_format: YYYYMM
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
   dimensions:
   - name: 가맹점번호
     description: 가맹점 번호

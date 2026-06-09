@@ -15,10 +15,16 @@ from kbcard_agent_common.config import KBCardConfig
 from kbcard_agent_common.llm import ModelRegistry
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = BASE_DIR / "schema_v6_gptoss.yaml"
 
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / ".env.local", override=True)
+
+_SCHEMA_PATH_ENV = os.getenv("SEMANTIC_SCHEMA_PATH", "")
+SCHEMA_PATH = (
+    Path(_SCHEMA_PATH_ENV)
+    if _SCHEMA_PATH_ENV and Path(_SCHEMA_PATH_ENV).is_absolute()
+    else BASE_DIR / (_SCHEMA_PATH_ENV or "schema_v6_gptoss.yaml")
+)
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -147,11 +153,11 @@ ATHENA_ENDPOINT_URL = _env("ATHENA_ENDPOINT_URL", default="")
 # ---------------------------------------------------------------------------
 # SQL schema/namespace qualifier (테이블 prefix)
 # ---------------------------------------------------------------------------
-# 모든 테이블 참조에 붙는 스키마 한정자. PostgreSQL은 schema, Athena는 Glue database로
-# 해석된다. DB_SCHEMA가 명시되면 최우선, 없으면 athena는 ATHENA_DATABASE를, postgres는
-# 기존 기본값 card_system을 쓴다. prefix를 완전히 빼려면 DB_SCHEMA=none(또는 "-")로 둔다
-# (pyathena는 schema_name을 이미 알고 있어 prefix 없이도 동작).
-_DEFAULT_SCHEMA = ATHENA_DATABASE if DB_BACKEND == "athena" else "card_system"
+# 모든 테이블 참조에 붙는 스키마 한정자. PostgreSQL은 schema로 해석된다.
+# Athena는 pyathena connection의 schema_name(ATHENA_DATABASE)을 이미 사용하므로 기본적으로
+# SQL에는 prefix를 붙이지 않는다. Athena에서 database-qualified table을 강제하고 싶을 때만
+# DB_SCHEMA를 명시한다. prefix를 완전히 빼려면 DB_SCHEMA=none(또는 "-")로 둔다.
+_DEFAULT_SCHEMA = "" if DB_BACKEND == "athena" else "card_system"
 DB_SCHEMA = _env("DB_SCHEMA", "DB_TABLE_SCHEMA", default=_DEFAULT_SCHEMA).strip()
 if DB_SCHEMA.lower() in ("none", "-", "null"):
     DB_SCHEMA = ""

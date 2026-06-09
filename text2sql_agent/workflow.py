@@ -10,7 +10,7 @@ import yaml
 from langgraph.graph import END, StateGraph
 
 from .config import DB_BACKEND, DB_SCHEMA, DB_SCHEMA_PREFIX, ENABLE_EMBEDDING_PRECOMPUTE, EMBED_MATCH_THRESHOLD
-from .db import execute_sql
+from .db import execute_sql, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
 from .schema import (
@@ -139,6 +139,8 @@ def classify_question(state: Text2SQLState) -> dict:
         return {"question_type": state["question_type"]}
 
     question = state["question"]
+    if _rule_classify_question(question):
+        return {"question_type": "need_sql"}
     table_summary = build_table_summary(SCHEMA)
     glossary = build_glossary_summary(SCHEMA)
     metrics = build_metrics_summary(SCHEMA)
@@ -152,6 +154,8 @@ def classify_question(state: Text2SQLState) -> dict:
 - 숫자/금액/건수/비율 등 집계 데이터를 요구하는 질문
 - 특정 기간/조건의 데이터를 조회하는 질문
 - 대손비용률, 매출, 연체, 한도 등 분석 질문
+- 가맹점명/기업명/브랜드명 + 기간(저번달/지난달/이번달/최근/2025년 12월 등) + 매출액/이용금액/건수/가맹점수/순위/정렬/가맹점별 질문
+- 예: "도미노피자 저번달 매출액 각 가맹점별로 알려줘, 매출액 높은 순으로 정렬해줘" => need_sql
 
 **direct** - SQL 없이 바로 답변 가능한 질문:
 - 용어/개념 설명, 테이블/컬럼 구조 설명, 비즈니스 규칙/로직 설명
@@ -190,6 +194,15 @@ need_sql 또는 direct 또는 reject"""
     else:
         qtype = "need_sql"
     return {"question_type": qtype}
+
+
+def _rule_classify_question(question: str) -> bool:
+    """Deterministically route obvious data lookup/aggregation questions to SQL."""
+    q = question or ""
+    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|가맹점\s*(수|개수)|가맹점수|승인율|연체|한도|비율|률|순위|정렬", q))
+    has_entity_or_group = bool(re.search(r"가맹점|기업|회사|고객|상호|브랜드|업종|별|도미노피자", q))
+    has_time_or_order = bool(re.search(r"저번\s*달|지난\s*달|전월|이번\s*달|이번\s*월|최근|기준|20\d{2}\s*년|\d{1,2}\s*월|높은\s*순|낮은\s*순|정렬", q))
+    return has_metric and (has_entity_or_group or has_time_or_order)
 
 
 def route_domain(state: Text2SQLState) -> dict:
@@ -265,6 +278,10 @@ def route_domain(state: Text2SQLState) -> dict:
 
 def _extract_ym_from_question(question: str) -> str:
     """질문에서 기준년월을 YYYYMM으로 뽑는다 (예: '2025년 12월' -> '202512')."""
+    if re.search(r"저번\s*달|지난\s*달|전월", question):
+        return _previous_ym()
+    if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", question):
+        return _current_ym()
     match = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월", question)
     if match:
         return f"{match.group(1)}{int(match.group(2)):02d}"
@@ -272,6 +289,106 @@ def _extract_ym_from_question(question: str) -> str:
     if match:
         return match.group(0)
     return ""
+
+
+def _current_ym() -> str:
+    now = datetime.now()
+    return f"{now.year}{now.month:02d}"
+
+
+def _previous_ym() -> str:
+    now = datetime.now()
+    year = now.year if now.month > 1 else now.year - 1
+    month = now.month - 1 if now.month > 1 else 12
+    return f"{year}{month:02d}"
+
+
+def _relative_month_target(question: str) -> tuple[str, str]:
+    if re.search(r"저번\s*달|지난\s*달|전월", question):
+        return _previous_ym(), "저번달/지난달/전월"
+    if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", question):
+        return _current_ym(), "최근/이번달/최근 기준"
+    return "", ""
+
+
+def _validate_recent_month_semantics(question: str, sql: str) -> list[str]:
+    target_ym, label = _relative_month_target(question)
+    if not target_ym:
+        return []
+    normalized_sql = (sql or "").replace('"', "")
+    if target_ym in normalized_sql:
+        return []
+    return [
+        f'"{label}"은 {_current_date_context()} 기준으로 {target_ym} 월 조건을 사용해야 합니다. '
+        f"SQL에 기준년월 = '{target_ym}' 또는 SUBSTRING(기준년월일, 1, 6) = '{target_ym}' 같은 월 조건을 포함하세요. "
+        "전체 데이터의 MAX(기준년월/기준년월일)만 사용하면 안 됩니다."
+    ]
+
+
+def _apply_recent_month_sql_fix(question: str, sql: str) -> str:
+    """Normalize common relative-month SQL into the app's date interpretation.
+
+    This is a generic SQL-generation safety net, not a question-specific Tool.
+    It keeps generated SQL usable when the model writes relative month as all-data MAX().
+    """
+    target_ym, _ = _relative_month_target(question)
+    if not target_ym:
+        return sql
+    if target_ym in (sql or ""):
+        return sql
+
+    fixed = sql or ""
+
+    # `col = (SELECT MAX(SUBSTRING(date_col, 1, 6)) FROM table)` -> `col = 'YYYYMM'`
+    fixed = re.sub(
+        r"=\s*\(\s*SELECT\s+MAX\s*\(\s*(?:SUBSTRING|SUBSTR)\s*\(\s*[^,()]+\s*,\s*1\s*,\s*6\s*\)\s*\)\s+FROM\s+[^)]+?\)",
+        f"= '{target_ym}'",
+        fixed,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # `ym_col = (SELECT MAX(기준년월) FROM table)` -> `ym_col = 'YYYYMM'`
+    fixed = re.sub(
+        r"=\s*\(\s*SELECT\s+MAX\s*\(\s*\"?기준년월\"?\s*\)\s+FROM\s+[^)]+?\)",
+        f"= '{target_ym}'",
+        fixed,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # `date_col = (SELECT MAX(기준년월일) FROM table)` -> latest date inside target month.
+    fixed = re.sub(
+        r"=\s*\(\s*SELECT\s+MAX\s*\(\s*(?P<col>\"?(?:기준년월일|실적기준년월일)\"?)\s*\)\s+FROM\s+(?P<table>[A-Za-z0-9_.\"]+)\s*\)",
+        lambda m: (
+            f"= (SELECT MAX({m.group('col')}) FROM {m.group('table')} "
+            f"WHERE SUBSTRING({m.group('col')}, 1, 6) = '{target_ym}')"
+        ),
+        fixed,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # CTE/subquery: `SELECT MAX(기준년월) AS ... FROM table` -> target-month constrained MAX.
+    fixed = re.sub(
+        r"SELECT\s+MAX\s*\(\s*(?P<col>\"?기준년월\"?)\s*\)\s+AS\s+(?P<alias>\"?[A-Za-z가-힣_][A-Za-z0-9가-힣_]*\"?)\s+FROM\s+(?P<table>[A-Za-z0-9_.\"]+)(?=\s*\))",
+        lambda m: (
+            f"SELECT MAX({m.group('col')}) AS {m.group('alias')} "
+            f"FROM {m.group('table')} WHERE {m.group('col')} = '{target_ym}'"
+        ),
+        fixed,
+        flags=re.IGNORECASE,
+    )
+
+    # CTE/subquery: `SELECT MAX(기준년월일) AS ... FROM table` -> latest day within target month.
+    fixed = re.sub(
+        r"SELECT\s+MAX\s*\(\s*(?P<col>\"?(?:기준년월일|실적기준년월일)\"?)\s*\)\s+AS\s+(?P<alias>\"?[A-Za-z가-힣_][A-Za-z0-9가-힣_]*\"?)\s+FROM\s+(?P<table>[A-Za-z0-9_.\"]+)(?=\s*\))",
+        lambda m: (
+            f"SELECT MAX({m.group('col')}) AS {m.group('alias')} "
+            f"FROM {m.group('table')} WHERE SUBSTRING({m.group('col')}, 1, 6) = '{target_ym}'"
+        ),
+        fixed,
+        flags=re.IGNORECASE,
+    )
+
+    return fixed
 
 
 def _extract_merchant_from_question(question: str) -> str:
@@ -362,10 +479,11 @@ def select_tool(state: Text2SQLState) -> dict:
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작: "202501", 기간_종료: "202512"
    "올해" → 기간_시작: "{datetime.now().year}01", 기간_종료: "{datetime.now().year}{datetime.now().month:02d}"
-3. "상위 N개", "톱 N" → limit: N
-4. "등급별", "신용등급별" → 등급별: true
-5. 언급되지 않은 파라미터는 포함하지 마세요.
-6. [필수] 파라미터라도 질문에 명시되지 않았으면 추출하지 마세요 (나중에 사용자에게 물어봅니다).
+3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
+4. "상위 N개", "톱 N" → limit: N
+5. "등급별", "신용등급별" → 등급별: true
+6. 언급되지 않은 파라미터는 포함하지 마세요.
+7. [필수] 파라미터라도 질문에 명시되지 않았으면 추출하지 마세요 (나중에 사용자에게 물어봅니다).
 
 ## 사용자 질문
 {question}
@@ -411,7 +529,15 @@ def check_tool_params(state: Text2SQLState) -> dict:
     missing = [p for p in required if not params.get(p["name"])]
     if missing:
         return {
-            "missing_params": [{"name": p["name"], "label": f"{p['name']} ({p['description']})"} for p in missing],
+            "missing_params": [
+                {
+                    "name": p["name"],
+                    "label": p["name"],
+                    "description": p.get("description", ""),
+                    "type": p.get("type", "string"),
+                }
+                for p in missing
+            ],
             "param_stage": "need_params",
         }
     return {"missing_params": [], "param_stage": "done"}
@@ -427,7 +553,7 @@ def execute_tool(state: Text2SQLState) -> dict:
         result = tool["fn"](params)
         if isinstance(result, dict) and result.get("is_complete"):
             return {
-                "final_sql": result.get("sql", ""),
+                "final_sql": prepare_sql_for_backend(result.get("sql", "")),
                 "query_columns": result.get("columns", []),
                 "query_rows": result.get("rows", []),
                 "answer": result.get("answer", ""),
@@ -435,7 +561,8 @@ def execute_tool(state: Text2SQLState) -> dict:
                 "tool_completed": True,
             }
         sql = result
-        return {"final_sql": sqlparse.format(sql, reindent=True, keyword_case="upper"), "tool_completed": False}
+        formatted_sql = sqlparse.format(sql, reindent=True, keyword_case="upper")
+        return {"final_sql": prepare_sql_for_backend(formatted_sql), "tool_completed": False}
     except Exception as e:
         return {"final_sql": "", "query_error": str(e), "tool_completed": False}
 
@@ -444,10 +571,11 @@ def run_tool_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", "")
     if not sql:
         return {"query_columns": [], "query_rows": [], "query_error": "SQL이 생성되지 않았습니다.", "selected_tool": "", "final_sql": ""}
-    columns, rows, error = execute_sql(sql)
+    prepared_sql = prepare_sql_for_backend(sql)
+    columns, rows, error = execute_sql(prepared_sql)
     if error:
         return {"query_columns": [], "query_rows": [], "query_error": error, "selected_tool": "", "final_sql": ""}
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": ""}
+    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
 
 
 def _match_vq_by_embedding(question: str) -> dict | None:
@@ -461,6 +589,8 @@ def _match_vq_by_embedding(question: str) -> dict | None:
         best_score = scores[best_idx]
         if best_score >= EMBED_MATCH_THRESHOLD:
             matched = VERIFIED_QUERIES[best_idx]
+            if not _verified_query_matches_intent(question, matched):
+                return None
             return {
                 "matched_query_name": matched["name"],
                 "matched_query_sql": matched["sql"].strip(),
@@ -469,6 +599,24 @@ def _match_vq_by_embedding(question: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def _verified_query_matches_intent(question: str, matched: dict) -> bool:
+    """Reject broad semantic matches when the user's metric intent differs."""
+    question_text = question or ""
+    matched_text = " ".join(
+        str(matched.get(key, ""))
+        for key in ("name", "question", "description", "sql")
+    )
+    matched_text += " " + " ".join(str(tag) for tag in matched.get("tags", []))
+
+    asks_merchant_count = bool(re.search(r"가맹점\s*(수|개수)|가맹점수|가맹점개수|몇\s*개", question_text))
+    if asks_merchant_count:
+        return bool(
+            re.search(r"가맹점\s*(수|개수)|가맹점수|가맹점개수", matched_text)
+            or re.search(r"COUNT\s*\(\s*DISTINCT\s+[^)]*가맹점번호", matched_text, re.IGNORECASE)
+        )
+    return True
 
 
 def _match_vq_by_llm(question: str) -> dict:
@@ -511,6 +659,8 @@ def _match_vq_by_llm(question: str) -> dict:
         return {"matched_query_name": ""}
     idx = valid_indices[0]
     matched = vqs[idx]
+    if not _verified_query_matches_intent(question, matched):
+        return {"matched_query_name": ""}
     return {
         "matched_query_name": matched["name"],
         "matched_query_sql": matched["sql"].strip(),
@@ -552,9 +702,10 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작:"202501", 기간_종료:"202512"
    "올해" → 기간_시작:"{datetime.now().year}01", 기간_종료:"{datetime.now().year}{datetime.now().month:02d}"
-3. "상위 N개" → limit: N
-4. "개인카드 미보유" → 보유구분:"개인카드미보유", "기업카드 미보유/법인카드 미보유" → 보유구분:"기업카드미보유"
-5. JSON만 반환하세요. 없으면 빈 오브젝트 {{}}.
+3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
+4. "상위 N개" → limit: N
+5. "개인카드 미보유" → 보유구분:"개인카드미보유", "기업카드 미보유/법인카드 미보유" → 보유구분:"기업카드미보유"
+6. JSON만 반환하세요. 없으면 빈 오브젝트 {{}}.
 
 ## 사용자 질문
 {question}
@@ -562,15 +713,17 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 JSON:"""
     extracted = _parse_llm_json(_call_llm(extract_prompt))
     final_sql = _apply_params_to_vq(base_sql, extracted, vq_name, vq_params_def)
-    return {"extracted_params": extracted, "final_sql": sqlparse.format(final_sql, reindent=True, keyword_case="upper")}
+    formatted_sql = sqlparse.format(final_sql, reindent=True, keyword_case="upper")
+    return {"extracted_params": extracted, "final_sql": prepare_sql_for_backend(formatted_sql)}
 
 
 def run_matched_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", "")
-    columns, rows, error = execute_sql(sql)
+    prepared_sql = prepare_sql_for_backend(sql)
+    columns, rows, error = execute_sql(prepared_sql)
     if error:
         return {"query_columns": [], "query_rows": [], "query_error": error, "matched_query_name": "", "final_sql": ""}
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": ""}
+    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
 
 
 def direct_answer(state: Text2SQLState) -> dict:
@@ -657,7 +810,21 @@ def analyze_question(state: Text2SQLState) -> dict:
 
 필요한 테이블명 (쉼표 구분):"""
 
-    table_names = [t.strip() for t in _coerce_llm_text(_call_llm(prompt)).split(",")]
+    raw_table_names = [t.strip() for t in _coerce_llm_text(_call_llm(prompt)).split(",")]
+    table_index = {}
+    for table in SCHEMA.get("tables", []):
+        logical = str(table.get("name", "")).strip()
+        physical = str(table.get("physical_table", "")).strip()
+        physical_short = physical.rsplit(".", 1)[-1] if physical else ""
+        for candidate in (logical, physical, physical_short):
+            if candidate:
+                table_index[candidate.lower()] = logical
+    table_names = []
+    for raw_name in raw_table_names:
+        normalized_raw = raw_name.strip().strip("`\"'").lower()
+        normalized = table_index.get(normalized_raw)
+        if normalized and normalized not in table_names:
+            table_names.append(normalized)
     details = []
     for t in SCHEMA.get("tables", []):
         if t["name"] in table_names:
@@ -708,7 +875,9 @@ def _sql_dialect_rules() -> str:
             "    - 실수 나눗셈은 CAST(... AS DOUBLE), 정수는 CAST(... AS INTEGER).\n"
             "    - 대소문자 무시 검색은 LOWER(col) LIKE LOWER('%값%') 사용 (ILIKE 금지).\n"
             "    - 문자열 부분추출은 SUBSTR(col, start, length) 사용 (LEFT/RIGHT 대신).\n"
-            "    - 날짜/문자 함수는 Trino 표준만 사용 (TO_CHAR, DATE_TRUNC 등 PG 전용 함수 금지)."
+            "    - 날짜/문자 함수는 Trino 표준만 사용 (TO_CHAR, DATE_TRUNC 등 PG 전용 함수 금지).\n"
+            "    - 한글/비ASCII 컬럼명과 alias는 반드시 double quote로 감싸기 (예: \"기준년월\", a.\"가맹점명\", AS \"총매출금액\").\n"
+            "    - 테이블 상세에 athena_partition이 있으면 업무 날짜 조건(예: \"기준년월\" = '202512')과 함께 파티션 조건도 반드시 추가 (예: \"year\" = '2025' AND \"month\" = '12')."
         )
     return ""
 
@@ -724,6 +893,8 @@ def generate_sql(state: Text2SQLState) -> dict:
     domain_trace = state.get("domain_routing_trace", "")
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     join_context = build_semantic_join_context(SCHEMA, state.get("selected_domain", ""), question)
+    current_ym = _current_ym()
+    previous_ym = _previous_ym()
     retry_context = ""
     if retry_count > 0 and validation_result:
         retry_context = f"\n## 이전 시도 실패\n{validation_result}\n\n이전 SQL:\n{state.get('generated_sql', '')}\n\n위 문제를 수정한 SQL을 생성하세요.\n"
@@ -778,6 +949,13 @@ def generate_sql(state: Text2SQLState) -> dict:
 12. "여성 고객"은 성별구분코드 = '2'를 기본값으로 사용.
 13. 상세 목록 조회는 LIMIT 100 이하를 기본으로 둡니다. 집계 결과는 의미있는 순서로 정렬합니다.
 14. 읽기 쉬운 alias. 15. 순수 SQL만 반환.
+16. 날짜 해석 ({_current_date_context()}):
+    - "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석.
+    - 기준년월 컬럼은 "{current_ym}" 조건을 사용.
+    - 기준년월일 컬럼은 SUBSTRING(기준년월일, 1, 6) = "{current_ym}" 범위 안의 최신 기준년월일을 사용.
+    - "저번달", "지난달", "전월"은 지난달 1개월 기준으로 해석하고, 기준년월 컬럼은 "{previous_ym}" 조건을 사용.
+    - "가맹점별/각 가맹점별"은 가맹점번호와 가맹점명을 SELECT/GROUP BY에 포함.
+    - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬.
 {_sql_dialect_rules()}
 
 ## 사용자 질문
@@ -785,14 +963,18 @@ def generate_sql(state: Text2SQLState) -> dict:
 
 SQL:"""
     sql = _strip_llm_code_fence(_call_llm(prompt))
+    sql = _apply_recent_month_sql_fix(question, sql)
     return {"generated_sql": sql}
 
 
 def validate_sql(state: Text2SQLState) -> dict:
-    sql = state["generated_sql"]
-    selected_tables = state["selected_tables"]
     question = state["question"]
+    sql = _apply_recent_month_sql_fix(question, state["generated_sql"])
+    sql = prepare_sql_for_backend(sql)
+    selected_tables = state["selected_tables"]
     issues = _validate_sql_against_schema(sql, selected_tables)
+    issues.extend(_validate_recent_month_semantics(question, sql))
+    current_ym = _current_ym()
     try:
         parsed = sqlparse.parse(sql)
         if not parsed or not parsed[0].tokens:
@@ -805,6 +987,11 @@ def validate_sql(state: Text2SQLState) -> dict:
 SQL:
 {sql}
 사용 테이블: {', '.join(selected_tables)}
+검증 기준:
+- 이 앱에서 "최근", "최근 기준", "이번달", "이번 월"은 반드시 현재월({current_ym}) 기준입니다.
+- 위 표현이 있는 질문에서 SQL이 현재월({current_ym}) 조건을 포함하면 날짜 해석은 올바릅니다.
+- 위 표현이 있는 질문에서 전체 데이터의 MAX(기준년월/기준년월일)만 사용하면 잘못입니다.
+- "저번달", "지난달", "전월"은 {_current_date_context()}의 지난달 기준으로 해석합니다.
 메트릭 정의:
 {build_metrics_summary(SCHEMA)}
 
@@ -814,7 +1001,8 @@ SQL:
 문제가 없으면 "VALID"만 반환. 문제가 있으면 구체적 목록을 반환."""
     llm_result = _coerce_llm_text(_call_llm(validation_prompt))
     if llm_result.upper().startswith("VALID") and not issues:
-        return {"validation_result": "VALID", "is_valid": True, "final_sql": sqlparse.format(sql, reindent=True, keyword_case="upper")}
+        formatted_sql = sqlparse.format(sql, reindent=True, keyword_case="upper")
+        return {"validation_result": "VALID", "is_valid": True, "final_sql": prepare_sql_for_backend(formatted_sql)}
     else:
         all_issues = "\n".join(issues)
         if not llm_result.upper().startswith("VALID"):
@@ -824,11 +1012,20 @@ SQL:
 
 def run_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", state.get("generated_sql", ""))
-    columns, rows, error = execute_sql(sql)
+    prepared_sql = prepare_sql_for_backend(sql)
+    columns, rows, error = execute_sql(prepared_sql)
     if error:
         retry = state.get("retry_count", 0) + 1
-        return {"query_columns": [], "query_rows": [], "query_error": error, "validation_result": f"DB 실행 오류: {error}", "is_valid": False, "retry_count": retry}
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": ""}
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": error,
+            "validation_result": f"DB 실행 오류: {error}",
+            "is_valid": False,
+            "retry_count": retry,
+            "final_sql": prepared_sql,
+        }
+    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
 
 
 def generate_answer(state: Text2SQLState) -> dict:
@@ -1078,7 +1275,15 @@ def run_agent_with_prompts(question: str) -> dict:
             still_missing = [p for p in required if not current_params.get(p["name"])]
             if still_missing:
                 result["tool_params"] = current_params
-                result["missing_params"] = [{"name": p["name"], "label": f"{p['name']} ({p['description']})"} for p in still_missing]
+                result["missing_params"] = [
+                    {
+                        "name": p["name"],
+                        "label": p["name"],
+                        "description": p.get("description", ""),
+                        "type": p.get("type", "string"),
+                    }
+                    for p in still_missing
+                ]
                 continue
         else:
             state["user_provided_params"] = current_params

@@ -302,7 +302,9 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
     natural_input = natural_input.strip()
     names = [_param_name(param) for param in missing_params if _param_name(param)]
     parsed: dict[str, Any] = {}
-    ym_value = _normalize_korean_ym(natural_input)
+    current_ym = f"{datetime.now().year}{datetime.now().month:02d}"
+    is_recent = bool(re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", natural_input))
+    ym_value = current_ym if is_recent else _normalize_korean_ym(natural_input)
     year_value = _normalize_korean_year(natural_input)
 
     for name in names:
@@ -316,12 +318,16 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         if any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
             parsed[name] = ym_value
         elif any(key in lowered for key in ["기간_시작", "start", "from", "시작"]):
-            if re.search(r"(20\d{2})\s*년(?!\s*\d)", natural_input):
+            if is_recent:
+                parsed[name] = current_ym
+            elif re.search(r"(20\d{2})\s*년(?!\s*\d)", natural_input):
                 parsed[name] = f"{year_value}01"
             else:
                 parsed[name] = ym_value
         elif any(key in lowered for key in ["기간_종료", "end", "to", "종료"]):
-            if re.search(r"(20\d{2})\s*년(?!\s*\d)", natural_input):
+            if is_recent:
+                parsed[name] = current_ym
+            elif re.search(r"(20\d{2})\s*년(?!\s*\d)", natural_input):
                 parsed[name] = f"{year_value}12"
             else:
                 parsed[name] = ym_value
@@ -352,6 +358,7 @@ def _natural_params_by_llm(natural_input: str, missing_params: list[Any], contin
 - JSON object만 반환하세요.
 - key는 필요한 파라미터의 name을 그대로 사용하세요.
 - 기준년월/년월은 YYYYMM 형식으로 변환하세요. 예: 2025년 12월 -> 202512
+- "최근", "이번달", "이번 월"은 이번달({datetime.now().year}{datetime.now().month:02d})로 변환하세요.
 - 기간 시작/종료가 연도만 주어졌으면 시작은 YYYY01, 종료는 YYYY12로 변환하세요.
 - 모르는 값은 포함하지 마세요.
 
@@ -522,13 +529,13 @@ def _param_example_value(name: str) -> str:
     """누락된 파라미터 이름에 맞는 예시 입력값을 만든다 (고정 문구 대신 동적 안내용)."""
     lowered = name.lower()
     if any(key in lowered for key in ["년월", "기준월", "ym", "base_ym"]):
-        return "기준년월=202512"
+        return f"{name}={datetime.now().year}{datetime.now().month:02d}"
     if any(key in lowered for key in ["기간_시작", "start", "시작", "from"]):
-        return "기간_시작=202501"
+        return f"{name}={datetime.now().year}{datetime.now().month:02d}"
     if any(key in lowered for key in ["기간_종료", "end", "종료", "to"]):
-        return "기간_종료=202512"
+        return f"{name}={datetime.now().year}{datetime.now().month:02d}"
     if any(key in lowered for key in ["year", "년도", "연도"]):
-        return "2025년"
+        return f"{datetime.now().year}년"
     if any(key in lowered for key in ["가맹점", "기업", "고객", "상호", "대상"]):
         return f"{name}=한빛테크놀로지"
     if name in ("LS", "IS") or "스프레드" in lowered:
@@ -538,16 +545,34 @@ def _param_example_value(name: str) -> str:
     return f"{name}=값"
 
 
+def _param_instruction_line(item: Any) -> str:
+    if not isinstance(item, dict):
+        return f"- {item}"
+    name = str(item.get("name") or item.get("label") or "").strip()
+    label = str(item.get("label") or name or "필수 값").strip()
+    description = str(item.get("description") or "").strip()
+    example = _param_example_value(name) if name else ""
+    title = label
+    if name and name != label and name not in label:
+        title += f" ({name})"
+    detail = f": {description}" if description else ""
+    example_text = f" (예: {example})" if example else ""
+    return f"- {title}{detail}{example_text}"
+
+
 def _requires_params_answer(result: dict[str, Any]) -> str:
     missing = result.get("missing_params", []) or []
     if not missing:
-        return "추가 입력이 필요해요. 이어서 채팅창에 필요한 정보를 적어 주세요."
-    labels = [str(item.get("label") or item.get("name") or item) for item in missing]
+        return "추가 입력이 필요해요. 팝업 또는 질문창에 필요한 정보를 입력해 주세요."
     names = [_param_name(item) for item in missing if _param_name(item)]
     example = ", ".join(_param_example_value(name) for name in names) or "필요한 값"
     return (
-        f"{', '.join(labels)} 값이 필요해요. "
-        f"예: '{example}'처럼 아래 채팅창에 이어서 입력해 주세요."
+        "추가 입력이 필요해요.\n\n"
+        "필요한 값:\n"
+        + "\n".join(_param_instruction_line(item) for item in missing)
+        + "\n\n"
+        f"예: `{example}`\n"
+        "팝업의 문장 입력칸이나 아래 질문창에 이어서 입력하면 같은 질문을 계속 실행합니다."
     )
 
 
@@ -627,6 +652,8 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
         source=data.get("source"),
         sql=data.get("sql"),
         columns=data.get("columns"),
+        rows=data.get("rows"),
+        result_meta=data.get("result_meta"),
         row_count=len(data.get("rows", []) or []),
     )
     data["messages"] = _jsonable(session.get("messages", []))
@@ -635,25 +662,29 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
 
 
 def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, Any] | None:
-    if session.get("pending_continuation"):
-        return None
     result_id = session.get("last_result_id", "")
     if not result_id:
         return None
     result = _RESULTS.get(result_id)
-    if not result:
-        return None
-
-    error = result.get("error_message", "") or result.get("query_error", "")
-    message_id = None
+    fallback_message = None
     for message in reversed(session.get("messages", [])):
         if message.get("role") == "assistant" and message.get("result_id") == result_id:
-            message_id = message.get("message_id")
+            fallback_message = message
             break
+    if not result and not fallback_message:
+        return None
+
+    result = result or {}
+    error = result.get("error_message", "") or result.get("query_error", "") or (fallback_message or {}).get("error", "")
+    message_id = (fallback_message or {}).get("message_id")
+    answer = result.get("answer", "") or result.get("error_message", "") or (fallback_message or {}).get("text", "")
+    columns = result.get("query_columns", []) or (fallback_message or {}).get("columns", [])
+    rows = result.get("query_rows", []) or (fallback_message or {}).get("rows", [])
+    sql = result.get("final_sql", "") or (fallback_message or {}).get("sql", "")
 
     data = {
-        "answer": result.get("answer", "") or result.get("error_message", ""),
-        "documents": _documents_from_result(result, top_k),
+        "answer": answer,
+        "documents": _documents_from_result(result, top_k) if result else [],
         "session_id": session["id"],
         "message_id": message_id,
         "conversation_id": _conversation_id(session["id"]),
@@ -664,14 +695,14 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "question": result.get("question", ""),
         "followup_question": result.get("followup_question", ""),
         "question_type": result.get("question_type", ""),
-        "source": _source_label(result),
+        "source": _source_label(result) if result else (fallback_message or {}).get("source", ""),
         "selected_tool": result.get("selected_tool", ""),
         "matched_query_name": result.get("matched_query_name", ""),
         "selected_tables": result.get("selected_tables", []),
-        "sql": result.get("final_sql", ""),
-        "columns": result.get("query_columns", []),
-        "rows": result.get("query_rows", []),
-        "result_meta": _result_meta(result),
+        "sql": sql,
+        "columns": columns,
+        "rows": rows,
+        "result_meta": _result_meta(result) if result else (fallback_message or {}).get("result_meta", {}),
         "error": error,
         "excel_file": _register_file(result.get("bad_debt_excel_path", "")),
         "suggestions": _suggest_followups(result),
@@ -1072,11 +1103,13 @@ def _legacy_stream_adapter(chunks):
     for chunk in chunks:
         if chunk.startswith("event: text2sql_progress"):
             payload = json.loads(chunk.split("data: ", 1)[1])
+            data = payload.get("data", {})
             yield _sse(
                 "progress",
                 {
-                    "step": payload.get("data", {}).get("text2sql_step", ""),
-                    "title": payload.get("data", {}).get("title", ""),
+                    "step": data.get("text2sql_step", ""),
+                    "phase": data.get("phase", ""),
+                    "title": data.get("title", ""),
                     "message": payload.get("message", ""),
                 },
             )
@@ -1086,7 +1119,11 @@ def _legacy_stream_adapter(chunks):
             payload = json.loads(chunk.split("data: ", 1)[1])
             yield _sse("result", payload.get("data", {}))
         elif chunk.startswith("event: start"):
-            continue
+            payload = json.loads(chunk.split("data: ", 1)[1])
+            yield _sse(
+                "progress",
+                {"step": "start", "title": "요청 접수", "message": payload.get("message", "질문을 분석 중입니다...")},
+            )
         else:
             yield chunk
 

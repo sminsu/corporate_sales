@@ -206,23 +206,83 @@ Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명
 
 #### 테이블 스키마 prefix (`DB_SCHEMA`)
 
-테이블 참조에 붙는 스키마 한정자는 `DB_SCHEMA`로 설정합니다. PostgreSQL에서는 schema,
-Athena에서는 Glue **database** 이름으로 해석됩니다.
+테이블 참조에 붙는 스키마 한정자는 `DB_SCHEMA`로 설정합니다. PostgreSQL에서는 schema로
+해석됩니다. Athena는 pyathena connection의 `schema_name=ATHENA_DATABASE`를 이미 사용하므로,
+기본적으로 SQL에는 database prefix를 붙이지 않습니다.
 
-- 미설정 시 기본값: `postgres`면 `card_system`, `athena`면 `ATHENA_DATABASE` 값.
+- 미설정 시 기본값: `postgres`면 `card_system`, `athena`면 prefix 없음.
 - `DB_SCHEMA`는 Tool SQL · SQL 검증(`schema.py`) · 생성 프롬프트 · schema YAML의
   `physical_table`/verified-query SQL에 **일괄 적용**됩니다 (YAML 원본은 `card_system.`으로
-  두고 로드 시 메모리에서 동적 치환). 따라서 Glue DB 이름이 `card_system`이 아니어도
-  코드/YAML 수정 없이 `DB_SCHEMA`만 바꾸면 됩니다.
+  두고 로드 시 메모리에서 동적 치환).
 
 ```bash
-# 예: Glue 데이터베이스 이름이 kbcard_db 인 경우
+# Athena 기본 권장: ATHENA_DATABASE로 접속하고 SQL은 테이블명만 사용
 DB_BACKEND=athena
+ATHENA_DATABASE=kbcard_db
+
+# database-qualified table을 반드시 써야 하는 환경에서만 명시
 DB_SCHEMA=kbcard_db
 
-# prefix 없이 테이블명만 쓰려면 (pyathena가 schema_name을 이미 알고 있을 때)
+# PostgreSQL에서 prefix 없이 테이블명만 쓰려면
+DB_BACKEND=postgres
 DB_SCHEMA=none
 ```
+
+#### Athena 한글 컬럼명
+
+Athena(Trino/Presto)는 한글 컬럼명을 일반 identifier로 파싱하지 못하므로
+`기준년월`처럼 쓰면 `mismatched input '기'` 오류가 날 수 있습니다. Athena에서는
+`"기준년월"`, `a."가맹점명"`, `AS "총매출금액"`처럼 double quote로 감싼
+delimited identifier를 사용해야 합니다. 이 앱은 `DB_BACKEND=athena`일 때 실행 직전에
+한글/비ASCII 식별자를 자동으로 quote합니다. 문자열 값(`'202512'`, `'%한빛%'`)은 그대로 둡니다.
+
+#### Athena 날짜 파티션 메타
+
+Athena 테이블이 업무 날짜 컬럼(`기준년월`, `작업기준년월`, `기준년월일` 등)을 갖고 있지만 실제 저장은
+`year`/`month` 또는 `year`/`month`/`day` 파티션으로 되어 있으면, schema의 해당 테이블에
+`athena_partition`을 추가합니다. 이 메타가 있는 테이블만 Tool SQL에서 파티션 조건을 자동 추가하고,
+메타가 없는 테이블은 기존 SQL 그대로 실행되므로 날짜 파티션이 아닌 테이블에서도 오류가 나지 않습니다.
+
+월 파티션 예시:
+
+```yaml
+- name: tmdaa3e16
+  physical_table: card_system.tmdaa3e16
+  time_dimensions:
+  - name: 기준년월
+    expr: 기준년월
+    data_type: VARCHAR
+  athena_partition:
+    source_time_dimension: 기준년월
+    source_format: YYYYMM
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
+```
+
+일 파티션 예시:
+
+```yaml
+athena_partition:
+  source_time_dimension: 전표매출년월일
+  source_format: YYYYMMDD
+  keys:
+  - name: year
+    format: YYYY
+    data_type: string
+  - name: month
+    format: MM
+    data_type: string
+  - name: day
+    format: DD
+    data_type: string
+```
+
+회사 Athena DDL에서 파티션 키가 `daty`라면 `day` 대신 `name: daty`로 적으면 됩니다.
 
 기본 schema는 `schema_v6_gptoss.yaml`입니다. 기존 `schema_v7_enterprise_sales_gptoss.yaml`의
 기업영업 가맹점/특수채권/대손충당금 테이블과 예시는 이 파일에 병합했고, 중복 파일은 제거했습니다.

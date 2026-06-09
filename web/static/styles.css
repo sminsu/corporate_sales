@@ -345,8 +345,19 @@ input:focus {
   background: var(--panel-muted);
 }
 
+.param-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.42);
+}
+
 .param-card {
-  width: 100%;
+  width: min(640px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
   overflow: auto;
   padding: 20px;
   border-radius: 8px;
@@ -382,6 +393,11 @@ input:focus {
   gap: 12px;
 }
 
+.param-natural input {
+  height: 52px;
+  font-weight: 700;
+}
+
 .param-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -397,6 +413,12 @@ input:focus {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .param-actions {
