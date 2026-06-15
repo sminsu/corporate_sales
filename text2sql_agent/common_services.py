@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -11,9 +13,11 @@ try:
     import kbcard_agent_common as _common_package
     from kbcard_agent_common.embedding import EmbeddingClient, TEIEmbeddingClient
     from kbcard_agent_common.llm import KBCardAsyncOpenAI, KBCardOpenAI
+    from kbcard_agent_common.observability.logger import KBCardLogger
 except ModuleNotFoundError:
     _common_package = None
     EmbeddingClient = None
+    KBCardLogger = None
     KBCardAsyncOpenAI = None
     KBCardOpenAI = None
     TEIEmbeddingClient = None
@@ -27,6 +31,12 @@ class TraceContext:
     request_id: str
     trace_id: str
     session_id: str | None = None
+
+
+_CURRENT_CONTEXT: ContextVar[TraceContext | None] = ContextVar("text2sql_trace_context", default=None)
+_CURRENT_AGENT_NAME: ContextVar[str] = ContextVar("text2sql_agent_name", default="text2sql-v4")
+_CURRENT_USER_ID: ContextVar[str] = ContextVar("text2sql_user_id", default="system")
+_LOGGER: Any | None = None
 
 
 def common_package_status() -> dict[str, Any]:
@@ -44,6 +54,7 @@ def common_feature_status() -> dict[str, Any]:
         "async_llm": KBCardAsyncOpenAI is not None,
         "embedding": EmbeddingClient is not None,
         "tei_embedding": TEIEmbeddingClient is not None,
+        "logging": KBCardLogger is not None,
     }
 
 
@@ -80,8 +91,124 @@ def create_trace_context(
     )
 
 
+def _get_logger() -> Any | None:
+    """Create one KBCardLogger from the common config, then reuse it."""
+
+    global _LOGGER
+    if _LOGGER is not None:
+        return _LOGGER
+    if KBCardLogger is None:
+        return None
+
+    from .config import AGENT_ENVIRONMENT, AGENT_NAME, AGENT_SERVICE_NAME, COMMON_CONFIG
+
+    if COMMON_CONFIG is not None:
+        _LOGGER = KBCardLogger.from_config(COMMON_CONFIG)
+        return _LOGGER
+
+    _LOGGER = KBCardLogger(
+        logger=AGENT_SERVICE_NAME,
+        formatter=os.getenv("KBCARD_LOG_FORMAT", "pretty"),
+        level=os.getenv("KBCARD_LOG_LEVEL", "INFO"),
+        output=os.getenv("KBCARD_LOG_OUTPUT", "stdout"),
+        file_path=os.getenv("KBCARD_LOG_FILE_PATH", "logs/text2sql-agent.jsonl"),
+        max_bytes=_env_int("KBCARD_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024),
+        backup_count=_env_int("KBCARD_LOG_FILE_BACKUP_COUNT", 5),
+        default_fields={
+            "agent_name": AGENT_NAME,
+            "environment": AGENT_ENVIRONMENT,
+            "service_name": AGENT_SERVICE_NAME,
+        },
+    )
+    return _LOGGER
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _context_fields(context: Any | None) -> dict[str, Any]:
+    resolved = context or _CURRENT_CONTEXT.get()
+    if resolved is None:
+        return {}
+    return {
+        "message_id": getattr(resolved, "message_id", ""),
+        "request_id": getattr(resolved, "request_id", ""),
+        "trace_id": getattr(resolved, "trace_id", ""),
+        "session_id": getattr(resolved, "session_id", None),
+    }
+
+
+def _clean_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _clean_metadata(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_clean_metadata(item) for item in value]
+    return value
+
+
+def _result_summary(result: dict[str, Any]) -> dict[str, Any]:
+    rows = result.get("rows") or result.get("query_rows") or []
+    columns = result.get("columns") or result.get("query_columns") or []
+    answer = str(result.get("answer") or "")
+    return {
+        "status": result.get("status"),
+        "result_id": result.get("result_id"),
+        "source": result.get("source"),
+        "selected_domain": result.get("selected_domain"),
+        "selected_tool": result.get("selected_tool"),
+        "row_count": len(rows) if isinstance(rows, list) else None,
+        "column_count": len(columns) if isinstance(columns, list) else None,
+        "answer_length": len(answer),
+        "has_sql": bool(result.get("sql") or result.get("final_sql")),
+        "missing_params": result.get("missing_params"),
+    }
+
+
+def _emit_log(level: str, message: str, **metadata: Any) -> dict[str, Any] | None:
+    logger = _get_logger()
+    if logger is None:
+        return None
+    cleaned = _clean_metadata(metadata)
+    # kbcard-agent-common currently exposes info() publicly; _log keeps the
+    # original formatter/handler behavior while preserving ERROR module events.
+    log_method = getattr(logger, "_log", None)
+    if callable(log_method):
+        return log_method(level, message, **cleaned)
+    return logger.info(message, **cleaned)
+
+
+@contextmanager
 def observability_context(*, context: Any, agent_name: str, user_id: str):
-    return nullcontext()
+    context_token = _CURRENT_CONTEXT.set(context)
+    agent_token = _CURRENT_AGENT_NAME.set(agent_name)
+    user_token = _CURRENT_USER_ID.set(user_id)
+    try:
+        yield
+    finally:
+        _CURRENT_USER_ID.reset(user_token)
+        _CURRENT_AGENT_NAME.reset(agent_token)
+        _CURRENT_CONTEXT.reset(context_token)
+
+
+def _base_event_fields(
+    *,
+    context: Any | None,
+    agent_name: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    fields = {
+        **_context_fields(context),
+        "agent_name": agent_name or _CURRENT_AGENT_NAME.get(),
+        "user_id": user_id or _CURRENT_USER_ID.get(),
+    }
+    return _clean_metadata(fields)
 
 
 def emit_execution_log(
@@ -95,7 +222,20 @@ def emit_execution_log(
     result: dict[str, Any],
     error: str = "",
 ) -> dict[str, Any] | None:
-    return None
+    normalized_status = status.upper()
+    metadata = {
+        **_base_event_fields(context=context, agent_name=agent_name, user_id=user_id),
+        "event_type": "agent_execution",
+        "status": normalized_status,
+        "total_latency_ms": total_latency_ms,
+        "question_length": len(question),
+        "result": _result_summary(result),
+        "error_type": "AgentExecutionError" if error else None,
+        "error_message": error or None,
+    }
+    message = "agent execution completed" if normalized_status == "SUCCESS" else "agent execution failed"
+    level = "ERROR" if normalized_status == "ERROR" else "INFO"
+    return _emit_log(level, message, **metadata)
 
 
 def emit_module_event(
@@ -105,8 +245,19 @@ def emit_module_event(
     status: str,
     latency_ms: int,
     context: Any | None = None,
-    agent_name: str = "text2sql-v4",
-    user_id: str = "system",
+    agent_name: str | None = None,
+    user_id: str | None = None,
     **kwargs: Any,
 ) -> dict[str, Any] | None:
-    return None
+    log_level = str(kwargs.pop("log_level", "INFO"))
+    normalized_status = status.upper()
+    metadata = {
+        **_base_event_fields(context=context, agent_name=agent_name, user_id=user_id),
+        "event_type": event_type,
+        "module": module,
+        "status": normalized_status,
+        "latency_ms": latency_ms,
+        **kwargs,
+    }
+    message = f"{module} {event_type} {normalized_status.lower()}"
+    return _emit_log(log_level, message, **metadata)

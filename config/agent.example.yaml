@@ -3,6 +3,14 @@ agent:
   environment: local
   service_name: text2sql-v4-local
 
+logger:
+  level: INFO
+  formatter: pretty
+  output: stdout
+  file_path: logs/text2sql-agent.jsonl
+  max_bytes: 10485760
+  backup_count: 5
+
 llm:
   model_registry_path: models.example.yaml
   # 기본은 Bedrock OpenAI 호환 gpt-oss-120b. 더 가벼운 20b 또는 로컬 vLLM(local-chat)으로 교체 가능.

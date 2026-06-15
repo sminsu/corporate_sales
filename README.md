@@ -50,6 +50,7 @@ v4/
     __init__.py                 # 주요 공개 API re-export
     __main__.py                 # python -m text2sql_agent 실행 진입점
     config.py                   # 환경 변수와 기본 경로 설정
+    common_services.py          # common SDK logging/trace adapter
     llm.py                      # vLLM chat/embedding API 호출
     db.py                       # PostgreSQL 연결과 안전한 SELECT 실행
     schema.py                   # schema 로딩, prompt context 생성, SQL 검증
@@ -68,7 +69,7 @@ v4/
 
 - `webservice_v1.py`: FastAPI 앱입니다. 브라우저 UI 제공, 세션 관리, 스트리밍 응답, 파일 다운로드, export API를 담당합니다.
 - `text2sql_agent/llm.py`: common SDK 예제처럼 `KBCardOpenAI.from_config(...)`, `EmbeddingClient.from_config(...)`를 우선 사용합니다. common SDK가 없는 개발 환경에서는 기존 `requests` 호출로 LLM/embedding만 폴백합니다.
-- `text2sql_agent/common_services.py`: webservice가 쓰는 trace/logging 함수 형태만 유지하는 로컬 adapter입니다. common SDK의 observability/errors 모듈은 사용하지 않습니다.
+- `text2sql_agent/common_services.py`: webservice가 쓰는 trace/logging adapter입니다. `kbcard-agent-common`의 `KBCardLogger`를 사용해 실행 로그와 DB 모듈 로그를 stdout 또는 JSONL 파일로 남깁니다.
 - `text2sql_agent/__init__.py`: 웹서비스나 외부 코드에서 사용할 주요 공개 API를 한 곳에서 제공합니다.
 - `text2sql_agent/__main__.py`: `python -m text2sql_agent` 실행 시 CLI를 시작하는 진입점입니다.
 - `text2sql_agent/workflow.py`: 질문 분류, 도메인 라우팅, Tool 선택, verified query 매칭, SQL 생성/검증/실행, 답변 생성을 LangGraph로 연결합니다.
@@ -140,8 +141,9 @@ kbcard-agent-common[llm] @ git+ssh://git@github.com/kduk/kbcard-agent-common.git
 
 - LLM Client: `KBCardOpenAI`로 OpenAI Chat Completions 호환 endpoint를 호출합니다.
 - Embedding: `EmbeddingClient`로 TEI/OpenAI 호환 `/v1/embeddings` endpoint를 호출합니다. YAML 설정이 없을 때만 `TEIEmbeddingClient` 직접 생성으로 폴백합니다.
+- Logging: `KBCardLogger.from_config(...)`로 서비스 실행 로그와 DB query module event 로그를 남깁니다. `request_id`, `trace_id`, `message_id`, `session_id`는 `common_services.create_trace_context(...)`에서 생성해 같은 요청 흐름 안에서 공유합니다.
 
-이번 Text2SQL 과제는 업무 DB를 SQL로 조회하는 서비스이므로 common SDK의 retrieval, reranker, Markdown ingestion, pgvector provider, observability, errors API는 넣지 않았습니다. Postgres 접속 정보는 서비스 자체 설정으로 처리하되 `KBCARD_POSTGRES_DSN` 환경 변수도 계속 지원합니다.
+이번 Text2SQL 과제는 업무 DB를 SQL로 조회하는 서비스이므로 common SDK의 retrieval, reranker, Markdown ingestion, pgvector provider, tracing, errors API는 넣지 않았습니다. Postgres 접속 정보는 서비스 자체 설정으로 처리하되 `KBCARD_POSTGRES_DSN` 환경 변수도 계속 지원합니다.
 
 ## Docker 실행
 
@@ -166,6 +168,22 @@ KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres pass
 
 `AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code/Anthropic용 bearer token을
 넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
+
+### 로깅
+
+`config/agent.example.yaml`의 `logger` 섹션은 `kbcard-agent-common`의 `KBCardLogger.from_config(...)`로 읽힙니다.
+기본값은 stdout pretty 출력이며, 파일 로그가 필요하면 YAML 또는 환경 변수로 바꿉니다.
+
+```bash
+KBCARD_LOG_LEVEL=INFO
+KBCARD_LOG_FORMAT=pretty      # stdout 포맷: pretty | jsonl
+KBCARD_LOG_OUTPUT=both        # stdout | file | both
+KBCARD_LOG_FILE_PATH=logs/text2sql-agent.jsonl
+KBCARD_LOG_FILE_MAX_BYTES=10485760
+KBCARD_LOG_FILE_BACKUP_COUNT=5
+```
+
+파일 출력은 항상 JSONL이며, `max_bytes`를 넘으면 `backup_count`만큼 롤링됩니다.
 
 ### 데이터베이스 백엔드 (PostgreSQL / Amazon Athena)
 
