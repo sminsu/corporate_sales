@@ -129,21 +129,33 @@ canonical_domains:
   - 평균부여한도
 - name: 기업고객관리
   priority: 8
-  business_scope: 기업고객 수, 신규 기업고객, 카드 보유, 월별 카드 이용
+  business_scope: 기업고객 수, 신규 기업고객, 기업회원 명단, 기업카드 보유/미보유, 신용/체크카드 월별 이용, 한도/잔여한도/한도소진율
   keywords:
   - 기업고객
   - 법인고객
+  - 기업회원
   - 신규
   - 등록
   - 카드보유
+  - 기업카드
+  - 체크카드
   - 유효카드
   - 월별 이용
+  - 이용금액
+  - 한도
+  - 잔여한도
+  - 한도소진율
+  - 탈퇴
+  - 해지
+  - 명단
+  - 추출
   primary_entities:
+  - corporate_customer_enrichment_monthly
   - corporate_customer
   - corporate_customer_monthly
   - card_monthly
   - customer
-  default_fact_table: tmdaa2e17
+  default_fact_table: tmdaa1d12
   default_time_dimension: 기준년월
   default_filters: []
   preferred_metrics:
@@ -151,6 +163,9 @@ canonical_domains:
   - 신규기업고객수
   - 유효카드수
   - 기업고객월총이용금액
+  - 기업총한도금액합계
+  - 기업총잔여한도금액합계
+  - 기업한도소진율
 - name: 여신리스크
   priority: 8
   business_scope: 여신 한도, 한도사용률, 연체금액, 연체율, 기업계열별 리스크
@@ -420,6 +435,39 @@ semantic_entities:
   - 기업고객 월별 이용금액
   - 기업별 카드 보유
   - 기업고객 등록월 이후 이용
+- name: corporate_customer_enrichment_monthly
+  korean_name: 기업회원월별풍성화
+  physical_table: card_system.tmdaa1d12
+  grain: 기업고객-기준년월-기준년월일 1건
+  role: aggregate_fact
+  primary_key:
+  - 고객식별자
+  - 기준년월
+  - 기준년월일
+  default_time_dimension: 기준년월
+  canonical_dimensions:
+  - 고객식별자
+  - 사업자등록번호
+  - 기업명
+  - 법인고객식별자
+  - 대표자고객식별자
+  - 대표가맹점번호
+  - 가맹점명
+  - 가맹점사업주체구분코드
+  canonical_facts:
+  - 유효기업신용카드수
+  - 유효기업체크카드수
+  - 금월신용카드이용금액
+  - 금월체크카드이용금액
+  - 기업총한도금액
+  - 기업총잔여한도금액
+  semi_additive_warning: 고객/월 스냅샷입니다. 한도와 카드수는 여러 월 합산 대신 기준년월별로 보거나 고객-월 단위로 집계합니다.
+  use_when:
+  - 기업회원 명단 추출
+  - 기업카드 보유/미보유
+  - 체크카드만 보유/이용
+  - 기업회원 한도와 잔여한도
+  - 과거 이용 후 현재 카드수 0인 탈퇴/해지 후보
 - name: card_monthly
   korean_name: 카드월별실적
   physical_table: card_system.tmdaa3e16
@@ -1361,6 +1409,124 @@ result_shape_defaults:
   order_by_for_ranking: primary_metric DESC
   include_dimension_names: true
 tables:
+- name: tmdaa1d12
+  physical_table: card_system.tmdaa1d12
+  description: 기업/법인 고객 월별 풍성화 스냅샷입니다. 고객·사업자 기본속성, 유효 기업 신용/체크카드 수, 금월 신용/체크카드 이용금액, 기업 총한도/잔여한도 정보를 제공합니다.
+  grain: 기업고객-기준년월-기준년월일 1건
+  primary_key:
+  - 고객식별자
+  - 기준년월
+  - 기준년월일
+  time_dimensions:
+  - name: 기준년월
+    description: 데이터 기준년월(YYYYMM)
+    expr: 기준년월
+    data_type: VARCHAR
+  - name: 기준년월일
+    description: 데이터 기준일(YYYYMMDD)
+    expr: 기준년월일
+    data_type: VARCHAR
+  athena_partition:
+    source_time_dimension: 기준년월
+    source_format: YYYYMM
+    keys:
+    - name: year
+      format: YYYY
+      data_type: string
+    - name: month
+      format: MM
+      data_type: string
+  dimensions:
+  - name: 고객식별자
+    description: 기업/법인 고객 고유 식별자
+    expr: 고객식별자
+    data_type: VARCHAR
+    synonyms:
+    - 기업고객식별자
+    - 법인고객식별자
+  - name: 사업자등록번호
+    description: 기업 사업자등록번호
+    expr: 사업자등록번호
+    data_type: VARCHAR
+  - name: 기업명
+    description: 기업 고객명
+    expr: 기업명
+    data_type: VARCHAR
+    synonyms:
+    - 법인명
+    - 회사명
+  - name: 법인고객식별자
+    description: 법인 고객 식별자
+    expr: 법인고객식별자
+    data_type: VARCHAR
+  - name: 대표자고객식별자
+    description: 대표자 고객 식별자
+    expr: 대표자고객식별자
+    data_type: VARCHAR
+  - name: 대표가맹점번호
+    description: 기업 고객과 연결된 대표 가맹점번호
+    expr: 대표가맹점번호
+    data_type: VARCHAR
+    synonyms:
+    - 가맹점번호
+  - name: 가맹점명
+    description: 대표 가맹점 명칭
+    expr: 가맹점명
+    data_type: VARCHAR
+  - name: 가맹점사업주체구분코드
+    description: 가맹점 사업 주체 구분 코드. 법인사업자 조건은 업무 기준에 따라 '2'를 사용합니다.
+    expr: 가맹점사업주체구분코드
+    data_type: VARCHAR
+  - name: 기업거래정지여부
+    description: 기업 거래정지 여부
+    expr: 기업거래정지여부
+    data_type: VARCHAR
+  - name: 폐업여부
+    description: 기업 폐업 여부
+    expr: 폐업여부
+    data_type: VARCHAR
+  measures:
+  - name: 유효기업신용카드수
+    description: 유효 기업 신용카드 수
+    expr: 유효기업신용카드수
+    data_type: NUMERIC
+    default_aggregation: sum
+    unit: count
+  - name: 유효기업체크카드수
+    description: 유효 기업 체크카드 수
+    expr: 유효기업체크카드수
+    data_type: NUMERIC
+    default_aggregation: sum
+    unit: count
+  - name: 금월신용카드이용금액
+    description: 해당 기준월의 기업 신용카드 이용금액
+    expr: 금월신용카드이용금액
+    data_type: NUMERIC
+    default_aggregation: sum
+    unit: KRW
+  - name: 금월체크카드이용금액
+    description: 해당 기준월의 기업 체크카드 이용금액
+    expr: 금월체크카드이용금액
+    data_type: NUMERIC
+    default_aggregation: sum
+    unit: KRW
+  - name: 기업총한도금액
+    description: 기업 고객의 총 이용한도 금액
+    expr: 기업총한도금액
+    data_type: NUMERIC
+    default_aggregation: sum
+    unit: KRW
+  - name: 기업총잔여한도금액
+    description: 기업 고객의 잔여 이용한도 금액
+    expr: 기업총잔여한도금액
+    data_type: NUMERIC
+    default_aggregation: sum
+    unit: KRW
+  use_when:
+  - 기업회원 명단 추출
+  - 기업카드 보유/미보유 및 체크카드만 보유한 기업회원 조회
+  - 기업회원 월별 이용금액, 최근 기간 미이용, 탈퇴/해지 후보 조회
+  - 기업회원 한도, 잔여한도, 한도소진율 분석
 - name: tbdaaaf17
   physical_table: card_system.tbdaaaf17
   description: '카드사 기본 정보 마스터 테이블. 한 행은 하나의 카드사를 나타냅니다.
@@ -5248,6 +5414,364 @@ query_references:
     \ 개인기업구분코드 = '2'\nGROUP BY 기준년월, 상품코드\nORDER BY 기준년월, 기대대손충당금 DESC\n"
   primary_table: tbmewcm94
 verified_queries:
+- name: corporate_card_active_no_usage_members
+  question: KB국민 기업카드를 보유하고 있지만 최근 기간 이용이 없는 기업회원 명단을 알려줘
+  description: 기업회원 월별 풍성화 테이블에서 기준월 현재 유효 기업카드를 보유한 기업 중 지정 기간 동안 신용/체크카드 이용금액이 없는 기업회원 명단을 조회합니다. SAS/Oracle 원문은 Athena용 SELECT 패턴으로 변환했습니다.
+  sql: |
+    SELECT
+      a.사업자등록번호,
+      a.기업명
+    FROM card_system.tmdaa1d12 a
+    WHERE a.기준년월 = '{기준년월}'
+      AND a."year" = SUBSTRING('{기준년월}', 1, 4)
+      AND a."month" = SUBSTRING('{기준년월}', 5, 2)
+      AND (COALESCE(a.유효기업신용카드수, 0) + COALESCE(a.유효기업체크카드수, 0)) > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM card_system.tmdaa1d12 b
+        WHERE b.고객식별자 = a.고객식별자
+          AND b.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+          AND (b."year" || b."month") BETWEEN '{기간_시작}' AND '{기간_종료}'
+          AND (COALESCE(b.금월신용카드이용금액, 0) + COALESCE(b.금월체크카드이용금액, 0)) > 0
+      )
+    ORDER BY a.기업명
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 현재 카드 보유 여부를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    기간_시작:
+      type: string
+      description: 이용 이력 제외 시작 기준년월(YYYYMM)
+      required: true
+      default: '202411'
+      sample_values:
+      - '202411'
+    기간_종료:
+      type: string
+      description: 이용 이력 제외 종료 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 기업카드
+  - 보유
+  - 미이용
+  - 이용없음
+  - 명단
+  - 추출
+  - tmdaa1d12
+  - Athena
+  - SAS참조
+- name: corporate_card_churned_after_usage_members
+  question: KB국민 기업카드를 과거 이용했지만 현재 탈퇴 또는 해지한 기업회원 명단을 알려줘
+  description: 지정 기간 중 기업카드 이용 이력이 있으나 기준월 현재 유효 기업 신용/체크카드 수가 0인 기업회원 명단과 마지막 이용월, 최근 기간 총 이용금액을 조회합니다.
+  sql: |
+    WITH base AS (
+      SELECT
+        b.고객식별자,
+        b.사업자등록번호,
+        b.기업명,
+        b.기준년월,
+        COALESCE(b.금월신용카드이용금액, 0) + COALESCE(b.금월체크카드이용금액, 0) AS 이용금액,
+        COALESCE(b.유효기업신용카드수, 0) + COALESCE(b.유효기업체크카드수, 0) AS 카드수
+      FROM card_system.tmdaa1d12 b
+      WHERE b.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+        AND (b."year" || b."month") BETWEEN '{기간_시작}' AND '{기간_종료}'
+    ),
+    curr AS (
+      SELECT
+        고객식별자,
+        사업자등록번호,
+        기업명,
+        기준년월,
+        기준년월일,
+        유효기업신용카드수,
+        유효기업체크카드수
+      FROM (
+        SELECT
+          c.고객식별자,
+          c.사업자등록번호,
+          c.기업명,
+          c.기준년월,
+          c.기준년월일,
+          c.유효기업신용카드수,
+          c.유효기업체크카드수,
+          ROW_NUMBER() OVER (
+            PARTITION BY c.고객식별자
+            ORDER BY c.기준년월일 DESC
+          ) AS rn
+        FROM card_system.tmdaa1d12 c
+        WHERE c.기준년월 = '{기준년월}'
+          AND c."year" = SUBSTRING('{기준년월}', 1, 4)
+          AND c."month" = SUBSTRING('{기준년월}', 5, 2)
+      )
+      WHERE rn = 1
+    ),
+    agg AS (
+      SELECT
+        고객식별자,
+        MAX(CASE WHEN 이용금액 > 0 THEN 기준년월 END) AS 마지막이용월,
+        SUM(이용금액) AS 최근기간총이용금액,
+        MAX(CASE WHEN 이용금액 > 0 THEN 1 ELSE 0 END) AS 이용이력존재
+      FROM base
+      GROUP BY 고객식별자
+    )
+    SELECT
+      c.사업자등록번호,
+      c.기업명,
+      a.마지막이용월,
+      a.최근기간총이용금액
+    FROM curr c
+    JOIN agg a
+      ON c.고객식별자 = a.고객식별자
+    WHERE (COALESCE(c.유효기업신용카드수, 0) + COALESCE(c.유효기업체크카드수, 0)) = 0
+      AND a.이용이력존재 = 1
+    ORDER BY a.마지막이용월 DESC, a.최근기간총이용금액 DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 현재 탈퇴/해지 여부를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    기간_시작:
+      type: string
+      description: 과거 이용 이력 집계 시작 기준년월(YYYYMM)
+      required: true
+      default: '202511'
+      sample_values:
+      - '202511'
+    기간_종료:
+      type: string
+      description: 과거 이용 이력 집계 종료 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 기업카드
+  - 과거이용
+  - 탈퇴
+  - 해지
+  - 카드수0
+  - 명단
+  - tmdaa1d12
+  - Athena
+  - SAS참조
+- name: corporate_check_card_only_high_monthly_avg
+  question: KB국민 기업 체크카드만 보유하고 이용하는 기업회원 중 월 평균 5천만원 이상 이용 기업 명단을 알려줘
+  description: 지정 기간 동안 유효 기업 체크카드만 보유하고 신용카드 이용금액이 없는 기업회원의 체크카드 이용금액 월평균을 계산해 기준 금액 이상인 기업을 조회합니다.
+  sql: |
+    WITH base AS (
+      SELECT
+        a.고객식별자,
+        a.사업자등록번호,
+        a.기업명,
+        a.기준년월,
+        COALESCE(a.금월체크카드이용금액, 0) AS 체크이용금액
+      FROM card_system.tmdaa1d12 a
+      WHERE a.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+        AND (a."year" || a."month") BETWEEN '{기간_시작}' AND '{기간_종료}'
+        AND COALESCE(a.유효기업신용카드수, 0) = 0
+        AND COALESCE(a.유효기업체크카드수, 0) > 0
+        AND COALESCE(a.금월신용카드이용금액, 0) = 0
+    ),
+    agg AS (
+      SELECT
+        고객식별자,
+        MAX(사업자등록번호) AS 사업자등록번호,
+        MAX(기업명) AS 기업명,
+        SUM(체크이용금액) AS 기간총체크이용금액,
+        SUM(체크이용금액) / NULLIF(COUNT(DISTINCT 기준년월), 0) AS 월평균체크이용금액,
+        COUNT(DISTINCT 기준년월) AS 이용월수
+      FROM base
+      GROUP BY 고객식별자
+    )
+    SELECT
+      고객식별자,
+      사업자등록번호,
+      기업명,
+      기간총체크이용금액,
+      월평균체크이용금액,
+      이용월수
+    FROM agg
+    WHERE 월평균체크이용금액 >= {월평균금액}
+    ORDER BY 월평균체크이용금액 DESC
+    LIMIT {limit}
+  parameters:
+    기간_시작:
+      type: string
+      description: 체크카드 이용 집계 시작 기준년월(YYYYMM)
+      required: true
+      default: '202601'
+      sample_values:
+      - '202601'
+    기간_종료:
+      type: string
+      description: 체크카드 이용 집계 종료 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    월평균금액:
+      type: integer
+      description: 월평균 체크카드 이용금액 기준
+      default: '50000000'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 체크카드
+  - 체크카드만
+  - 신용카드미보유
+  - 월평균
+  - 5천만원
+  - 이용금액
+  - 명단
+  - tmdaa1d12
+  - Athena
+  - SAS참조
+- name: merchant_corporate_sales_target_no_corporate_card
+  question: 당사 가맹점 중 월 매출액 1억원 이상이고 법인사업자이며 KB국민 기업카드를 보유하지 않은 기업회원 명단을 알려줘
+  description: 기업영업 가맹점 일별 풍성화 테이블에서 기준월 월 매출액이 기준 이상이고 법인사업자이며 유효 기업 신용/체크카드를 보유하지 않은 가맹점/기업회원 후보를 조회합니다.
+  sql: |
+    SELECT
+      a.기업고객식별자 AS 고객식별자,
+      a.사업자등록번호,
+      a.가맹점번호,
+      a.가맹점명,
+      a.한글시도명,
+      a.한글시군구명,
+      a.가맹점업종코드,
+      a.MCC업종코드,
+      COALESCE(a.가맹점총지급금액, 0) AS 월매출액,
+      COALESCE(a.유효기업신용카드수, 0) AS 유효기업신용카드수,
+      COALESCE(a.유효기업체크카드수, 0) AS 유효기업체크카드수
+    FROM card_system.tbdaaus01 a
+    WHERE SUBSTRING(a.기준년월일, 1, 6) = '{기준년월}'
+      AND a."year" = SUBSTRING('{기준년월}', 1, 4)
+      AND a."month" = SUBSTRING('{기준년월}', 5, 2)
+      AND COALESCE(a.가맹점총지급금액, 0) >= {월매출금액}
+      AND a.가맹점사업주체구분코드 = '2'
+      AND COALESCE(a.유효기업신용카드수, 0) = 0
+      AND COALESCE(a.유효기업체크카드수, 0) = 0
+      AND COALESCE(a.휴폐업여부, '0') = '0'
+    ORDER BY 월매출액 DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 가맹점 월 매출 판단 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    월매출금액:
+      type: integer
+      description: 월 매출액 하한 기준
+      default: '100000000'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 가맹점
+  - 월매출
+  - 1억원
+  - 법인사업자
+  - 기업카드미보유
+  - 영업대상
+  - tbdaaus01
+  - Athena
+  - SAS참조
+- name: corporate_limit_low_utilization_members
+  question: KB국민 기업카드 보유회원 중 한도 2천만원 이상이고 한도 소진율 50% 미만인 기업회원 명단을 알려줘
+  description: 기준월 현재 기업카드를 보유하고 총한도금액이 기준 이상이며 한도소진율이 기준 미만인 기업회원 명단을 조회합니다. 한도소진율은 1 - 잔여한도/총한도로 계산합니다.
+  sql: |
+    WITH base AS (
+      SELECT
+        a.고객식별자,
+        a.사업자등록번호,
+        a.기업명,
+        a.기준년월,
+        COALESCE(a.기업총한도금액, 0) AS 기업총한도금액,
+        COALESCE(a.기업총잔여한도금액, 0) AS 기업총잔여한도금액,
+        CASE
+          WHEN COALESCE(a.기업총한도금액, 0) = 0 THEN 0
+          ELSE 1 - (COALESCE(a.기업총잔여한도금액, 0) / CAST(COALESCE(a.기업총한도금액, 0) AS DOUBLE))
+        END AS 한도소진율
+      FROM card_system.tmdaa1d12 a
+      WHERE a.기준년월 = '{기준년월}'
+        AND a."year" = SUBSTRING('{기준년월}', 1, 4)
+        AND a."month" = SUBSTRING('{기준년월}', 5, 2)
+        AND (COALESCE(a.유효기업신용카드수, 0) + COALESCE(a.유효기업체크카드수, 0)) > 0
+        AND COALESCE(a.기업총한도금액, 0) >= {한도금액}
+    )
+    SELECT
+      고객식별자,
+      사업자등록번호,
+      기업명,
+      기준년월,
+      기업총한도금액,
+      기업총잔여한도금액,
+      한도소진율
+    FROM base
+    WHERE 한도소진율 < {한도소진율}
+    ORDER BY 한도소진율 ASC, 기업총한도금액 DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 한도와 카드 보유 여부를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    한도금액:
+      type: integer
+      description: 기업 총한도 하한 기준
+      default: '20000000'
+    한도소진율:
+      type: number
+      description: 한도소진율 상한 기준. 50%는 0.5
+      default: '0.5'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 기업카드
+  - 한도
+  - 한도소진율
+  - 잔여한도
+  - 2천만원
+  - 50%미만
+  - 명단
+  - tmdaa1d12
+  - Athena
+  - SAS참조
 - name: active_merchant_industry_codes
   question: 사용 중인 가맹점 업종 코드명 알려줘
   description: '활성 상태의 가맹점 업종코드와 업종명을 조회합니다. SAS 원문의 가맹점업종코트 오타는 가맹점업종코드로 보정합니다.

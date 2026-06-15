@@ -303,6 +303,15 @@ def _previous_ym() -> str:
     return f"{year}{month:02d}"
 
 
+def _months_back_ym(yyyymm: str, months_back: int) -> str:
+    year = int(yyyymm[:4])
+    month = int(yyyymm[4:6]) - months_back
+    while month <= 0:
+        month += 12
+        year -= 1
+    return f"{year:04d}{month:02d}"
+
+
 def _relative_month_target(question: str) -> tuple[str, str]:
     if re.search(r"저번\s*달|지난\s*달|전월", question):
         return _previous_ym(), "저번달/지난달/전월"
@@ -456,6 +465,9 @@ def _rule_match_tool(question: str) -> str:
 
 
 def select_tool(state: Text2SQLState) -> dict:
+    if state.get("skip_tool_selection"):
+        return {"selected_tool": "", "tool_params": {}}
+
     if state.get("selected_tool") and state.get("tool_params") is not None:
         return {"selected_tool": state["selected_tool"], "tool_params": state.get("tool_params", {})}
 
@@ -669,6 +681,9 @@ def _match_vq_by_llm(question: str) -> dict:
 
 
 def match_verified_query(state: Text2SQLState) -> dict:
+    if state.get("skip_verified_query_matching"):
+        return {"matched_query_name": "", "matched_query_sql": "", "matched_query_params": {}}
+
     question = state["question"]
     result = _match_vq_by_embedding(question)
     if result:
@@ -702,16 +717,31 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작:"202501", 기간_종료:"202512"
    "올해" → 기간_시작:"{datetime.now().year}01", 기간_종료:"{datetime.now().year}{datetime.now().month:02d}"
-3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
-4. "상위 N개" → limit: N
-5. "개인카드 미보유" → 보유구분:"개인카드미보유", "기업카드 미보유/법인카드 미보유" → 보유구분:"기업카드미보유"
-6. JSON만 반환하세요. 없으면 빈 오브젝트 {{}}.
+3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_current_ym()}"
+4. "저번달", "지난달", "전월"은 지난달 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_previous_ym()}"
+5. "최근 N개월"은 기준년월을 종료월로 보고 N개월 구간으로 해석합니다.
+6. "상위 N개" → limit: N
+7. "개인카드 미보유" → 보유구분:"개인카드미보유", "기업카드 미보유/법인카드 미보유" → 보유구분:"기업카드미보유"
+8. JSON만 반환하세요. 없으면 빈 오브젝트 {{}}.
 
 ## 사용자 질문
 {question}
 
 JSON:"""
     extracted = _parse_llm_json(_call_llm(extract_prompt))
+    if "기준년월" in vq_params_def and not extracted.get("기준년월"):
+        ym = _extract_ym_from_question(question) or extracted.get("기간_종료")
+        if ym:
+            extracted["기준년월"] = ym
+    recent_months = re.search(r"최근\s*(\d+)\s*개월", question)
+    if recent_months:
+        end_ym = extracted.get("기간_종료") or extracted.get("기준년월") or _current_ym()
+        if re.fullmatch(r"20\d{4}", str(end_ym)):
+            span = max(int(recent_months.group(1)), 1)
+            extracted.setdefault("기간_종료", end_ym)
+            extracted.setdefault("기간_시작", _months_back_ym(end_ym, span - 1))
+            if "기준년월" in vq_params_def:
+                extracted.setdefault("기준년월", end_ym)
     final_sql = _apply_params_to_vq(base_sql, extracted, vq_name, vq_params_def)
     formatted_sql = sqlparse.format(final_sql, reindent=True, keyword_case="upper")
     return {"extracted_params": extracted, "final_sql": prepare_sql_for_backend(formatted_sql)}
@@ -1213,9 +1243,10 @@ def _new_initial_state(question: str) -> Text2SQLState:
     return {
         "question": question, "question_type": "",
         "selected_domain": "", "domain_candidates": [], "domain_routing_trace": "", "domain_context": "",
-        "selected_tool": "", "tool_params": {}, "tool_completed": False,
+        "selected_tool": "", "tool_params": {}, "tool_completed": False, "skip_tool_selection": False,
         "missing_params": [], "param_stage": "", "user_provided_params": {},
         "matched_query_name": "", "matched_query_sql": "", "matched_query_params": {}, "extracted_params": {},
+        "skip_verified_query_matching": False,
         "selected_tables": [], "table_details": "",
         "generated_sql": "", "validation_result": "", "is_valid": False, "retry_count": 0, "final_sql": "",
         "query_columns": [], "query_rows": [], "query_error": "",

@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +47,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import text2sql_agent as agent  # noqa: E402
+from text2sql_agent.schema import SCHEMA, _extract_schema_tables  # noqa: E402
 
 
 app = FastAPI(
@@ -334,6 +336,18 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         elif any(key in lowered for key in ["year", "년도", "연도"]):
             parsed[name] = year_value
 
+    if names:
+        unfilled_names = [name for name in names if name not in parsed]
+        numeric_names = [
+            name
+            for name in unfilled_names
+            if name in {"LS", "IS"} or any(key in name.lower() for key in ["rate", "ratio", "율", "비율", "스프레드"])
+        ]
+        numeric_values = re.findall(r"-?\d+(?:\.\d+)?", natural_input)
+        if numeric_names and len(numeric_values) >= len(numeric_names):
+            for name, value in zip(numeric_names, numeric_values[-len(numeric_names):]):
+                parsed[name] = value
+
     if len(names) == 1 and names[0] not in parsed:
         parsed[names[0]] = ym_value if ym_value != natural_input else natural_input
 
@@ -387,9 +401,6 @@ def _coerce_natural_params(params: dict[str, Any], continuation: dict[str, Any])
         return params
     missing_params = continuation.get("missing_params") or []
     parsed = _natural_params_by_rule(natural_input, missing_params)
-    missing_names = {_param_name(param) for param in missing_params if _param_name(param)}
-    if missing_names and not missing_names.issubset(parsed.keys()):
-        parsed.update({k: v for k, v in _natural_params_by_llm(natural_input, missing_params, continuation).items() if v not in {"", None}})
     explicit = {key: value for key, value in params.items() if not key.startswith("_")}
     explicit.update(parsed)
     return explicit
@@ -930,18 +941,64 @@ def _rewrite_followup_question(base_result: dict[str, Any], question: str) -> st
 {question}
 
 요구사항:
+- 직전 SQL을 우선 출발점으로 삼고, 필요한 WHERE/GROUP BY/ORDER BY/LIMIT/SELECT/JOIN만 최소 수정
 - 후속 요청이 정렬, 필터, 조건 추가, 비교 대상 추가, 합치기, 그룹핑, 상위/하위 N개 조회라면 새 SQL에 반영
 - 기존 질문의 업무 맥락은 유지
 - 최종 답변은 표 중심으로 짧게 요약
 """
 
 
+def _table_names_from_sql(sql: str) -> list[str]:
+    used_tables = _extract_schema_tables(sql or "")
+    if not used_tables:
+        return []
+
+    names: list[str] = []
+    for table in SCHEMA.get("tables", []):
+        logical = str(table.get("name") or "").strip()
+        physical = str(table.get("physical_table") or "").strip()
+        physical_short = physical.rsplit(".", 1)[-1] if physical else ""
+        candidates = {logical.lower(), physical.lower(), physical_short.lower()}
+        if used_tables.intersection(candidates) and logical and logical not in names:
+            names.append(logical)
+    return names
+
+
+def _table_details_for_names(table_names: list[str]) -> str:
+    selected = set(table_names or [])
+    if not selected:
+        return ""
+
+    details = []
+    for table in SCHEMA.get("tables", []):
+        if table.get("name") in selected:
+            details.append(yaml.dump(table, allow_unicode=True, default_flow_style=False))
+
+    rel_lines = []
+    for rel in SCHEMA.get("relationships", []):
+        if rel.get("from") in selected or rel.get("to") in selected:
+            rel_lines.append(f"- {rel.get('from')} -> {rel.get('to')}: {rel.get('join_expr', '')}")
+
+    table_details = "\n---\n".join(details)
+    if rel_lines:
+        table_details += "\n\n## Relationships\n" + "\n".join(rel_lines)
+    return table_details
+
+
 def _followup_query_state(base_result: dict[str, Any], question: str) -> dict[str, Any]:
     state = agent._new_initial_state(_rewrite_followup_question(base_result, question))
     state["question_type"] = "need_sql"
-    if base_result.get("selected_tables") and base_result.get("table_details"):
-        state["selected_tables"] = base_result.get("selected_tables", [])
-        state["table_details"] = base_result.get("table_details", "")
+    state["skip_tool_selection"] = True
+    state["skip_verified_query_matching"] = True
+    state["selected_domain"] = base_result.get("selected_domain", "")
+    state["domain_candidates"] = base_result.get("domain_candidates", [])
+    state["domain_routing_trace"] = base_result.get("domain_routing_trace", "")
+    state["domain_context"] = base_result.get("domain_context", "")
+
+    selected_tables = base_result.get("selected_tables") or _table_names_from_sql(base_result.get("final_sql", ""))
+    if selected_tables:
+        state["selected_tables"] = selected_tables
+        state["table_details"] = base_result.get("table_details", "") or _table_details_for_names(selected_tables)
     return state
 
 

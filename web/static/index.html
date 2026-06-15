@@ -1199,6 +1199,7 @@ async function submitFollowup(question) {
   state.pendingQuestion = followupQuestion;
   setFollowupBusy(true);
   startProgress([], false, followupProgressLabels);
+  let receivedTerminalEvent = false;
   try {
     await streamApi(
       "api/followup/stream",
@@ -1211,13 +1212,18 @@ async function submitFollowup(question) {
         if (eventName === "progress" || eventName === "text2sql_progress") {
           renderProgressEvent(data);
         } else if (eventName === "result" || eventName === "done") {
+          receivedTerminalEvent = true;
           const resultData = eventName === "done" ? data.data || data : data;
           renderResult(resultData, { mode: "followup", question: followupQuestion });
         } else if (eventName === "error") {
+          receivedTerminalEvent = true;
           throw new Error(eventErrorMessage(data, "후속 질문 처리 중 오류가 발생했습니다."));
         }
       },
     );
+    if (!receivedTerminalEvent) {
+      throw new Error("후속 질문 응답이 완료되지 않았습니다. 서버 로그를 확인한 뒤 다시 시도해주세요.");
+    }
   } catch (error) {
     stopProgress();
     showInlineError(error.message, "후속 질문 처리 오류");
@@ -1230,11 +1236,13 @@ async function submitFollowup(question) {
 async function submitQuestion(payload) {
   setBusy(true);
   startProgress();
+  let receivedTerminalEvent = false;
   try {
     await streamApi("api/query/stream", { session_id: state.sessionId, ...payload }, (eventName, data) => {
       if (eventName === "progress" || eventName === "text2sql_progress") {
         renderProgressEvent(data);
       } else if (eventName === "result" || eventName === "done") {
+        receivedTerminalEvent = true;
         const resultData = eventName === "done" ? data.data || data : data;
         if (resultData.status === "requires_params") {
           renderMissingParams(resultData);
@@ -1242,11 +1250,16 @@ async function submitQuestion(payload) {
           renderResult(resultData, { mode: "query" });
         }
       } else if (eventName === "parameter_required") {
+        receivedTerminalEvent = true;
         renderMissingParams(data.data || data);
       } else if (eventName === "error") {
+        receivedTerminalEvent = true;
         throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
       }
     });
+    if (!receivedTerminalEvent) {
+      throw new Error("질문 응답이 완료되지 않았습니다. 서버 로그를 확인한 뒤 다시 시도해주세요.");
+    }
   } catch (error) {
     stopProgress();
     showInlineError(error.message, "질문 처리 오류");

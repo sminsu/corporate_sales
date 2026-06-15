@@ -578,7 +578,7 @@ _SCHEMA_TABLE_RE = (
 
 def _extract_cte_names(sql: str) -> set[str]:
     """Return names introduced by a WITH clause so they are not treated as tables."""
-    return {
+    cte_names = {
         (match.group(1) or match.group(2)).lower()
         for match in re.finditer(
             r'(?:\bWITH|,)\s+(?:"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*(?:\([^)]*\))?\s+AS\s*\(',
@@ -587,6 +587,19 @@ def _extract_cte_names(sql: str) -> set[str]:
         )
         if match.group(1) or match.group(2)
     }
+    # Some SQL formatters/model outputs can insert unusual spacing around WITH
+    # items. Keep a conservative fallback for any identifier directly followed
+    # by AS ( ... ), which is the CTE shape that can later appear in JOIN.
+    cte_names.update(
+        (match.group(1) or match.group(2)).lower()
+        for match in re.finditer(
+            r'(?:"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*(?:\([^)]*\))?\s+AS\s*\(',
+            sql,
+            re.IGNORECASE,
+        )
+        if match.group(1) or match.group(2)
+    )
+    return cte_names
 
 
 def _extract_schema_tables(sql: str) -> set[str]:

@@ -148,6 +148,10 @@ VQ_PARAM_SPECS: dict[str, list[dict]] = {
 def _apply_params_to_vq(base_sql: str, params: dict, vq_name: str, vq_params_def: dict) -> str:
     sql = base_sql
     params = dict(params or {})
+    has_explicit_time_placeholders = any(
+        placeholder in base_sql
+        for placeholder in ("{기준년월}", "{기간_시작}", "{기간_종료}", "{시작일}", "{종료일}")
+    )
     if vq_name == "merchant_card_possession_performance":
         yyyymm = params.get("기준년월") or params.get("기간_시작")
         if yyyymm and not params.get("카드만료기준일"):
@@ -199,7 +203,7 @@ def _apply_params_to_vq(base_sql: str, params: dict, vq_name: str, vq_params_def
     where_additions = []
     start = params.get("기간_시작")
     end = params.get("기간_종료")
-    if detected_time_col and (start or end):
+    if detected_time_col and (start or end) and not has_explicit_time_placeholders:
         if start:
             start = _sanitize_param(start)
             if detected_type == "daily" and len(start) == 6:
@@ -220,7 +224,7 @@ def _apply_params_to_vq(base_sql: str, params: dict, vq_name: str, vq_params_def
     company = params.get("기업명")
     if company:
         company = _escape_like(company)
-        for col in ["상호명", "기업검색명"]:
+        for col in ["상호명", "기업검색명", "기업명"]:
             if col in sql:
                 where_additions.append(f"{col} LIKE '%{company}%' ESCAPE '\\'")
                 break

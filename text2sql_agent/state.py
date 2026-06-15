@@ -18,6 +18,7 @@ class Text2SQLState(TypedDict):
     selected_tool: str
     tool_params: dict
     tool_completed: bool
+    skip_tool_selection: bool
     # --- 범용 파라미터 프롬프트 ---
     missing_params: list
     param_stage: str
@@ -27,6 +28,7 @@ class Text2SQLState(TypedDict):
     matched_query_sql: str
     matched_query_params: dict
     extracted_params: dict
+    skip_verified_query_matching: bool
     # --- SQL 생성 ---
     selected_tables: list[str]
     table_details: str
