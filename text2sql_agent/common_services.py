@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -100,26 +101,23 @@ def _get_logger() -> Any | None:
     if KBCardLogger is None:
         return None
 
-    from .config import AGENT_ENVIRONMENT, AGENT_NAME, AGENT_SERVICE_NAME, COMMON_CONFIG
+    from .config import AGENT_SERVICE_NAME, COMMON_CONFIG
+
+    logger = logging.getLogger(AGENT_SERVICE_NAME)
+    formatter = os.getenv("KBCARD_LOG_FORMAT", "pretty")
+    level = os.getenv("KBCARD_LOG_LEVEL", "INFO")
 
     if COMMON_CONFIG is not None:
-        _LOGGER = KBCardLogger.from_config(COMMON_CONFIG)
+        _LOGGER = KBCardLogger.from_config(COMMON_CONFIG, logger=logger, formatter=formatter, level=level)
         return _LOGGER
 
-    _LOGGER = KBCardLogger(
-        logger=AGENT_SERVICE_NAME,
-        formatter=os.getenv("KBCARD_LOG_FORMAT", "pretty"),
-        level=os.getenv("KBCARD_LOG_LEVEL", "INFO"),
-        output=os.getenv("KBCARD_LOG_OUTPUT", "stdout"),
-        file_path=os.getenv("KBCARD_LOG_FILE_PATH", "logs/text2sql-agent.jsonl"),
-        max_bytes=_env_int("KBCARD_LOG_FILE_MAX_BYTES", 10 * 1024 * 1024),
-        backup_count=_env_int("KBCARD_LOG_FILE_BACKUP_COUNT", 5),
-        default_fields={
-            "agent_name": AGENT_NAME,
-            "environment": AGENT_ENVIRONMENT,
-            "service_name": AGENT_SERVICE_NAME,
-        },
-    )
+    configure = getattr(KBCardLogger, "configure", None)
+    if callable(configure):
+        _LOGGER = configure(logger=logger, formatter=formatter, level=level)
+        return _LOGGER
+
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    _LOGGER = KBCardLogger(logger=logger, formatter=formatter)
     return _LOGGER
 
 
@@ -162,6 +160,8 @@ def _result_summary(result: dict[str, Any]) -> dict[str, Any]:
         "result_id": result.get("result_id"),
         "source": result.get("source"),
         "selected_domain": result.get("selected_domain"),
+        "selected_capability_type": result.get("selected_capability_type"),
+        "selected_capability_name": result.get("selected_capability_name"),
         "selected_tool": result.get("selected_tool"),
         "row_count": len(rows) if isinstance(rows, list) else None,
         "column_count": len(columns) if isinstance(columns, list) else None,
@@ -176,12 +176,45 @@ def _emit_log(level: str, message: str, **metadata: Any) -> dict[str, Any] | Non
     if logger is None:
         return None
     cleaned = _clean_metadata(metadata)
-    # kbcard-agent-common currently exposes info() publicly; _log keeps the
-    # original formatter/handler behavior while preserving ERROR module events.
     log_method = getattr(logger, "_log", None)
     if callable(log_method):
         return log_method(level, message, **cleaned)
-    return logger.info(message, **cleaned)
+
+    event_method = getattr(logger, "event", None)
+    if callable(event_method):
+        event_type = str(cleaned.pop("event_type", "log"))
+        module = str(cleaned.pop("module", "agent"))
+        status = str(cleaned.pop("status", "ERROR" if level.upper() == "ERROR" else "SUCCESS"))
+        latency_ms = cleaned.pop("latency_ms", cleaned.pop("total_latency_ms", 0))
+        try:
+            latency_value = int(latency_ms or 0)
+        except (TypeError, ValueError):
+            latency_value = 0
+        agent_name = str(cleaned.pop("agent_name", _CURRENT_AGENT_NAME.get()))
+        error_type = cleaned.pop("error_type", None)
+        error_message = cleaned.pop("error_message", None)
+        cleaned["message"] = message
+        return event_method(
+            agent_name=agent_name,
+            module=module,
+            event_type=event_type,
+            status=status,
+            latency_ms=latency_value,
+            context=None,
+            log_level=level,
+            metadata=cleaned,
+            error_type=error_type,
+            error_message=error_message,
+        )
+
+    info_method = getattr(logger, "info", None)
+    if callable(info_method):
+        return info_method(message, **cleaned)
+
+    standard_logger = getattr(logger, "_logger", None)
+    if standard_logger is not None:
+        standard_logger.log(getattr(logging, level.upper(), logging.INFO), message, extra={"metadata": cleaned})
+    return None
 
 
 @contextmanager

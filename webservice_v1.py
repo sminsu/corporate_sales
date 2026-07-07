@@ -1,9 +1,11 @@
 import json
+import os
+import queue
 import re
 import sys
+import threading
 import time
 import uuid
-from collections import OrderedDict
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -16,38 +18,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
-class LRUCache(OrderedDict):
-    """Simple LRU cache based on OrderedDict with a max size."""
-
-    def __init__(self, maxsize: int = 1000):
-        super().__init__()
-        self._maxsize = maxsize
-
-    def __getitem__(self, key):
-        self.move_to_end(key)
-        return super().__getitem__(key)
-
-    def get(self, key, default=None):
-        if key in self:
-            self.move_to_end(key)
-            return super().__getitem__(key)
-        return default
-
-    def __setitem__(self, key, value):
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        while len(self) > self._maxsize:
-            self.popitem(last=False)
-
-
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "web" / "static"
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import text2sql_agent as agent  # noqa: E402
+import webapp_compatible_api as webapp_api  # noqa: E402
 from text2sql_agent.schema import SCHEMA, _extract_schema_tables  # noqa: E402
+from text2sql_agent.session_store import SessionOwnershipError, create_session_store  # noqa: E402
+from text2sql_agent.workflow import _get_app as _get_compiled_graph  # noqa: E402
 
 
 app = FastAPI(
@@ -60,21 +40,22 @@ app = FastAPI(
 @app.on_event("shutdown")
 def _shutdown_common_clients() -> None:
     agent.close_common_clients()
+    _SESSION_STORE.close()
 
 _GRAPH = None
-_RESULTS: LRUCache = LRUCache(maxsize=500)
-_SESSIONS: LRUCache = LRUCache(maxsize=200)
-_FILES: LRUCache = LRUCache(maxsize=1000)
+_SESSION_STORE = create_session_store()
 _CONVERSATION_IDS: dict[str, int] = {}
 _CONVERSATION_SEQ = 0
 _LLM_HEALTH_CACHE: dict[str, Any] = {"checked_at": 0.0, "data": None}
 _LLM_HEALTH_TTL_SECONDS = 20.0
+DEFAULT_WEBAPP_USER_ID = os.getenv("WEBAPP_DEFAULT_USER_ID", "ui")
+DEFAULT_WEBAPP_AGENT_NAME = os.getenv("WEBAPP_DEFAULT_AGENT_NAME", "manual")
 
 
 NODE_LABELS = {
     "classify_question": ("question_analysis", "질문 분석", "업무 범위와 질문 유형을 분류했습니다."),
     "route_domain": ("domain_routing", "도메인 라우팅", "질문에 맞는 업무 도메인을 선택했습니다."),
-    "select_tool": ("tool_selection", "도구 선택", "사용 가능한 Tool과 SQL 경로를 판단했습니다."),
+    "select_tool": ("capability_selection", "Capability 선택", "사용 가능한 Tool과 검증 쿼리 경로를 판단했습니다."),
     "check_tool_params": ("parameter_check", "파라미터 확인", "Tool 실행에 필요한 입력값을 확인했습니다."),
     "execute_tool": ("tool_execution", "Tool 실행", "선택된 Tool을 실행했습니다."),
     "run_tool_query": ("sql_execution", "SQL 실행", "Tool 기반 SQL 조회를 실행했습니다."),
@@ -107,6 +88,7 @@ class CompatibleQueryRequest(BaseModel):
     conversation_history: list[ConversationMessage] = Field(default_factory=list)
     params: dict[str, Any] | None = None
     continuation: dict[str, Any] | None = None
+    result_id: str | None = None
 
 
 class LegacyQueryRequest(BaseModel):
@@ -130,7 +112,7 @@ class ExportRequest(BaseModel):
 def _get_graph():
     global _GRAPH
     if _GRAPH is None:
-        _GRAPH = agent.build_graph()
+        _GRAPH = _get_compiled_graph()
     return _GRAPH
 
 
@@ -148,6 +130,10 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+SSE_HEADERS = {"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+PROGRESS_HEARTBEAT_SECONDS = 2.5
+
+
 def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(_jsonable(data), ensure_ascii=False)}\n\n"
 
@@ -156,7 +142,22 @@ def _message_id() -> int:
     return time.time_ns() // 1_000
 
 
-def _conversation_id(session_id: str) -> int:
+def _request_user_id(value: str | None) -> str:
+    return (value or DEFAULT_WEBAPP_USER_ID).strip() or DEFAULT_WEBAPP_USER_ID
+
+
+def _request_agent_name(value: str | None) -> str:
+    return (value or DEFAULT_WEBAPP_AGENT_NAME).strip() or DEFAULT_WEBAPP_AGENT_NAME
+
+
+def _conversation_id(session_or_id: dict[str, Any] | str) -> int:
+    if isinstance(session_or_id, dict):
+        stored_id = session_or_id.get("conversation_id")
+        if stored_id:
+            return int(stored_id)
+        session_id = session_or_id["id"]
+    else:
+        session_id = session_or_id
     global _CONVERSATION_SEQ
     if session_id not in _CONVERSATION_IDS:
         _CONVERSATION_SEQ += 1
@@ -178,25 +179,10 @@ def _raise_api_error(exc: Exception) -> None:
 
 
 def _get_or_create_session(session_id: str | None, user_id: str = "ui", agent_name: str = "manual") -> dict[str, Any]:
-    resolved_id = session_id or f"sess_{uuid.uuid4().hex}"
-    if resolved_id in _SESSIONS:
-        session = _SESSIONS[resolved_id]
-        session["updated_at"] = datetime.now().isoformat()
-        return session
-    now = datetime.now().isoformat()
-    session = {
-        "id": resolved_id,
-        "user_id": user_id,
-        "agent_name": agent_name,
-        "title": "새 대화",
-        "created_at": now,
-        "updated_at": now,
-        "messages": [],
-        "last_result_id": "",
-        "pending_continuation": None,
-    }
-    _SESSIONS[resolved_id] = session
-    return session
+    try:
+        return _SESSION_STORE.get_or_create_session(session_id, user_id, agent_name)
+    except SessionOwnershipError as exc:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.") from exc
 
 
 def _append_message(session: dict[str, Any], role: str, content: str, **extra: Any) -> None:
@@ -207,10 +193,7 @@ def _append_message(session: dict[str, Any], role: str, content: str, **extra: A
         "created_at": datetime.now().isoformat(),
     }
     message.update({k: _jsonable(v) for k, v in extra.items() if v is not None})
-    session.setdefault("messages", []).append(message)
-    if role == "user" and session.get("title") == "새 대화" and content:
-        session["title"] = content[:40]
-    session["updated_at"] = datetime.now().isoformat()
+    _SESSION_STORE.append_message(session, message)
 
 
 def _user_message_text(question: str, params: dict[str, Any] | None = None) -> str:
@@ -229,7 +212,7 @@ def _session_summary(session: dict[str, Any]) -> dict[str, Any]:
         "created_at": session.get("created_at", ""),
         "updated_at": session.get("updated_at", ""),
         "last_result_id": session.get("last_result_id", ""),
-        "message_count": len(session.get("messages", [])),
+        "message_count": int(session.get("message_count") or len(session.get("messages", []))),
     }
 
 
@@ -240,8 +223,14 @@ def _build_continuation(result: dict[str, Any]) -> dict[str, Any]:
         "domain_candidates": result.get("domain_candidates", []),
         "domain_routing_trace": result.get("domain_routing_trace", ""),
         "domain_context": result.get("domain_context", ""),
+        "selected_capability_type": result.get("selected_capability_type", ""),
+        "selected_capability_name": result.get("selected_capability_name", ""),
         "selected_tool": result.get("selected_tool", ""),
         "tool_params": result.get("tool_params", {}),
+        "matched_query_name": result.get("matched_query_name", ""),
+        "matched_query_sql": result.get("matched_query_sql", ""),
+        "matched_query_params": result.get("matched_query_params", {}),
+        "extracted_params": result.get("extracted_params", {}),
         "selected_tables": result.get("selected_tables", []),
         "table_details": result.get("table_details", ""),
         "user_provided_params": result.get("user_provided_params", {}),
@@ -427,12 +416,23 @@ def _state_from_request(req: CompatibleQueryRequest, session: dict[str, Any]) ->
     state["domain_candidates"] = continuation.get("domain_candidates", [])
     state["domain_routing_trace"] = continuation.get("domain_routing_trace", "")
     state["domain_context"] = continuation.get("domain_context", "")
+    state["selected_capability_type"] = continuation.get("selected_capability_type", "")
+    state["selected_capability_name"] = continuation.get("selected_capability_name", "")
     selected_tool = continuation.get("selected_tool", "")
+    matched_query_name = continuation.get("matched_query_name", "")
     if selected_tool:
         merged = dict(continuation.get("tool_params") or {})
         merged.update(params)
         state["selected_tool"] = selected_tool
         state["tool_params"] = merged
+    elif matched_query_name:
+        merged = dict(continuation.get("extracted_params") or {})
+        merged.update(continuation.get("user_provided_params") or {})
+        merged.update(params)
+        state["matched_query_name"] = matched_query_name
+        state["matched_query_sql"] = continuation.get("matched_query_sql", "")
+        state["matched_query_params"] = continuation.get("matched_query_params", {})
+        state["user_provided_params"] = merged
     else:
         merged = dict(continuation.get("user_provided_params") or {})
         merged.update(params)
@@ -450,7 +450,7 @@ def _documents_from_result(result: dict[str, Any], top_k: int, source_override: 
     documents: list[dict[str, Any]] = []
     if result.get("matched_query_name"):
         documents.append({"title": f"검증 쿼리: {result['matched_query_name']}", "source_url": "", "score": 1.0})
-    for table in result.get("selected_tables", []) or []:
+    for table in _result_data_sources(result):
         documents.append({"title": f"테이블: {table}", "source_url": "", "score": 1.0})
     if not documents:
         documents.append({"title": _source_label(result, source_override), "source_url": "", "score": 1.0})
@@ -466,11 +466,20 @@ def _result_conditions(result: dict[str, Any]) -> dict[str, Any]:
     return conditions
 
 
+def _result_data_sources(result: dict[str, Any]) -> list[str]:
+    sql_tables = _table_names_from_sql(result.get("final_sql", ""))
+    return sql_tables or list(result.get("selected_tables", []) or [])
+
+
 def _result_meta(result: dict[str, Any], source_override: str | None = None) -> dict[str, Any]:
     rows = result.get("query_rows", []) or []
+    sql_tables = _table_names_from_sql(result.get("final_sql", ""))
+    planned_tables = list(result.get("selected_tables", []) or [])
     return {
         "execution_path": _source_label(result, source_override),
-        "data_sources": result.get("selected_tables", []) or [],
+        "data_sources": sql_tables or planned_tables,
+        "sql_data_sources": sql_tables,
+        "planned_data_sources": planned_tables,
         "conditions": _result_conditions(result),
         "displayed_rows": len(rows),
         "display_row_limit": 100,
@@ -478,10 +487,12 @@ def _result_meta(result: dict[str, Any], source_override: str | None = None) -> 
         "selected_domain": result.get("selected_domain", ""),
         "selected_tool": result.get("selected_tool", ""),
         "matched_query_name": result.get("matched_query_name", ""),
+        "selected_capability_type": result.get("selected_capability_type", ""),
+        "selected_capability_name": result.get("selected_capability_name", ""),
     }
 
 
-def _register_file(path: str) -> dict[str, str] | None:
+def _register_file(path: str, session: dict[str, Any] | None = None, user_id: str | None = None) -> dict[str, str] | None:
     if not path:
         return None
     file_path = Path(path).resolve()
@@ -491,7 +502,7 @@ def _register_file(path: str) -> dict[str, str] | None:
     if not any(file_path.is_relative_to(root) for root in allowed_roots):
         return None
     token = uuid.uuid4().hex
-    _FILES[token] = str(file_path)
+    _SESSION_STORE.save_file(token, str(file_path), session=session, user_id=user_id)
     return {"token": token, "filename": file_path.name, "url": f"api/files/{token}"}
 
 
@@ -601,25 +612,24 @@ def _result_payload(
         answer = _requires_params_answer(result)
         documents = []
         continuation = _build_continuation(result)
-        session["pending_continuation"] = continuation
+        _SESSION_STORE.update_session_state(session, pending_continuation=continuation)
     else:
         status = "complete"
         result_id = uuid.uuid4().hex
-        _RESULTS[result_id] = dict(result)
-        session["last_result_id"] = result_id
-        session["pending_continuation"] = None
+        _SESSION_STORE.save_result(result_id, session, dict(result))
+        _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
         answer = result.get("answer", "") or result.get("error_message", "")
         documents = _documents_from_result(result, top_k, source_override)
         continuation = None
 
     error = result.get("error_message", "") or result.get("query_error", "")
-    excel_file = _register_file(result.get("bad_debt_excel_path", ""))
+    excel_file = _register_file(result.get("bad_debt_excel_path", ""), session=session)
     data = {
         "answer": answer,
         "documents": documents,
         "session_id": session["id"],
         "message_id": message_id,
-        "conversation_id": _conversation_id(session["id"]),
+        "conversation_id": _conversation_id(session),
         "images": [],
         "insufficient_evidence": bool(requires_params or error),
         "status": status,
@@ -676,7 +686,7 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
     result_id = session.get("last_result_id", "")
     if not result_id:
         return None
-    result = _RESULTS.get(result_id)
+    result = _SESSION_STORE.get_result(result_id, session.get("user_id"))
     fallback_message = None
     for message in reversed(session.get("messages", [])):
         if message.get("role") == "assistant" and message.get("result_id") == result_id:
@@ -698,7 +708,7 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "documents": _documents_from_result(result, top_k) if result else [],
         "session_id": session["id"],
         "message_id": message_id,
-        "conversation_id": _conversation_id(session["id"]),
+        "conversation_id": _conversation_id(session),
         "images": [],
         "insufficient_evidence": bool(error),
         "status": "complete",
@@ -715,7 +725,7 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "rows": rows,
         "result_meta": _result_meta(result) if result else (fallback_message or {}).get("result_meta", {}),
         "error": error,
-        "excel_file": _register_file(result.get("bad_debt_excel_path", "")),
+        "excel_file": _register_file(result.get("bad_debt_excel_path", ""), session=session),
         "suggestions": _suggest_followups(result),
         "original_answer": result.get("original_answer", result.get("answer", "")),
         "analysis_history": result.get("analysis_history", []),
@@ -740,6 +750,8 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
             "selected_domain": result.get("selected_domain", ""),
             "selected_tool": result.get("selected_tool", ""),
             "matched_query_name": result.get("matched_query_name", ""),
+            "selected_capability_type": result.get("selected_capability_type", ""),
+            "selected_capability_name": result.get("selected_capability_name", ""),
             "selected_tables": result.get("selected_tables", []),
             "param_stage": result.get("param_stage", ""),
             "missing_params": result.get("missing_params", []),
@@ -748,6 +760,46 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
             "row_count": len(result.get("query_rows", []) or []),
             "source": _source_label(result),
         },
+    }
+
+
+_NEXT_PROGRESS_STEP = {
+    "": "classify_question",
+    "classify_question": "route_domain",
+    "route_domain": "select_tool",
+    "select_tool": "match_verified_query",
+    "check_tool_params": "execute_tool",
+    "execute_tool": "run_tool_query",
+    "extract_and_apply_params": "run_matched_query",
+    "analyze_question": "check_sql_gen_params",
+    "check_sql_gen_params": "generate_sql",
+    "generate_sql": "validate_sql",
+    "validate_sql": "run_query",
+    "run_tool_query": "generate_answer",
+    "run_matched_query": "generate_answer",
+    "run_query": "generate_answer",
+}
+
+
+def _progress_heartbeat(last_node_name: str, wait_started_at: float) -> dict[str, Any]:
+    step = last_node_name or "processing"
+    waiting_step = _NEXT_PROGRESS_STEP.get(last_node_name, "")
+    phase, title, _ = NODE_LABELS.get(step, ("processing", "처리 중", "작업을 계속 처리하고 있습니다."))
+    _, waiting_title, _ = NODE_LABELS.get(waiting_step, ("processing", "다음 단계", "작업을 계속 처리하고 있습니다."))
+    elapsed = max(1, int(time.monotonic() - wait_started_at))
+    if waiting_step in {"run_query", "run_matched_query", "run_tool_query"}:
+        message = f"쿼리 실행 결과를 기다리고 있습니다. Athena는 결과 준비까지 시간이 걸릴 수 있습니다. ({elapsed}초)"
+    else:
+        message = f"{waiting_title} 응답을 기다리고 있습니다. ({elapsed}초)"
+    return {
+        "heartbeat": True,
+        "step": step,
+        "phase": phase,
+        "title": "처리 대기" if last_node_name else title,
+        "message": message,
+        "waiting_step": waiting_step,
+        "waiting_title": waiting_title,
+        "elapsed_seconds": elapsed,
     }
 
 
@@ -760,23 +812,49 @@ def _stream_graph(
     user_id: str = "ui",
 ):
     result = dict(state)
-    updates = _get_graph().stream(state, stream_mode="updates")
+    updates_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+    done_marker = object()
+
+    def produce_updates() -> None:
+        updates = _get_graph().stream(state, stream_mode="updates")
+        while True:
+            try:
+                if context is None:
+                    update = next(updates)
+                else:
+                    # Keep the common ContextVar binding only around graph work.
+                    # Holding it across SSE yields can reset the token in another context.
+                    with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
+                        update = next(updates)
+            except StopIteration:
+                updates_queue.put(("done", done_marker))
+                return
+            except BaseException as exc:
+                updates_queue.put(("error", exc))
+                return
+            updates_queue.put(("update", update))
+
+    worker = threading.Thread(target=produce_updates, daemon=True)
+    worker.start()
+    last_node_name = ""
+    wait_started_at = time.monotonic()
     while True:
         try:
-            if context is None:
-                update = next(updates)
-            else:
-                # Keep the common ContextVar binding only around graph work.
-                # Holding it across SSE yields can reset the token in another context.
-                with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
-                    update = next(updates)
-        except StopIteration:
+            item_type, update = updates_queue.get(timeout=PROGRESS_HEARTBEAT_SECONDS)
+        except queue.Empty:
+            yield "__heartbeat__", _progress_heartbeat(last_node_name, wait_started_at)
+            continue
+        wait_started_at = time.monotonic()
+        if item_type == "done":
             break
+        if item_type == "error":
+            raise update
         if not isinstance(update, dict):
             continue
         for node_name, payload in update.items():
             if isinstance(payload, dict):
                 result.update(payload)
+            last_node_name = node_name
             yield node_name, dict(result)
 
 
@@ -838,7 +916,7 @@ def _stream_query(
 ):
     started = time.monotonic()
     context = agent.create_trace_context(session_id=session["id"], message_id=message_id)
-    yield _sse("start", {"message": "질문을 분석 중입니다...", "data": {"session_id": session["id"], "message_id": message_id, "conversation_id": _conversation_id(session["id"])}})
+    yield _sse("start", {"message": "질문을 분석 중입니다...", "data": {"session_id": session["id"], "message_id": message_id, "conversation_id": _conversation_id(session)}})
     try:
         state = _state_from_request(req, session)
         final_result = dict(state)
@@ -850,6 +928,9 @@ def _stream_query(
             user_id=user_id,
         ):
             final_result = result
+            if node_name == "__heartbeat__":
+                yield _sse("heartbeat", result)
+                continue
             yield _sse("text2sql_progress", _progress_payload(node_name, req, final_result))
         data = _result_payload(final_result, session, message_id, req.top_k)
     except Exception as exc:
@@ -1009,7 +1090,7 @@ def _followup_analysis(base_result: dict[str, Any], question: str) -> str:
     original_answer = base_result.get("original_answer") or base_result.get("answer", "")
     previous_answer = base_result.get("answer", "")
     history_text = "\n".join(f"- 질문: {item.get('question', '')}\n  답변: {item.get('answer', '')}" for item in history[-5:])
-    prompt = f"""당신은 KB카드 법인영업 데이터 분석가입니다.
+    prompt = f"""당신은 KB카드 기업영업 데이터 분석가입니다.
 아래는 이미 실행된 SQL 결과입니다. 새 SQL을 만들거나 외부 데이터를 가정하지 말고, 제공된 결과 안에서만 후속 질문에 답하세요.
 
 [원 질문]
@@ -1089,7 +1170,7 @@ def _stream_followup(
 ):
     started = time.monotonic()
     context = agent.create_trace_context(session_id=session["id"], message_id=message_id)
-    base_result = _RESULTS.get(req.result_id)
+    base_result = _SESSION_STORE.get_result(req.result_id, session.get("user_id"))
     if not base_result:
         yield _sse("error", {"detail": "이전 결과를 찾을 수 없습니다."})
         return
@@ -1097,14 +1178,14 @@ def _stream_followup(
         yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
         return
 
-    yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다."})
+    yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다.", "query": req.question})
     try:
         with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
             intent = _classify_followup_intent(req.question)
 
         if intent in {"rewrite_sql", "new_sql"}:
             route_message = "후속 요청을 기존 SQL 재작성으로 분류했습니다." if intent == "rewrite_sql" else "후속 요청을 새 SQL 실행으로 분류했습니다."
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message})
+            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message, "query": req.question})
             state = _followup_query_state(base_result, req.question)
             compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
             followup_result = dict(state)
@@ -1116,14 +1197,17 @@ def _stream_followup(
                 user_id=user_id,
             ):
                 followup_result = result
+                if node_name == "__heartbeat__":
+                    yield _sse("heartbeat", followup_result)
+                    continue
                 payload = _progress_payload(node_name, compatible, followup_result)
-                yield _sse("progress", {"step": node_name, "title": payload["data"]["title"], "message": payload["message"]})
+                yield _sse("progress", {"step": node_name, "title": payload["data"]["title"], "message": payload["message"], "query": req.question})
             answer = followup_result.get("answer", "")
             final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, "후속 SQL")
             source = "후속 SQL"
         else:
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 기존 결과 분석으로 분류했습니다."})
-            yield _sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 SQL 결과와 대화 이력을 기반으로 답변을 생성합니다."})
+            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 기존 결과 분석으로 분류했습니다.", "query": req.question})
+            yield _sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 SQL 결과와 대화 이력을 기반으로 답변을 생성합니다.", "query": req.question})
             with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
                 answer = _followup_analysis(base_result, req.question)
             final_result = _finalize_followup_result(base_result, req.question, dict(base_result), answer, "analysis", "후속 분석")
@@ -1152,7 +1236,7 @@ def _stream_followup(
         question=req.question,
         result=data,
     )
-    yield _sse("progress", {"step": "complete", "title": "완료", "message": "최종 결과를 화면에 표시합니다."})
+    yield _sse("progress", {"step": "complete", "title": "완료", "message": "최종 결과를 화면에 표시합니다.", "query": req.question})
     yield _sse("result", data)
 
 
@@ -1207,6 +1291,8 @@ def query(
     x_session_id: str | None = Header(None, alias="X-Session-ID"),
 ):
     _validate_agent(agent_name, x_agent_name, req.agent_name)
+    if req.result_id:
+        raise HTTPException(status_code=400, detail="result_id 후속 질문은 스트리밍 API를 사용해주세요.")
     session = _get_or_create_session(req.session_id or x_session_id, x_user_id, agent_name)
     message_id = _message_id()
     user_text = _user_message_text(req.query, req.params)
@@ -1216,7 +1302,7 @@ def query(
     except Exception as exc:
         _raise_api_error(exc)
     data = _finalize_assistant_message(session, data, message_id)
-    return {"success": True, "data": data}
+    return webapp_api.compatible_json_response(data)
 
 
 @app.post("/api/v1/agent/{agent_name}/query/stream")
@@ -1232,14 +1318,33 @@ def query_stream(
     message_id = _message_id()
     user_text = _user_message_text(req.query, req.params)
     _append_message(session, "user", user_text, message_id=message_id)
+    if req.result_id:
+        followup_req = FollowupRequest(result_id=req.result_id, question=req.query, session_id=session["id"])
+
+        def stream_chunks():
+            yield _sse(
+                "start",
+                {
+                    "message": "질문을 분석 중입니다...",
+                    "data": {
+                        "session_id": session["id"],
+                        "message_id": message_id,
+                        "conversation_id": _conversation_id(session),
+                    },
+                },
+            )
+            yield from _stream_followup(followup_req, session, message_id, agent_name=agent_name, user_id=x_user_id)
+        stream = stream_chunks()
+    else:
+        stream = _stream_query(req, session, message_id, agent_name=agent_name, user_id=x_user_id)
     return StreamingResponse(
-        _stream_query(req, session, message_id, agent_name=agent_name, user_id=x_user_id),
+        webapp_api.adapt_sse_stream(stream),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )
 
 
-@app.get("/api/health")
+@app.get("/health")
 def health():
     llm_health = _llm_health()
     return {
@@ -1250,6 +1355,7 @@ def health():
         "bad_debt_output_dir": agent.BAD_DEBT_OUTPUT_DIR,
         "common": agent.common_package_status(),
         "common_features": agent.common_feature_status(),
+        "session_store": _SESSION_STORE.status(),
         **llm_health,
     }
 
@@ -1270,20 +1376,35 @@ def examples():
 
 
 @app.post("/api/sessions")
-def create_session():
-    session = _get_or_create_session(None)
+def create_session(
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+    x_agent_name: str | None = Header(None, alias="X-Agent-Name"),
+):
+    user_id = _request_user_id(x_user_id)
+    agent_name = _request_agent_name(x_agent_name)
+    _SESSION_STORE.prune_empty_sessions(user_id, agent_name)
+    session = _get_or_create_session(None, user_id, agent_name)
     return {"session": _session_summary(session), "messages": []}
 
 
 @app.get("/api/sessions")
-def list_sessions():
-    sessions = sorted(_SESSIONS.values(), key=lambda item: item.get("updated_at", ""), reverse=True)
-    return {"sessions": [_session_summary(session) for session in sessions]}
+def list_sessions(
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+    x_agent_name: str | None = Header(None, alias="X-Agent-Name"),
+):
+    user_id = _request_user_id(x_user_id)
+    agent_name = _request_agent_name(x_agent_name)
+    pruned = _SESSION_STORE.prune_empty_sessions(user_id, agent_name)
+    sessions = _SESSION_STORE.list_sessions(user_id, agent_name)
+    return {"sessions": [_session_summary(session) for session in sessions], "pruned_empty_sessions": pruned}
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session(session_id: str):
-    session = _SESSIONS.get(session_id)
+def get_session(
+    session_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+):
+    session = _SESSION_STORE.get_session(session_id, _request_user_id(x_user_id))
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
     return {
@@ -1293,15 +1414,32 @@ def get_session(session_id: str):
     }
 
 
+@app.delete("/api/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+):
+    deleted = _SESSION_STORE.delete_session(session_id, _request_user_id(x_user_id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    return {"deleted": True, "session_id": session_id}
+
+
 @app.post("/api/query")
-def legacy_query(req: LegacyQueryRequest):
+def legacy_query(
+    req: LegacyQueryRequest,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+    x_agent_name: str | None = Header(None, alias="X-Agent-Name"),
+):
     compatible = _legacy_query_request(req)
-    session = _get_or_create_session(compatible.session_id)
+    user_id = _request_user_id(x_user_id)
+    agent_name = _request_agent_name(x_agent_name)
+    session = _get_or_create_session(compatible.session_id, user_id, agent_name)
     message_id = _message_id()
     user_text = _user_message_text(req.question, req.params)
     _append_message(session, "user", user_text, message_id=message_id)
     try:
-        data = _run_query(compatible, session, message_id)
+        data = _run_query(compatible, session, message_id, agent_name=agent_name, user_id=user_id)
     except Exception as exc:
         _raise_api_error(exc)
     data = _finalize_assistant_message(session, data, message_id)
@@ -1309,36 +1447,52 @@ def legacy_query(req: LegacyQueryRequest):
 
 
 @app.post("/api/query/stream")
-def legacy_query_stream(req: LegacyQueryRequest):
+def legacy_query_stream(
+    req: LegacyQueryRequest,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+    x_agent_name: str | None = Header(None, alias="X-Agent-Name"),
+):
     compatible = _legacy_query_request(req)
-    session = _get_or_create_session(compatible.session_id)
+    user_id = _request_user_id(x_user_id)
+    agent_name = _request_agent_name(x_agent_name)
+    session = _get_or_create_session(compatible.session_id, user_id, agent_name)
     message_id = _message_id()
     user_text = _user_message_text(req.question, req.params)
     _append_message(session, "user", user_text, message_id=message_id)
     return StreamingResponse(
-        _legacy_stream_adapter(_stream_query(compatible, session, message_id)),
+        _legacy_stream_adapter(_stream_query(compatible, session, message_id, agent_name=agent_name, user_id=user_id)),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )
 
 
 @app.post("/api/followup/stream")
-def legacy_followup_stream(req: FollowupRequest):
-    if req.result_id not in _RESULTS:
+def legacy_followup_stream(
+    req: FollowupRequest,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+    x_agent_name: str | None = Header(None, alias="X-Agent-Name"),
+):
+    user_id = _request_user_id(x_user_id)
+    agent_name = _request_agent_name(x_agent_name)
+    if not _SESSION_STORE.get_result(req.result_id, user_id):
         raise HTTPException(status_code=404, detail="이전 결과를 찾을 수 없습니다.")
-    session = _get_or_create_session(req.session_id)
+    session = _get_or_create_session(req.session_id, user_id, agent_name)
     message_id = _message_id()
     _append_message(session, "user", req.question.strip(), message_id=message_id)
     return StreamingResponse(
-        _stream_followup(req, session, message_id),
+        _stream_followup(req, session, message_id, agent_name=agent_name, user_id=user_id),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )
 
 
 @app.post("/api/export")
-def export_result(req: ExportRequest):
-    result = _RESULTS.get(req.result_id)
+def export_result(
+    req: ExportRequest,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+):
+    user_id = _request_user_id(x_user_id)
+    result = _SESSION_STORE.get_result(req.result_id, user_id)
     if not result:
         raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
     fmt = req.format.lower().strip()
@@ -1346,27 +1500,28 @@ def export_result(req: ExportRequest):
     if fmt == "all":
         paths = agent.export_all(result)
         for kind, path in paths.items():
-            registered = _register_file(path)
+            registered = _register_file(path, user_id=user_id)
             if registered:
                 registered["kind"] = kind
                 files.append(registered)
     elif fmt in {"word", "docx"}:
-        registered = _register_file(agent.export_to_word(result))
+        registered = _register_file(agent.export_to_word(result), user_id=user_id)
         if registered:
             registered["kind"] = "word"
             files.append(registered)
     elif fmt in {"text", "txt"}:
-        registered = _register_file(agent.export_to_text(result))
+        registered = _register_file(agent.export_to_text(result), user_id=user_id)
         if registered:
             registered["kind"] = "text"
             files.append(registered)
     elif fmt == "csv":
-        registered = _register_file(agent.export_to_csv(result))
+        registered = _register_file(agent.export_to_csv(result), user_id=user_id)
         if registered:
             registered["kind"] = "csv"
             files.append(registered)
-    elif fmt == "excel":
-        registered = _register_file(result.get("bad_debt_excel_path", ""))
+    elif fmt in {"excel", "xlsx"}:
+        excel_path = result.get("bad_debt_excel_path", "") or agent.export_to_excel(result)
+        registered = _register_file(excel_path, user_id=user_id)
         if registered:
             registered["kind"] = "excel"
             files.append(registered)
@@ -1379,7 +1534,7 @@ def export_result(req: ExportRequest):
 
 @app.get("/api/files/{token}")
 def download_file(token: str):
-    path = _FILES.get(token)
+    path = _SESSION_STORE.get_file(token)
     if not path:
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
     file_path = Path(path)

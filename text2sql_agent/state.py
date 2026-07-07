@@ -19,6 +19,8 @@ class Text2SQLState(TypedDict):
     tool_params: dict
     tool_completed: bool
     skip_tool_selection: bool
+    selected_capability_type: str
+    selected_capability_name: str
     # --- 범용 파라미터 프롬프트 ---
     missing_params: list
     param_stage: str

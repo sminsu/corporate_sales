@@ -9,7 +9,19 @@ import sqlparse
 import yaml
 from langgraph.graph import END, StateGraph
 
-from .config import DB_BACKEND, DB_SCHEMA, DB_SCHEMA_PREFIX, ENABLE_EMBEDDING_PRECOMPUTE, EMBED_MATCH_THRESHOLD
+from .config import (
+    DB_BACKEND,
+    DB_SCHEMA,
+    DB_SCHEMA_PREFIX,
+    EMBED_MATCH_THRESHOLD,
+    ENABLE_EMBEDDING_PRECOMPUTE,
+    ENABLE_VERIFIED_QUERY_LLM_FALLBACK,
+    ENABLE_VERIFIED_QUERY_MATCHING,
+    VERIFIED_QUERY_LLM_CANDIDATE_LIMIT,
+    VERIFIED_QUERY_MIN_LEXICAL_SCORE,
+    VERIFIED_QUERY_RULE_MATCH_MARGIN,
+    VERIFIED_QUERY_RULE_MATCH_THRESHOLD,
+)
 from .db import execute_sql, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
@@ -146,7 +158,7 @@ def classify_question(state: Text2SQLState) -> dict:
     metrics = build_metrics_summary(SCHEMA)
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     references = find_relevant_references(SCHEMA, question)
-    prompt = f"""당신은 KB카드 법인영업 데이터베이스 시스템의 질문 분류기입니다.
+    prompt = f"""당신은 KB카드 기업영업 데이터베이스 시스템의 질문 분류기입니다.
 사용자의 질문을 분석하여 아래 3가지 중 하나로 분류하세요.
 
 ## 분류 기준
@@ -161,7 +173,7 @@ def classify_question(state: Text2SQLState) -> dict:
 - 용어/개념 설명, 테이블/컬럼 구조 설명, 비즈니스 규칙/로직 설명
 
 **reject** - 답변할 수 없는 질문:
-- KB카드 법인영업 데이터와 전혀 무관한 질문
+- KB카드 기업영업 데이터와 전혀 무관한 질문
 
 ## 보유 데이터 범위
 {table_summary}
@@ -312,6 +324,51 @@ def _months_back_ym(yyyymm: str, months_back: int) -> str:
     return f"{year:04d}{month:02d}"
 
 
+def _state_param_context(state: Text2SQLState | dict) -> dict:
+    params = {}
+    params.update(state.get("extracted_params", {}) or {})
+    params.update(state.get("user_provided_params", {}) or {})
+    return {key: value for key, value in params.items() if value not in (None, "")}
+
+
+def _format_params_for_prompt(params: dict) -> str:
+    if not params:
+        return "(없음)"
+    return "\n".join(f"- {key}: {value}" for key, value in params.items())
+
+
+def _user_provided_date_values(params: dict) -> list[str]:
+    values = []
+    for key, value in (params or {}).items():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key_text = str(key or "").lower()
+        if (
+            re.search(r"20\d{2}(?:\d{2}){0,2}", text)
+            or any(token in key_text for token in ("기준년월", "년월", "년월일", "일자", "date", "ym"))
+        ):
+            values.append(text)
+    return values
+
+
+def _is_user_param_date_false_positive(llm_result: str, params: dict, sql: str) -> bool:
+    date_values = _user_provided_date_values(params)
+    if not date_values or not any(value in (sql or "") for value in date_values):
+        return False
+
+    lines = [line.strip("- \t") for line in (llm_result or "").splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    def is_date_false_positive(line: str) -> bool:
+        has_date_subject = any(token in line for token in ("날짜", "시점", "기준년월", "기준년월일", "실적기준년월일"))
+        has_missing_question_claim = any(token in line for token in ("임의", "언급이 없음", "질문에 없", "특정 시점"))
+        return has_date_subject and has_missing_question_claim
+
+    return all(is_date_false_positive(line) for line in lines)
+
+
 def _relative_month_target(question: str) -> tuple[str, str]:
     if re.search(r"저번\s*달|지난\s*달|전월", question):
         return _previous_ym(), "저번달/지난달/전월"
@@ -442,6 +499,77 @@ def _augment_bad_debt_params(question: str, params: dict) -> dict:
     return augmented
 
 
+_SINGLE_TAG_FORCE_TOOLS = {"대손비용률_분석"}
+
+
+def _tag_hits(question: str, tags: list[str]) -> int:
+    q_lower = (question or "").lower()
+    q_compact = re.sub(r"\s+", "", q_lower)
+    hits = 0
+    for tag in tags:
+        tag_lower = str(tag or "").lower().strip()
+        if tag_lower and (tag_lower in q_lower or tag_lower in q_compact):
+            hits += 1
+    return hits
+
+
+def _rank_tool_candidates(question: str) -> list[tuple[int, dict]]:
+    scores: list[tuple[int, dict]] = []
+    for tool in TOOLS:
+        hits = _tag_hits(question, tool.get("tags", []))
+        if hits:
+            scores.append((hits, tool))
+    scores.sort(key=lambda item: (item[0], item[1]["name"]), reverse=True)
+    return scores
+
+
+def _tool_candidates(question: str) -> list[dict]:
+    candidates = []
+    for hits, tool in _rank_tool_candidates(question):
+        if hits >= 2 or (hits >= 1 and tool["name"] in _SINGLE_TAG_FORCE_TOOLS):
+            candidates.append(tool)
+    return candidates
+
+
+def _empty_capability_selection() -> dict:
+    return {
+        "selected_capability_type": "",
+        "selected_capability_name": "",
+        "selected_tool": "",
+        "tool_params": {},
+        "matched_query_name": "",
+        "matched_query_sql": "",
+        "matched_query_params": {},
+    }
+
+
+def _tool_capability_result(tool_name: str, params: dict | None = None) -> dict:
+    return {
+        "selected_capability_type": "tool",
+        "selected_capability_name": tool_name,
+        "selected_tool": tool_name,
+        "tool_params": params or {},
+        "matched_query_name": "",
+        "matched_query_sql": "",
+        "matched_query_params": {},
+    }
+
+
+def _verified_query_capability_result(match: dict) -> dict:
+    name = match.get("matched_query_name", "")
+    if not name:
+        return _empty_capability_selection()
+    return {
+        "selected_capability_type": "verified_query",
+        "selected_capability_name": name,
+        "selected_tool": "",
+        "tool_params": {},
+        "matched_query_name": name,
+        "matched_query_sql": match.get("matched_query_sql", ""),
+        "matched_query_params": match.get("matched_query_params", {}),
+    }
+
+
 def _rule_match_tool(question: str) -> str:
     """질문에 Tool tags가 등장하는지로 Tool을 우선 매칭한다.
 
@@ -449,37 +577,29 @@ def _rule_match_tool(question: str) -> str:
     태그가 명확히 일치하는 Tool이 '단독 최다'일 때 LLM 판단보다 먼저 확정한다.
     동점이거나 일치가 없으면 빈 문자열을 돌려 기존 LLM 선택 경로로 넘긴다.
     """
-    scores: list[tuple[int, str]] = []
-    for tool in TOOLS:
-        hits = sum(1 for tag in tool.get("tags", []) if tag and tag in question)
-        if hits:
-            scores.append((hits, tool["name"]))
+    scores = [(hits, tool["name"]) for hits, tool in _rank_tool_candidates(question)]
     if not scores:
         return ""
     scores.sort(reverse=True)
     top_score, top_name = scores[0]
+    if top_score < 2 and top_name not in _SINGLE_TAG_FORCE_TOOLS:
+        return ""
     # 최다 점수를 가진 Tool이 유일할 때만 규칙으로 확정 (모호하면 LLM에 위임).
     if sum(1 for score, _ in scores if score == top_score) == 1:
         return top_name
     return ""
 
 
-def select_tool(state: Text2SQLState) -> dict:
-    if state.get("skip_tool_selection"):
-        return {"selected_tool": "", "tool_params": {}}
+def _extract_tool_selection_with_llm(question: str, candidate_tools: list[dict], domain_context: str = "") -> tuple[str, dict]:
+    if not candidate_tools:
+        return "NONE", {}
 
-    if state.get("selected_tool") and state.get("tool_params") is not None:
-        return {"selected_tool": state["selected_tool"], "tool_params": state.get("tool_params", {})}
-
-    question = state["question"]
-    forced_tool = _rule_match_tool(question)
-    tool_desc = _build_tool_descriptions()
-    domain_context = state.get("domain_context") or "(도메인 라우팅 결과 없음)"
+    tool_desc = _build_tool_descriptions(candidate_tools)
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     prompt = f"""사용자의 질문에 대해 아래 Tool 중 가장 적합한 것을 선택하고, 질문에서 파라미터를 추출하세요.
 
 ## 도메인 라우팅 결과
-{domain_context}
+{domain_context or "(도메인 라우팅 결과 없음)"}
 
 ## LLM Semantic Contract
 {semantic_contract}
@@ -511,22 +631,60 @@ JSON:"""
     params = result.get("params", {}) if result else {}
     if not isinstance(params, dict):
         params = {}
+    return tool_name, params
 
-    # 규칙으로 Tool이 확정되면 LLM이 Tool을 놓치거나 다르게 골라도 그 Tool로 강제한다.
-    # (LLM 응답은 파라미터 추출 용도로만 신뢰한다.) LLM이 엉뚱한 Tool을 고른 경우라도
-    # 추출한 값 중 강제 Tool이 실제로 받는 파라미터만 추려 살린다 — 가맹점명/기준년월 등이
-    # 헛되이 누락 처리되는 것을 막는다.
+
+def _select_tool_capability(
+    question: str,
+    candidate_tools: list[dict],
+    forced_tool: str = "",
+    domain_context: str = "",
+) -> dict:
     if forced_tool:
-        valid_names = {p["name"] for p in TOOL_MAP[forced_tool]["parameters"]}
-        params = {k: v for k, v in params.items() if k in valid_names}
-        # LLM이 파라미터 추출을 비결정적으로 누락하므로, 핵심 값은 질문에서 직접 보강한다.
-        if forced_tool == "대손비용률_분석":
-            params = _augment_bad_debt_params(question, params)
-        return {"selected_tool": forced_tool, "tool_params": params}
+        candidate_tools = [TOOL_MAP[forced_tool]]
 
+    tool_name, params = _extract_tool_selection_with_llm(question, candidate_tools, domain_context)
+    if forced_tool:
+        tool_name = forced_tool
     if tool_name == "NONE" or tool_name not in TOOL_MAP:
-        return {"selected_tool": "", "tool_params": {}}
-    return {"selected_tool": tool_name, "tool_params": params}
+        return _empty_capability_selection()
+
+    valid_names = {p["name"] for p in TOOL_MAP[tool_name]["parameters"]}
+    params = {k: v for k, v in params.items() if k in valid_names}
+    if tool_name == "대손비용률_분석":
+        params = _augment_bad_debt_params(question, params)
+    return _tool_capability_result(tool_name, params)
+
+
+def select_tool(state: Text2SQLState) -> dict:
+    if state.get("skip_tool_selection"):
+        return _empty_capability_selection()
+
+    if state.get("selected_tool") and state.get("tool_params") is not None:
+        return _tool_capability_result(state["selected_tool"], state.get("tool_params", {}))
+    if state.get("matched_query_name") and state.get("matched_query_sql"):
+        return _verified_query_capability_result(
+            {
+                "matched_query_name": state["matched_query_name"],
+                "matched_query_sql": state.get("matched_query_sql", ""),
+                "matched_query_params": state.get("matched_query_params", {}),
+            }
+        )
+
+    question = state["question"]
+    domain_context = state.get("domain_context", "")
+    forced_tool = _rule_match_tool(question)
+    if forced_tool:
+        return _select_tool_capability(question, [], forced_tool, domain_context)
+
+    verified_query = _select_verified_query_capability(question, state)
+    if verified_query:
+        return verified_query
+
+    candidate_tools = _tool_candidates(question)
+    if candidate_tools:
+        return _select_tool_capability(question, candidate_tools, domain_context=domain_context)
+    return _empty_capability_selection()
 
 
 def check_tool_params(state: Text2SQLState) -> dict:
@@ -631,9 +789,67 @@ def _verified_query_matches_intent(question: str, matched: dict) -> bool:
     return True
 
 
+_VQ_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_]+")
+
+
+def _score_vq_candidate(question: str, vq: dict) -> int:
+    q_lower = (question or "").lower()
+    q_tokens = {token for token in _VQ_TOKEN_RE.findall(q_lower) if len(token) >= 2}
+    vq_text = " ".join(
+        str(value or "")
+        for value in (
+            vq.get("name"),
+            vq.get("question"),
+            vq.get("description"),
+            " ".join(str(tag) for tag in vq.get("tags", [])),
+        )
+    ).lower()
+    vq_tokens = {token for token in _VQ_TOKEN_RE.findall(vq_text) if len(token) >= 2}
+    score = len(q_tokens & vq_tokens)
+    q_compact = re.sub(r"\s+", "", q_lower)
+    for tag in vq.get("tags", []):
+        tag_lower = str(tag or "").lower().strip()
+        if tag_lower and (tag_lower in q_lower or tag_lower in q_compact):
+            score += 3
+    return score
+
+
+def _rank_vq_candidate_scores(question: str) -> list[tuple[int, dict]]:
+    scored = [
+        (score, vq)
+        for vq in VERIFIED_QUERIES
+        if (score := _score_vq_candidate(question, vq)) >= VERIFIED_QUERY_MIN_LEXICAL_SCORE
+    ]
+    scored.sort(key=lambda item: (item[0], item[1].get("name", "")), reverse=True)
+    return scored
+
+
+def _rank_vq_candidates(question: str) -> list[dict]:
+    scored = _rank_vq_candidate_scores(question)
+    return [vq for _, vq in scored[:VERIFIED_QUERY_LLM_CANDIDATE_LIMIT]]
+
+
+def _match_vq_by_rules(question: str) -> dict | None:
+    scored = _rank_vq_candidate_scores(question)
+    if not scored:
+        return None
+    top_score, matched = scored[0]
+    if top_score < VERIFIED_QUERY_RULE_MATCH_THRESHOLD:
+        return None
+    if len(scored) > 1 and top_score - scored[1][0] < VERIFIED_QUERY_RULE_MATCH_MARGIN:
+        return None
+    if not _verified_query_matches_intent(question, matched):
+        return None
+    return {
+        "matched_query_name": matched["name"],
+        "matched_query_sql": matched["sql"].strip(),
+        "matched_query_params": matched.get("parameters", {}),
+    }
+
+
 def _match_vq_by_llm(question: str) -> dict:
     """LLM으로 Verified Query 매칭 (embedding 폴백)."""
-    vqs = VERIFIED_QUERIES
+    vqs = _rank_vq_candidates(question)
     if not vqs:
         return {"matched_query_name": ""}
     vq_lines = []
@@ -680,15 +896,44 @@ def _match_vq_by_llm(question: str) -> dict:
     }
 
 
-def match_verified_query(state: Text2SQLState) -> dict:
-    if state.get("skip_verified_query_matching"):
-        return {"matched_query_name": "", "matched_query_sql": "", "matched_query_params": {}}
+def _select_verified_query_capability(question: str, state: Text2SQLState | dict) -> dict | None:
+    if not ENABLE_VERIFIED_QUERY_MATCHING or state.get("skip_verified_query_matching"):
+        return None
 
-    question = state["question"]
     result = _match_vq_by_embedding(question)
     if result:
-        return result
-    return _match_vq_by_llm(question)
+        return _verified_query_capability_result(result)
+
+    result = _match_vq_by_rules(question)
+    if result:
+        return _verified_query_capability_result(result)
+
+    if ENABLE_VERIFIED_QUERY_LLM_FALLBACK:
+        result = _match_vq_by_llm(question)
+        if result.get("matched_query_name"):
+            return _verified_query_capability_result(result)
+    return None
+
+
+def _missing_vq_required_params(vq_params_def: dict, params: dict) -> list[dict]:
+    missing = []
+    for name, info in (vq_params_def or {}).items():
+        if not isinstance(info, dict) or not info.get("required"):
+            continue
+        if info.get("default") not in (None, ""):
+            continue
+        value = params.get(name)
+        if value not in (None, ""):
+            continue
+        missing.append(
+            {
+                "name": name,
+                "label": name,
+                "description": info.get("description", ""),
+                "type": info.get("type", "string"),
+            }
+        )
+    return missing
 
 
 def extract_and_apply_params(state: Text2SQLState) -> dict:
@@ -729,6 +974,9 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 
 JSON:"""
     extracted = _parse_llm_json(_call_llm(extract_prompt))
+    if not isinstance(extracted, dict):
+        extracted = {}
+    extracted.update(state.get("user_provided_params", {}) or {})
     if "기준년월" in vq_params_def and not extracted.get("기준년월"):
         ym = _extract_ym_from_question(question) or extracted.get("기간_종료")
         if ym:
@@ -742,9 +990,17 @@ JSON:"""
             extracted.setdefault("기간_시작", _months_back_ym(end_ym, span - 1))
             if "기준년월" in vq_params_def:
                 extracted.setdefault("기준년월", end_ym)
+    missing = _missing_vq_required_params(vq_params_def, extracted)
+    if missing:
+        return {
+            "extracted_params": extracted,
+            "user_provided_params": extracted,
+            "param_stage": "need_params",
+            "missing_params": missing,
+        }
     final_sql = _apply_params_to_vq(base_sql, extracted, vq_name, vq_params_def)
     formatted_sql = sqlparse.format(final_sql, reindent=True, keyword_case="upper")
-    return {"extracted_params": extracted, "final_sql": prepare_sql_for_backend(formatted_sql)}
+    return {"extracted_params": extracted, "param_stage": "done", "missing_params": [], "final_sql": prepare_sql_for_backend(formatted_sql)}
 
 
 def run_matched_query(state: Text2SQLState) -> dict:
@@ -763,7 +1019,7 @@ def direct_answer(state: Text2SQLState) -> dict:
     metrics = build_metrics_summary(SCHEMA)
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     references = find_relevant_references(SCHEMA, question)
-    prompt = f"""당신은 KB카드 법인영업 데이터베이스 전문가입니다.
+    prompt = f"""당신은 KB카드 기업영업 데이터베이스 전문가입니다.
 사용자의 질문에 대해 아래 정보를 바탕으로 명확한 한국어 답변을 작성하세요.
 
 ## 테이블 정보
@@ -789,7 +1045,7 @@ def direct_answer(state: Text2SQLState) -> dict:
 
 
 def reject_answer(state: Text2SQLState) -> dict:
-    return {"answer": "죄송합니다. 해당 질문에 대해서는 답변을 드리지 못합니다.\n\n저는 KB카드 법인영업 데이터 분석을 도와드리는 에이전트입니다.\n다음과 같은 질문을 해주시면 답변드릴 수 있습니다:\n- 매출/이용 분석, 가맹점 분석, 기업 심사, 여신/연체, 대손비용률\n- 대손비용률 분석: \"한빛테크놀로지의 2025년 12월 대손비용률 구해줘\"\n\n결과 저장: 조회 후 '저장' | 'word' | 'text' | 'csv' 입력"}
+    return {"answer": "죄송합니다. 해당 질문에 대해서는 답변을 드리지 못합니다.\n\n저는 KB카드 기업영업 데이터 분석을 도와드리는 에이전트입니다.\n다음과 같은 질문을 해주시면 답변드릴 수 있습니다:\n- 매출/이용 분석, 가맹점 분석, 기업 심사, 여신/연체, 대손비용률\n- 대손비용률 분석: \"한빛테크놀로지의 2025년 12월 대손비용률 구해줘\"\n\n결과 저장: 조회 후 '저장' | 'word' | 'excel' | 'text' 입력"}
 
 
 def analyze_question(state: Text2SQLState) -> dict:
@@ -801,7 +1057,7 @@ def analyze_question(state: Text2SQLState) -> dict:
     domain_trace = state.get("domain_routing_trace", "")
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     join_context = build_semantic_join_context(SCHEMA, state.get("selected_domain", ""), question)
-    prompt = f"""당신은 KB카드 법인영업 데이터베이스 전문가입니다.
+    prompt = f"""당신은 KB카드 기업영업 데이터베이스 전문가입니다.
 사용자의 질문을 분석하여 필요한 테이블을 선택하세요.
 
 ## 도메인 라우팅 결과
@@ -929,13 +1185,13 @@ def generate_sql(state: Text2SQLState) -> dict:
     if retry_count > 0 and validation_result:
         retry_context = f"\n## 이전 시도 실패\n{validation_result}\n\n이전 SQL:\n{state.get('generated_sql', '')}\n\n위 문제를 수정한 SQL을 생성하세요.\n"
 
-    user_params = state.get("user_provided_params", {})
+    user_params = _state_param_context(state)
     user_params_context = ""
     if user_params:
-        params_text = "\n".join(f"- {k}: {v}" for k, v in user_params.items())
+        params_text = _format_params_for_prompt(user_params)
         user_params_context = f"\n## 사용자가 제공한 추가 정보\n{params_text}\n위 값을 SQL의 WHERE 조건이나 파라미터에 반영하세요.\n"
 
-    prompt = f"""당신은 KB카드 법인영업 데이터베이스의 SQL 전문가입니다.
+    prompt = f"""당신은 KB카드 기업영업 데이터베이스의 SQL 전문가입니다.
 사용자의 자연어 질문을 {_sql_dialect_name()} SQL로 변환하세요.
 
 ## 도메인 라우팅 결과
@@ -980,9 +1236,12 @@ def generate_sql(state: Text2SQLState) -> dict:
 13. 상세 목록 조회는 LIMIT 100 이하를 기본으로 둡니다. 집계 결과는 의미있는 순서로 정렬합니다.
 14. 읽기 쉬운 alias. 15. 순수 SQL만 반환.
 16. 날짜 해석 ({_current_date_context()}):
+    - 원 질문 또는 "사용자가 제공한 추가 정보"에 날짜/기간/기준년월 값이 있으면 그 값을 명시 조건으로 반영.
+    - 원 질문과 추가 정보 어디에도 날짜/기간이 없으면 참고 SQL 예시의 202604/202512 같은 고정 월을 복사하지 않습니다.
     - "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석.
-    - 기준년월 컬럼은 "{current_ym}" 조건을 사용.
-    - 기준년월일 컬럼은 SUBSTRING(기준년월일, 1, 6) = "{current_ym}" 범위 안의 최신 기준년월일을 사용.
+    - 위 상대 날짜 표현이 있을 때 기준년월 컬럼은 "{current_ym}" 조건을 사용.
+    - 위 상대 날짜 표현이 있을 때 기준년월일 컬럼은 SUBSTRING(기준년월일, 1, 6) = "{current_ym}" 범위 안의 최신 기준년월일을 사용.
+    - "현재/보유/소지/유효/현황"처럼 현재 상태를 묻지만 날짜가 없으면 사용 가능한 최신 스냅샷(MAX 기준년월/기준년월일)을 사용하고, 예시의 과거 고정 월은 사용하지 않습니다.
     - "저번달", "지난달", "전월"은 지난달 1개월 기준으로 해석하고, 기준년월 컬럼은 "{previous_ym}" 조건을 사용.
     - "가맹점별/각 가맹점별"은 가맹점번호와 가맹점명을 SELECT/GROUP BY에 포함.
     - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬.
@@ -1005,6 +1264,8 @@ def validate_sql(state: Text2SQLState) -> dict:
     issues = _validate_sql_against_schema(sql, selected_tables)
     issues.extend(_validate_recent_month_semantics(question, sql))
     current_ym = _current_ym()
+    user_params = _state_param_context(state)
+    user_params_text = _format_params_for_prompt(user_params)
     try:
         parsed = sqlparse.parse(sql)
         if not parsed or not parsed[0].tokens:
@@ -1013,11 +1274,18 @@ def validate_sql(state: Text2SQLState) -> dict:
         issues.append(f"SQL 파싱 오류: {e}")
     validation_prompt = f"""SQL 검증 전문가로서, 아래 SQL이 사용자 질문에 정확히 답하는지 검증하세요.
 
-사용자 질문: {question}
+사용자 원 질문: {question}
+추가 입력 파라미터:
+{user_params_text}
+
 SQL:
 {sql}
 사용 테이블: {', '.join(selected_tables)}
 검증 기준:
+- 사용자 원 질문과 추가 입력 파라미터를 합친 조건을 최종 사용자 요청으로 간주합니다.
+- 추가 입력 파라미터의 날짜/기간/기준년월 값은 사용자가 명시적으로 제공한 조건입니다.
+- SQL이 추가 입력 파라미터의 날짜/기간/기준년월 값을 반영한 경우, 이를 "질문에 없는 임의 날짜 조건"으로 지적하지 마세요.
+- 사용자 원 질문과 추가 입력 파라미터 어디에도 날짜/기간이 없는데 SQL이 202604/202512 같은 고정 과거월을 쓰면 오류입니다.
 - 이 앱에서 "최근", "최근 기준", "이번달", "이번 월"은 반드시 현재월({current_ym}) 기준입니다.
 - 위 표현이 있는 질문에서 SQL이 현재월({current_ym}) 조건을 포함하면 날짜 해석은 올바릅니다.
 - 위 표현이 있는 질문에서 전체 데이터의 MAX(기준년월/기준년월일)만 사용하면 잘못입니다.
@@ -1030,7 +1298,10 @@ SQL:
 
 문제가 없으면 "VALID"만 반환. 문제가 있으면 구체적 목록을 반환."""
     llm_result = _coerce_llm_text(_call_llm(validation_prompt))
-    if llm_result.upper().startswith("VALID") and not issues:
+    if (
+        (llm_result.upper().startswith("VALID") or _is_user_param_date_false_positive(llm_result, user_params, sql))
+        and not issues
+    ):
         formatted_sql = sqlparse.format(sql, reindent=True, keyword_case="upper")
         return {"validation_result": "VALID", "is_valid": True, "final_sql": prepare_sql_for_backend(formatted_sql)}
     else:
@@ -1075,7 +1346,7 @@ def generate_answer(state: Text2SQLState) -> dict:
         result_text += f"\n... 외 {len(rows) - 50}건 더 있음"
     source_label = _get_source_label(state)
     summary_text = _result_summary(columns, rows)
-    prompt = f"""당신은 KB카드 법인영업 데이터 분석가입니다.
+    prompt = f"""당신은 KB카드 기업영업 데이터 분석가입니다.
 사용자의 질문과 SQL 쿼리 결과를 바탕으로 짧고 직관적인 한국어 답변을 작성하세요.
 
 ## 사용자 질문
@@ -1135,8 +1406,12 @@ def route_by_question_type(state: Text2SQLState) -> Literal["route_domain", "dir
     return "route_domain"
 
 
-def after_tool_selection(state: Text2SQLState) -> Literal["check_tool_params", "match_verified_query"]:
-    return "check_tool_params" if state.get("selected_tool") else "match_verified_query"
+def after_tool_selection(state: Text2SQLState) -> Literal["check_tool_params", "extract_and_apply_params", "analyze_question"]:
+    if state.get("selected_tool"):
+        return "check_tool_params"
+    if state.get("matched_query_name"):
+        return "extract_and_apply_params"
+    return "analyze_question"
 
 
 def after_check_params(state: Text2SQLState) -> Literal["execute_tool", "__end__"]:
@@ -1151,16 +1426,18 @@ def after_execute_tool(state: Text2SQLState) -> Literal["generate_answer", "run_
     return "run_tool_query"
 
 
-def after_tool_query(state: Text2SQLState) -> Literal["generate_answer", "match_verified_query"]:
-    return "match_verified_query" if state.get("query_error") else "generate_answer"
-
-
-def after_query_match(state: Text2SQLState) -> Literal["extract_and_apply_params", "analyze_question"]:
-    return "extract_and_apply_params" if state.get("matched_query_name") else "analyze_question"
+def after_tool_query(state: Text2SQLState) -> Literal["generate_answer", "analyze_question"]:
+    return "analyze_question" if state.get("query_error") else "generate_answer"
 
 
 def after_matched_query(state: Text2SQLState) -> Literal["generate_answer", "analyze_question"]:
     return "analyze_question" if state.get("query_error") else "generate_answer"
+
+
+def after_extract_params(state: Text2SQLState) -> Literal["run_matched_query", "__end__"]:
+    if state.get("param_stage") == "need_params":
+        return "__end__"
+    return "run_matched_query"
 
 
 def after_check_sql_gen_params(state: Text2SQLState) -> Literal["generate_sql", "__end__"]:
@@ -1194,7 +1471,6 @@ def build_graph() -> StateGraph:
     graph.add_node("check_tool_params", check_tool_params)
     graph.add_node("execute_tool", execute_tool)
     graph.add_node("run_tool_query", run_tool_query)
-    graph.add_node("match_verified_query", match_verified_query)
     graph.add_node("extract_and_apply_params", extract_and_apply_params)
     graph.add_node("run_matched_query", run_matched_query)
     graph.add_node("direct_answer", direct_answer)
@@ -1219,8 +1495,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges("execute_tool", after_execute_tool)
     graph.add_conditional_edges("run_tool_query", after_tool_query)
 
-    graph.add_conditional_edges("match_verified_query", after_query_match)
-    graph.add_edge("extract_and_apply_params", "run_matched_query")
+    graph.add_conditional_edges("extract_and_apply_params", after_extract_params)
     graph.add_conditional_edges("run_matched_query", after_matched_query)
 
     graph.add_edge("analyze_question", "check_sql_gen_params")
@@ -1244,6 +1519,7 @@ def _new_initial_state(question: str) -> Text2SQLState:
         "question": question, "question_type": "",
         "selected_domain": "", "domain_candidates": [], "domain_routing_trace": "", "domain_context": "",
         "selected_tool": "", "tool_params": {}, "tool_completed": False, "skip_tool_selection": False,
+        "selected_capability_type": "", "selected_capability_name": "",
         "missing_params": [], "param_stage": "", "user_provided_params": {},
         "matched_query_name": "", "matched_query_sql": "", "matched_query_params": {}, "extracted_params": {},
         "skip_verified_query_matching": False,
@@ -1279,9 +1555,13 @@ def run_agent_with_prompts(question: str) -> dict:
 
         current_params = {}
         tool_name = result.get("selected_tool", "")
+        matched_query_name = result.get("matched_query_name", "")
 
         if tool_name:
             current_params = dict(result.get("tool_params", {}))
+        elif matched_query_name:
+            current_params = dict(result.get("extracted_params", {}))
+            current_params.update(result.get("user_provided_params", {}) or {})
         else:
             current_params = dict(result.get("user_provided_params", {}))
 
@@ -1316,6 +1596,11 @@ def run_agent_with_prompts(question: str) -> dict:
                     for p in still_missing
                 ]
                 continue
+        elif matched_query_name:
+            state["matched_query_name"] = matched_query_name
+            state["matched_query_sql"] = result.get("matched_query_sql", "")
+            state["matched_query_params"] = result.get("matched_query_params", {})
+            state["user_provided_params"] = current_params
         else:
             state["user_provided_params"] = current_params
             state["selected_tables"] = result.get("selected_tables", [])

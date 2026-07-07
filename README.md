@@ -19,11 +19,12 @@ flowchart TD
 
     WF --> LLM["llm.py<br/>LLM/embedding 호출"]
     WF --> SCHEMA["schema.py<br/>schema_v6_gptoss.yaml 로딩/검증"]
-    WF --> TOOLS["tools/registry.py<br/>Tool 선택"]
-    TOOLS --> SQLB["tools/sql_builders.py<br/>확정 SQL 생성"]
+    WF --> TOOLS["tools/registry.py<br/>Python Tool 선택"]
+    WF --> VQ["tools/sql_verified_queries.yaml<br/>verified query 선택"]
+    VQ --> SQLB["tools/sql_builders.py<br/>verified SQL 생성"]
     TOOLS --> BAD["tools/bad_debt.py<br/>대손비용률/Excel 생성"]
     WF --> DB["db.py<br/>PostgreSQL SELECT 실행"]
-    WF --> EXPORT["exports.py<br/>Word/Text/CSV 저장"]
+    WF --> EXPORT["exports.py<br/>Word/Excel/TXT 저장"]
 
     SCHEMA --> YAML["schema_v6_gptoss.yaml"]
     DB --> PG["PostgreSQL<br/>card_system schema"]
@@ -56,12 +57,14 @@ v4/
     schema.py                   # schema 로딩, prompt context 생성, SQL 검증
     state.py                    # LangGraph state 타입 정의
     workflow.py                 # LangGraph 노드, 라우팅, 그래프 구성
-    exports.py                  # Word/Text/CSV 내보내기
+    exports.py                  # Word/Excel/TXT 내보내기
     cli.py                      # 터미널 대화형 실행 인터페이스
     tools/
       __init__.py
-      registry.py               # Tool 메타데이터 등록
-      sql_builders.py           # 확정 SQL 생성 함수와 파라미터 유틸
+      registry.py               # Python Tool 메타데이터 등록 (대손비용률)
+      sql_verified_queries.yaml # 모든 verified query 정의
+      verified_queries.py       # 외부 verified query 로딩/정규화
+      sql_builders.py           # verified query SQL 생성 함수와 파라미터 유틸
       bad_debt.py               # 대손비용률 분석 Tool과 Excel 생성
 ```
 
@@ -72,18 +75,17 @@ v4/
 - `text2sql_agent/common_services.py`: webservice가 쓰는 trace/logging adapter입니다. `kbcard-agent-common`의 `KBCardLogger`를 사용해 실행 로그와 DB 모듈 로그를 stdout 또는 JSONL 파일로 남깁니다.
 - `text2sql_agent/__init__.py`: 웹서비스나 외부 코드에서 사용할 주요 공개 API를 한 곳에서 제공합니다.
 - `text2sql_agent/__main__.py`: `python -m text2sql_agent` 실행 시 CLI를 시작하는 진입점입니다.
-- `text2sql_agent/workflow.py`: 질문 분류, 도메인 라우팅, Tool 선택, verified query 매칭, SQL 생성/검증/실행, 답변 생성을 LangGraph로 연결합니다.
+- `text2sql_agent/workflow.py`: 질문 분류, 도메인 라우팅, capability 선택, verified query 매칭, SQL 생성/검증/실행, 답변 생성을 LangGraph로 연결합니다.
 - `text2sql_agent/schema.py`: `schema_v6_gptoss.yaml`을 읽고 테이블/메트릭/용어집/조인 그래프를 prompt context로 가공합니다.
-- `text2sql_agent/tools/`: 확정 SQL 기반 Tool을 관리합니다. 일반 Tool은 SQL 문자열을 만들고, 대손비용률 Tool은 SQL 실행과 Excel 생성까지 수행합니다.
+- `text2sql_agent/tools/`: 대손비용률 Python Tool과 외부 verified query 파일을 관리합니다.
 - `text2sql_agent/db.py`: 위험한 SQL 명령을 차단하고 읽기 전용 조회를 수행합니다. `DB_BACKEND`에 따라 PostgreSQL 또는 Amazon Athena(pyathena)로 실행되며, 검증 가드는 백엔드 공통입니다.
-- `text2sql_agent/exports.py`: 조회 결과를 Word, Text, CSV 파일로 저장합니다.
+- `text2sql_agent/exports.py`: 조회 결과를 Word, Excel, TXT 파일로 저장합니다.
 
-## 주요 Tool
+## Tool과 verified query
 
-- `가맹점_카드소지_실적_조회`: 가맹점 기본정보, 업종명, 기준월 실적, 대표자 개인카드/기업고객 기업카드 소지 여부를 함께 조회합니다. 개인카드 미보유 또는 기업카드 미보유 영업대상 추출에 사용합니다.
-- `가맹점_매출_순위`: 기준월 구간의 매출 상위 가맹점과 업종 정보를 조회합니다.
-- `업종별_매출_분석`: 업종 기준 매출 금액과 건수를 조회합니다.
-- `대손비용률_분석`: 대손비용률과 보정계수 반영 대손율을 계산하고 Excel 결과를 생성합니다.
+- Python Tool은 `대손비용률_분석`만 유지합니다. 대손비용률과 보정계수 반영 대손율을 계산하고 Excel 결과를 생성합니다.
+- schema에 있던 기존 verified query와 SQL만 생성하던 기존 Tool들은 모두 `text2sql_agent/tools/sql_verified_queries.yaml`에 모았습니다. 월별 이용금액, 가맹점 매출 순위, 업종별 매출, 연체, 한도사용률, 심사승인율, 카드등급별 연체, 카드소지 실적도 여기에 들어갑니다.
+- 런타임에서는 이 외부 파일이 verified query의 기준 소스입니다. 다른 파일을 쓰려면 `VERIFIED_QUERY_FILE_PATH`를 지정합니다.
 
 ## 실행 방법
 
@@ -148,10 +150,12 @@ kbcard-agent-common[llm] @ git+ssh://git@github.com/kduk/kbcard-agent-common.git
 ## Docker 실행
 
 ```bash
-cd /Users/minsu/Documents/company/franchise/text2sql_v10/corporate_sales
-docker build -t text2sql-webservice:v4 .
+cd /Users/minsu/Documents/company/franchise/text2sql_v10/common_athena
+DOCKER_BUILDKIT=1 docker build --ssh default -t text2sql-webservice:v4 .
 docker run --rm -p 8080:8080 --env-file .env text2sql-webservice:v4
 ```
+
+`requirements.txt`가 GitHub SSH 의존성을 포함하므로, 빌드 머신의 SSH agent에 GitHub 접근 가능한 키가 올라와 있어야 합니다.
 
 ## 환경 변수
 
@@ -164,6 +168,20 @@ AWS_BEARER_TOKEN_BEDROCK=...
 # 로컬 vLLM을 쓸 때만 필요 (Bedrock 경로에서는 사용 안 함).
 LLM_API_KEY=EMPTY
 KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
+
+# ECS/ALB 운영 시 웹 세션/메시지/후속질문 결과 저장
+WEBAPP_SESSION_STORE=postgres
+WEBAPP_POSTGRES_DSN="host=session-db.xxxx.ap-northeast-2.rds.amazonaws.com port=5432 dbname=text2sql user=text2sql_app password=..."
+WEBAPP_POSTGRES_SCHEMA=corporate_sales
+# 선택: PostgreSQL이 원본이고 Redis는 result/file token 보조 캐시입니다.
+WEBAPP_REDIS_URL="redis://redis.xxxx.cache.amazonaws.com:6379/0"
+
+# 보존 정책. 0이면 해당 제한을 끕니다.
+WEBAPP_MAX_SESSIONS_PER_USER=50
+WEBAPP_MAX_MESSAGES_PER_SESSION=80
+WEBAPP_RESULT_RETENTION_DAYS=7
+WEBAPP_FILE_RETENTION_DAYS=7
+WEBAPP_SESSION_RETENTION_DAYS=60
 ```
 
 `AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code/Anthropic용 bearer token을
@@ -184,6 +202,33 @@ KBCARD_LOG_FILE_BACKUP_COUNT=5
 ```
 
 파일 출력은 항상 JSONL이며, `max_bytes`를 넘으면 `backup_count`만큼 롤링됩니다.
+
+### 웹 세션 저장소 (ECS/ALB 권장)
+
+브라우저 UI의 멀티턴 상태는 FastAPI worker 메모리가 아니라 저장소에 보관합니다. 운영에서는
+`WEBAPP_SESSION_STORE=postgres`와 `WEBAPP_POSTGRES_DSN`을 지정하세요. 세션 저장 테이블은
+`WEBAPP_POSTGRES_SCHEMA` schema에서 동작하며, 기본값은 `corporate_sales`입니다. 앱이 시작 후
+첫 요청에서 다음 테이블을 `CREATE TABLE IF NOT EXISTS`로 자동 준비합니다.
+
+- `corporate_sales.webapp_sessions`: 사용자별 대화방, 마지막 결과, 누락 파라미터 continuation
+- `corporate_sales.webapp_messages`: user/assistant 메시지 본문과 응답 payload
+- `corporate_sales.webapp_results`: 후속질문/export에 필요한 result payload
+- `corporate_sales.webapp_files`: 다운로드 token과 실제 파일 경로
+
+`WEBAPP_POSTGRES_DSN`이 없으면 `KBCARD_POSTGRES_DSN`, `DATABASE_URL`, `DB_DSN` 등을 재사용합니다.
+업무 조회 DB를 읽기 전용 계정으로 운영한다면 세션 저장용 RDS/스키마와 쓰기 가능한 계정을 별도로 두는 편이 안전합니다.
+Redis는 선택 사항이며 `WEBAPP_REDIS_URL`을 지정하면 result/file token을 TTL 캐시하지만, 원본은 계속 PostgreSQL입니다.
+저장소는 무한 누적하지 않고 다음 보존 정책을 적용합니다. `0`을 지정하면 해당 제한만 끕니다.
+
+- `WEBAPP_MAX_SESSIONS_PER_USER`: 사용자별 최근 세션만 유지합니다. 기본값은 `50`입니다.
+- `WEBAPP_MAX_MESSAGES_PER_SESSION`: 세션별 최근 raw 메시지만 유지합니다. 기본값은 `80`입니다.
+- `WEBAPP_RESULT_RETENTION_DAYS`: 후속질문/export용 result payload 보존 기간입니다. 기본값은 `7`일입니다.
+- `WEBAPP_FILE_RETENTION_DAYS`: 다운로드 token과 파일 경로 record 보존 기간입니다. 기본값은 `7`일입니다.
+- `WEBAPP_SESSION_RETENTION_DAYS`: 비활성 세션 보존 기간입니다. 기본값은 `60`일입니다.
+
+웹 UI는 기본적으로 브라우저별 익명 `X-User-ID`를 localStorage에 만들고 세션 목록을 사용자별로 분리합니다.
+실제 로그인 환경에서는 HTML을 서빙하기 전에 `window.TEXT2SQL_USER_ID`에 사내 사용자 ID를 주입하거나,
+API Gateway/ALB 인증 계층에서 `X-User-ID`를 신뢰 가능한 값으로 덮어쓰도록 구성하세요.
 
 ### 데이터베이스 백엔드 (PostgreSQL / Amazon Athena)
 
@@ -218,7 +263,7 @@ Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명
   완전 폐쇄망이면 **S3·STS용 VPC 엔드포인트도 별도로** 있어야 정상 동작합니다 (Athena 엔드포인트만으로는 부족).
 - 결과 위치는 `ATHENA_S3_STAGING_DIR` 또는 워크그룹 결과 위치 중 하나만 있으면 됩니다.
 
-- 하드코딩된 Tool SQL(`bad_debt.py`/`sql_builders.py`)은 양쪽 DB에서 동작하도록 ANSI 표준으로
+- 하드코딩된 verified query SQL(`sql_builders.py`)과 대손비용률 SQL(`bad_debt.py`)은 양쪽 DB에서 동작하도록 ANSI 표준으로
   작성되어 있습니다 (`CAST(... AS DOUBLE/INTEGER)`, `LOWER() LIKE LOWER()`, `SUBSTR`).
 - LLM이 새로 생성하는 SQL은 `DB_BACKEND`에 따라 프롬프트가 PostgreSQL/Trino 방언을 자동 안내합니다.
 
@@ -229,7 +274,7 @@ Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명
 기본적으로 SQL에는 database prefix를 붙이지 않습니다.
 
 - 미설정 시 기본값: `postgres`면 `card_system`, `athena`면 prefix 없음.
-- `DB_SCHEMA`는 Tool SQL · SQL 검증(`schema.py`) · 생성 프롬프트 · schema YAML의
+- `DB_SCHEMA`는 verified query SQL · SQL 검증(`schema.py`) · 생성 프롬프트 · schema YAML의
   `physical_table`/verified-query SQL에 **일괄 적용**됩니다 (YAML 원본은 `card_system.`으로
   두고 로드 시 메모리에서 동적 치환).
 
@@ -258,7 +303,7 @@ delimited identifier를 사용해야 합니다. 이 앱은 `DB_BACKEND=athena`�
 
 Athena 테이블이 업무 날짜 컬럼(`기준년월`, `작업기준년월`, `기준년월일` 등)을 갖고 있지만 실제 저장은
 `year`/`month` 또는 `year`/`month`/`day` 파티션으로 되어 있으면, schema의 해당 테이블에
-`athena_partition`을 추가합니다. 이 메타가 있는 테이블만 Tool SQL에서 파티션 조건을 자동 추가하고,
+`athena_partition`을 추가합니다. 이 메타가 있는 테이블만 verified query SQL에서 파티션 조건을 자동 추가하고,
 메타가 없는 테이블은 기존 SQL 그대로 실행되므로 날짜 파티션이 아닌 테이블에서도 오류가 나지 않습니다.
 
 월 파티션 예시:
@@ -406,15 +451,40 @@ uv venv --python 3.12
 uv pip install -r requirements.txt
 ```
 
+### Capability router 라우팅 정밀도
+
+Tool과 verified query는 실행 방식은 분리하지만, 선택은 하나의 capability router에서 처리합니다. 질문이 broad하게 들어올 때는 잘못된 Tool이나 사전 쿼리를 쓰는 것보다 자동 SQL 생성으로 넘기는 편이 안전합니다. 기본값은 정밀도 우선입니다.
+
+```bash
+# verified query embedding 매칭을 쓸 때 필요한 최소 유사도
+EMBED_MATCH_THRESHOLD=0.86
+
+# embedding 사전 계산 시 한 번에 요청할 text 개수
+EMBED_BATCH_SIZE=10
+
+# verified query 매칭 전체 on/off
+ENABLE_VERIFIED_QUERY_MATCHING=true
+
+# embedding 실패/비활성 시 LLM이 verified query 목록에서 고르는 fallback.
+# 오탐이 많아 기본값은 false입니다.
+ENABLE_VERIFIED_QUERY_LLM_FALLBACK=false
+
+# LLM fallback을 켤 때도 lexical 후보를 좁혀서 전달합니다.
+VERIFIED_QUERY_LLM_CANDIDATE_LIMIT=8
+VERIFIED_QUERY_MIN_LEXICAL_SCORE=2
+VERIFIED_QUERY_RULE_MATCH_THRESHOLD=5
+VERIFIED_QUERY_RULE_MATCH_MARGIN=2
+```
+
 ## 처리 흐름
 
 1. 사용자가 웹 UI에서 질문을 입력합니다.
 2. `webservice_v1.py`가 요청을 받아 LangGraph 실행을 시작합니다.
 3. `workflow.py`가 질문을 `need_sql`, `direct`, `reject` 중 하나로 분류합니다.
-4. SQL이 필요한 질문은 도메인 라우팅 후 Tool, verified query, 자동 SQL 생성 경로 중 하나로 진행합니다.
+4. SQL이 필요한 질문은 도메인 라우팅 후 capability router에서 Tool, verified query, 자동 SQL 생성 경로 중 하나로 진행합니다.
 5. 생성된 SQL은 `schema.py`의 검증과 `db.py`의 안전 실행 로직을 거칩니다.
 6. 조회 결과는 LLM을 통해 표/요약 중심 답변으로 변환됩니다.
-7. 사용자가 export를 요청하면 `exports.py`가 Word/Text/CSV 파일을 `reports/`에 생성합니다.
+7. 사용자가 export를 요청하면 `exports.py`가 Word/Excel/TXT 파일을 `reports/`에 생성합니다.
 
 ## 출력 파일
 

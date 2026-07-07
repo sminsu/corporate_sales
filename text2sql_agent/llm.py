@@ -20,6 +20,7 @@ from .config import (
     COMMON_CONFIG,
     EMBED_API_KEY,
     EMBED_BASE_URL,
+    EMBED_BATCH_SIZE,
     EMBED_MODEL,
     EMBED_TIMEOUT,
     LLM_API_KEY,
@@ -38,7 +39,7 @@ from .config import (
 # Individual prompts still carry their task-specific instructions; this just gives
 # the model consistent grounding (role separation) without touching each call site.
 DEFAULT_SYSTEM_PROMPT = (
-    "당신은 KB카드 법인영업 데이터베이스를 다루는 한국어 데이터 분석 어시스턴트입니다. "
+    "당신은 KB카드 기업영업 데이터베이스를 다루는 한국어 데이터 분석 어시스턴트입니다. "
     "주어진 스키마/메트릭/규칙에 충실하게, 요청한 출력 형식만 정확히 반환하세요."
 )
 
@@ -180,7 +181,23 @@ def _get_embedding(text: str) -> list[float]:
 
 def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
     """Embed multiple texts, preserving input order."""
-    return _with_retry(lambda: _get_embed_client().embed_texts(texts), what="Embedding batch request")
+    embeddings: list[list[float]] = []
+    total = len(texts)
+
+    for start in range(0, total, EMBED_BATCH_SIZE):
+        chunk = texts[start : start + EMBED_BATCH_SIZE]
+        chunk_embeddings = _with_retry(
+            lambda chunk=chunk: _get_embed_client().embed_texts(chunk),
+            what=f"Embedding batch request ({start + 1}-{start + len(chunk)}/{total})",
+        )
+        if len(chunk_embeddings) != len(chunk):
+            raise ValueError(
+                "Embedding batch response size mismatch: "
+                f"expected {len(chunk)}, got {len(chunk_embeddings)}"
+            )
+        embeddings.extend(chunk_embeddings)
+
+    return embeddings
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:

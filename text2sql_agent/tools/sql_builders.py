@@ -10,7 +10,7 @@ import yaml
 from ..config import DB_BACKEND, DB_SCHEMA_PREFIX as _SCHEMA, SCHEMA_PATH
 
 # ---------------------------------------------------------------------------
-# 4. 공통 Tool 유틸 및 확정적 SQL 생성
+# 4. verified query 공통 유틸 및 확정적 SQL 생성
 # ---------------------------------------------------------------------------
 
 def _sanitize_param(value: str) -> str:
@@ -515,9 +515,9 @@ def _partition_conds_for_month(table_name: str, yyyymm: str, *, alias: str = "")
     return _athena_partition_conds(table_name, start=yyyymm, end=yyyymm, alias=alias)
 
 
-# -- 기존 Tool SQL 함수들 --
+# -- SQL builder-backed verified query 함수들 --
 
-def _tool_sql_심사승인율(params: dict) -> str:
+def _vq_sql_심사승인율(params: dict) -> str:
     conds = _period_conds_daily(params, "최종심사년월일")
     conds.extend(_partition_conds_from_params("tbdaaaf23", params, daily=True))
     if params.get("신용등급"):
@@ -544,7 +544,7 @@ GROUP BY 신용평가등급코드 ORDER BY 신용평가등급코드"""
 FROM {_SCHEMA}tbdaaaf23 {where}"""
 
 
-def _tool_sql_월별이용금액(params: dict) -> str:
+def _vq_sql_월별이용금액(params: dict) -> str:
     conds = ["개인기업구분코드 = '2'"]
     conds.extend(_period_conds(params, "기준년월"))
     conds.extend(_partition_conds_from_params("tmdaa3e16", params))
@@ -557,7 +557,7 @@ FROM {_SCHEMA}tmdaa3e16 {where}
 GROUP BY 기준년월 ORDER BY 기준년월"""
 
 
-def _tool_sql_가맹점매출순위(params: dict) -> str:
+def _vq_sql_가맹점매출순위(params: dict) -> str:
     conds = _period_conds(params, "a.기준년월")
     conds.extend(_partition_conds_from_params("tmdaa5e11", params, alias="a"))
     if params.get("업종"):
@@ -577,7 +577,7 @@ GROUP BY a.가맹점번호, a.가맹점명, b.가맹점업종명, b.업종대분
 ORDER BY 총매출금액 DESC LIMIT {limit}"""
 
 
-def _tool_sql_한도사용률(params: dict) -> str:
+def _vq_sql_한도사용률(params: dict) -> str:
     conds = _period_conds(params, "작업기준년월")
     conds.extend(_partition_conds_from_params("tbdaaha97", params))
     if params.get("기업명"):
@@ -594,7 +594,7 @@ GROUP BY 상호명, 사업자등록번호 HAVING SUM(총한도금액) > 0
 ORDER BY 한도사용률_퍼센트 DESC LIMIT {limit}"""
 
 
-def _tool_sql_업종별매출(params: dict) -> str:
+def _vq_sql_업종별매출(params: dict) -> str:
     conds = ["a.개인기업구분코드 = '2'", "(a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')"]
     conds.extend(_period_conds_daily(params, "a.전표매출년월일"))
     conds.extend(_partition_conds_from_params("tbdaabt30", params, alias="a", daily=True))
@@ -611,7 +611,7 @@ JOIN {_SCHEMA}tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
 GROUP BY b.업종대분류코드명, b.가맹점업종명 ORDER BY 총매출금액 DESC {limit}"""
 
 
-def _tool_sql_기업별연체현황(params: dict) -> str:
+def _vq_sql_기업별연체현황(params: dict) -> str:
     conds = ["연체금액 > 0"]
     conds.extend(_period_conds(params, "작업기준년월"))
     conds.extend(_partition_conds_from_params("tbdaaha97", params))
@@ -628,7 +628,7 @@ FROM {_SCHEMA}tbdaaha97 {where}
 GROUP BY 상호명, 사업자등록번호 ORDER BY 연체금액 DESC LIMIT {limit}"""
 
 
-def _tool_sql_카드등급별연체(params: dict) -> str:
+def _vq_sql_카드등급별연체(params: dict) -> str:
     conds = ["개인기업구분코드 = '2'"]
     conds.extend(_period_conds(params, "기준년월"))
     conds.extend(_partition_conds_from_params("tmdaa3e16", params))
@@ -643,7 +643,7 @@ FROM {_SCHEMA}tmdaa3e16 {where}
 GROUP BY 카드등급구분코드 ORDER BY 총연체원금 DESC"""
 
 
-def _tool_sql_가맹점카드소지현황(params: dict) -> str:
+def _vq_sql_가맹점카드소지현황(params: dict) -> str:
     yyyymm = _sanitize_param(params["기준년월"])
     card_valid_after = _sanitize_param(params.get("카드만료기준일") or _month_end_yyyymmdd(yyyymm))
     limit = int(params.get("limit", 100))

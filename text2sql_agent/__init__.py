@@ -19,7 +19,7 @@ from .config import (
     LLM_PROVIDER,
     REPORT_DIR,
 )
-from .exports import _get_source_label, export_all, export_to_csv, export_to_text, export_to_word
+from .exports import _get_source_label, export_all, export_to_csv, export_to_excel, export_to_text, export_to_word
 from .llm import _call_llm, close_common_clients, probe_llm
 from .workflow import (
     _new_initial_state,
@@ -49,6 +49,7 @@ __all__ = [
     "emit_module_event",
     "export_all",
     "export_to_csv",
+    "export_to_excel",
     "export_to_text",
     "export_to_word",
     "observability_context",

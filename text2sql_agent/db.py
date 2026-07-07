@@ -43,6 +43,66 @@ def _is_identifier_char(char: str) -> bool:
     return char == "_" or char.isalnum()
 
 
+def _split_sql_segments(sql: str) -> list[tuple[bool, str]]:
+    """Split SQL into ``(is_protected, text)`` segments.
+
+    Protected segments — single-quoted string literals, double-quoted
+    identifiers, line (``--``) comments and block (``/* */``) comments — must be
+    passed through unchanged by any rewriter. Everything else is "code" that a
+    rewriter may transform. Both SQL normalizers below share this single scan so
+    the literal/comment-skipping logic lives in one place.
+    """
+    segments: list[tuple[bool, str]] = []
+    code_start = 0
+    i = 0
+    n = len(sql)
+
+    def flush_code(end: int) -> None:
+        if end > code_start:
+            segments.append((False, sql[code_start:end]))
+
+    while i < n:
+        char = sql[i]
+
+        if char in ("'", '"'):
+            flush_code(i)
+            quote = char
+            start = i
+            i += 1
+            while i < n:
+                if sql[i] == quote:
+                    i += 1
+                    if i < n and sql[i] == quote:  # escaped quote ('' or "")
+                        i += 1
+                        continue
+                    break
+                i += 1
+            segments.append((True, sql[start:i]))
+            code_start = i
+            continue
+
+        if char == "-" and i + 1 < n and sql[i + 1] == "-":
+            flush_code(i)
+            newline = sql.find("\n", i)
+            end = n if newline == -1 else newline
+            segments.append((True, sql[i:end]))
+            i = code_start = end
+            continue
+
+        if char == "/" and i + 1 < n and sql[i + 1] == "*":
+            flush_code(i)
+            close = sql.find("*/", i + 2)
+            end = n if close == -1 else close + 2
+            segments.append((True, sql[i:end]))
+            i = code_start = end
+            continue
+
+        i += 1
+
+    flush_code(n)
+    return segments
+
+
 def _quote_athena_non_ascii_identifiers(sql: str) -> str:
     """Quote Korean/non-ASCII identifiers for Athena/Trino.
 
@@ -51,143 +111,50 @@ def _quote_athena_non_ascii_identifiers(sql: str) -> str:
     literals, comments, and already quoted identifiers unchanged.
     """
     out: list[str] = []
-    i = 0
-    while i < len(sql):
-        char = sql[i]
-
-        if char == "'":
-            start = i
-            i += 1
-            while i < len(sql):
-                if sql[i] == "'":
+    for protected, text in _split_sql_segments(sql):
+        if protected:
+            out.append(text)
+            continue
+        i = 0
+        n = len(text)
+        while i < n:
+            char = text[i]
+            if _is_identifier_char(char):
+                start = i
+                i += 1
+                while i < n and _is_identifier_char(text[i]):
                     i += 1
-                    if i < len(sql) and sql[i] == "'":
-                        i += 1
-                        continue
-                    break
-                i += 1
-            out.append(sql[start:i])
-            continue
-
-        if char == '"':
-            start = i
-            i += 1
-            while i < len(sql):
-                if sql[i] == '"':
-                    i += 1
-                    if i < len(sql) and sql[i] == '"':
-                        i += 1
-                        continue
-                    break
-                i += 1
-            out.append(sql[start:i])
-            continue
-
-        if char == "-" and i + 1 < len(sql) and sql[i + 1] == "-":
-            start = i
-            i = sql.find("\n", i)
-            if i == -1:
-                out.append(sql[start:])
-                break
-            out.append(sql[start:i])
-            continue
-
-        if char == "/" and i + 1 < len(sql) and sql[i + 1] == "*":
-            start = i
-            end = sql.find("*/", i + 2)
-            if end == -1:
-                out.append(sql[start:])
-                break
-            i = end + 2
-            out.append(sql[start:i])
-            continue
-
-        if _is_identifier_char(char):
-            start = i
-            i += 1
-            while i < len(sql) and _is_identifier_char(sql[i]):
-                i += 1
-            token = sql[start:i]
-            if any(ord(ch) > 127 for ch in token):
-                out.append(f'"{token}"')
+                token = text[start:i]
+                out.append(f'"{token}"' if any(ord(ch) > 127 for ch in token) else token)
             else:
-                out.append(token)
-            continue
-
-        out.append(char)
-        i += 1
-
+                out.append(char)
+                i += 1
     return "".join(out)
 
 
 def _normalize_common_sql_typos(sql: str) -> str:
     """Normalize a few keyboard/IME artifacts that break otherwise valid SQL."""
     out: list[str] = []
-    i = 0
-    while i < len(sql):
-        char = sql[i]
-
-        if char == "'":
-            start = i
+    for protected, text in _split_sql_segments(sql):
+        if protected:
+            out.append(text)
+            continue
+        i = 0
+        n = len(text)
+        while i < n:
+            char = text[i]
+            # Korean IME can turn an intended one-letter alias reference `i.foo`
+            # into `ㅣ.foo`. This is never a meaningful unquoted SQL alias here.
+            if char == "ㅣ":
+                j = i + 1
+                while j < n and text[j].isspace():
+                    j += 1
+                if j < n and text[j] == ".":
+                    out.append("i.")
+                    i = j + 1
+                    continue
+            out.append(char)
             i += 1
-            while i < len(sql):
-                if sql[i] == "'":
-                    i += 1
-                    if i < len(sql) and sql[i] == "'":
-                        i += 1
-                        continue
-                    break
-                i += 1
-            out.append(sql[start:i])
-            continue
-
-        if char == '"':
-            start = i
-            i += 1
-            while i < len(sql):
-                if sql[i] == '"':
-                    i += 1
-                    if i < len(sql) and sql[i] == '"':
-                        i += 1
-                        continue
-                    break
-                i += 1
-            out.append(sql[start:i])
-            continue
-
-        if char == "-" and i + 1 < len(sql) and sql[i + 1] == "-":
-            start = i
-            i = sql.find("\n", i)
-            if i == -1:
-                out.append(sql[start:])
-                break
-            out.append(sql[start:i])
-            continue
-
-        if char == "/" and i + 1 < len(sql) and sql[i + 1] == "*":
-            start = i
-            end = sql.find("*/", i + 2)
-            if end == -1:
-                out.append(sql[start:])
-                break
-            i = end + 2
-            out.append(sql[start:i])
-            continue
-
-        # Korean IME can turn an intended one-letter alias reference `i.foo`
-        # into `ㅣ.foo`. This is never a meaningful unquoted SQL alias here.
-        if char == "ㅣ":
-            j = i + 1
-            while j < len(sql) and sql[j].isspace():
-                j += 1
-            if j < len(sql) and sql[j] == ".":
-                out.append("i.")
-                i = j + 1
-                continue
-
-        out.append(char)
-        i += 1
-
     return "".join(out)
 
 

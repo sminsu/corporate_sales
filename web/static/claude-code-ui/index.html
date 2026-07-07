@@ -3,174 +3,172 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>KB카드 법인영업 Text2SQL</title>
+    <title>KB Text2SQL Agent Console</title>
     <script>
-      if (window.location.protocol === "file:") {
-        window.location.replace("http://127.0.0.1:8090/");
-      }
+      (() => {
+        try {
+          const storedTheme = localStorage.getItem("text2sql:claude-code-ui:theme");
+          if (storedTheme === "light") document.documentElement.dataset.theme = "light";
+        } catch (_) {
+          /* Keep the default dark theme if storage is unavailable. */
+        }
+      })();
     </script>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar">
+    <div class="app-frame">
+      <aside class="rail">
         <div class="brand">
           <div class="brand-mark">KB</div>
           <div>
-            <h1>법인영업 분석</h1>
+            <h1>Text2SQL</h1>
             <p id="serviceStatus">연결 확인 중</p>
           </div>
         </div>
 
-        <section class="side-section">
-          <div class="section-title">대화 세션</div>
-          <button id="newSessionBtn" class="secondary" type="button">새 대화</button>
+        <section class="rail-section">
+          <div class="section-row">
+            <span>Sessions</span>
+            <button id="newSessionBtn" class="icon-button" type="button" title="새 대화">+</button>
+          </div>
           <div id="sessionList" class="session-list"></div>
         </section>
 
-        <section class="side-section">
-          <div class="section-title">예시 질문</div>
+        <section class="rail-section">
+          <div class="section-row">
+            <span>Prompts</span>
+          </div>
           <div id="examples" class="example-list"></div>
         </section>
 
-        <section class="side-section">
-          <div class="section-title">보고서</div>
+        <section class="rail-section">
+          <div class="section-row">
+            <span>Exports</span>
+          </div>
           <div class="export-grid">
-            <button class="secondary" data-export="all" disabled>전체</button>
-            <button class="secondary" data-export="word" disabled>Word</button>
-            <button class="secondary" data-export="excel" disabled>Excel</button>
-            <button class="secondary" data-export="text" disabled>TXT</button>
+            <button data-export="all" type="button" disabled>ALL</button>
+            <button data-export="word" type="button" disabled>DOCX</button>
+            <button data-export="excel" type="button" disabled>XLSX</button>
+            <button data-export="text" type="button" disabled>TXT</button>
           </div>
           <div id="downloadList" class="download-list"></div>
         </section>
       </aside>
 
-      <main class="workspace">
+      <main class="thread-pane">
         <header class="topbar">
           <div>
-            <div class="eyebrow">Text2SQL Agent v10</div>
-            <h2>질문하면 SQL 실행, 결과 요약, 파일 생성까지 한 번에 처리합니다.</h2>
+            <div class="crumb">common_athena / corporate-sales-agent</div>
+            <h2>법인영업 분석 콘솔</h2>
           </div>
-          <button id="clearBtn" class="ghost">현재 대화 비우기</button>
-        </header>
-
-        <section class="query-panel">
-          <div class="query-head">
-            <label for="questionInput">질문</label>
+          <div class="top-actions">
             <div class="query-mode" role="group" aria-label="질문 처리 방식">
-              <button id="newQueryModeBtn" class="mode-option active" data-query-mode="new" type="button">새 조회</button>
-              <button id="followupModeBtn" class="mode-option" data-query-mode="followup" type="button" disabled>이어서 분석</button>
+              <button class="mode-option active" data-query-mode="new" type="button">New</button>
+              <button class="mode-option" data-query-mode="followup" type="button" disabled>Follow-up</button>
             </div>
+            <button id="themeToggle" class="ghost-button theme-toggle" type="button" aria-pressed="false">Light</button>
+            <button id="clearBtn" class="ghost-button" type="button">Clear</button>
           </div>
-          <div class="query-row">
-            <textarea
-              id="questionInput"
-              rows="3"
-              placeholder="새로 조회할 질문을 입력하세요."
-            ></textarea>
-            <button id="submitBtn" class="primary">조회</button>
-          </div>
-        </section>
-
-        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-live="polite" aria-labelledby="paramTitle">
-          <div class="param-card">
-            <div class="panel-head">
-              <div>
-                <div class="eyebrow">추가 입력</div>
-                <h3 id="paramTitle">필수 값 입력</h3>
-              </div>
-              <button id="cancelParamsBtn" class="ghost" type="button">닫기</button>
-            </div>
-            <p class="param-help">부족한 값만 알려주면 같은 질문을 이어서 실행합니다.</p>
-            <form id="paramForm" class="param-form"></form>
-          </div>
-        </section>
+        </header>
 
         <section id="progressPanel" class="progress-panel hidden" aria-live="polite">
           <div class="progress-head">
             <div>
-              <div class="eyebrow">진행 상태</div>
+              <span class="eyebrow">Running</span>
               <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
             </div>
-            <div id="elapsedTime" class="elapsed-time">0초</div>
+            <span id="elapsedTime" class="elapsed-time">0초</span>
           </div>
           <div class="progress-bar"><span id="progressFill"></span></div>
           <ol id="progressSteps" class="progress-steps"></ol>
         </section>
 
         <section id="errorPanel" class="error-panel hidden" role="alert" aria-live="assertive">
-          <div class="error-head">
-            <div>
-              <div class="eyebrow">오류</div>
-              <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
-            </div>
+          <div>
+            <span class="eyebrow">Error</span>
+            <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
           </div>
           <p id="errorMessage"></p>
         </section>
 
-        <section id="resultPanel" class="result-panel hidden">
-          <div class="result-header">
-            <div>
-              <div id="sourceLabel" class="eyebrow"></div>
-              <h3 id="resultTitle">분석 결과</h3>
+        <section id="emptyState" class="empty-state">
+          <div class="terminal-card">
+            <div class="terminal-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
             </div>
+            <pre><code>$ ask "2025년 월별 법인카드 이용금액 추이를 보여줘"</code></pre>
+          </div>
+        </section>
+
+        <section id="resultPanel" class="thread-output hidden">
+          <div class="result-kicker">
+            <span id="sourceLabel"></span>
             <div id="resultBadges" class="badges"></div>
           </div>
-          <div id="resultMeta" class="result-meta hidden"></div>
-
-          <div class="tabs" role="tablist">
-            <button class="tab active" data-tab="answer">답변</button>
-            <button class="tab" data-tab="table">데이터</button>
-            <button class="tab" data-tab="sql">SQL</button>
-            <button class="tab" data-tab="history">이력</button>
+          <div id="answerBox" class="answer-stream"></div>
+          <div id="excelBox" class="excel-box hidden"></div>
+          <div id="followupBox" class="followup-box hidden">
+            <div class="followup-head">
+              <span class="eyebrow">Next</span>
+              <strong>이어질 분석</strong>
+            </div>
+            <div id="suggestionList" class="suggestion-list"></div>
+            <div class="followup-row">
+              <input id="followupInput" autocomplete="off" placeholder="이 결과에서 이어서 분석하기" />
+              <button id="followupBtn" type="button">Ask</button>
+            </div>
           </div>
-
-          <article id="tab-answer" class="tab-page active">
-            <div id="compactSummary" class="compact-summary hidden"></div>
-            <div id="answerBox" class="answer-box"></div>
-            <div id="excelBox" class="excel-box hidden"></div>
-            <div id="followupBox" class="followup-box hidden">
-              <div class="followup-head">
-                <div>
-                  <div class="eyebrow">멀티턴 분석</div>
-                  <h4>이 결과로 이어서 분석하기</h4>
-                </div>
-              </div>
-              <div id="suggestionList" class="suggestion-list"></div>
-              <div class="followup-row">
-                <input
-                  id="followupInput"
-                  autocomplete="off"
-                  placeholder="예: 이 결과에서 이상치가 있는지 찾아줘"
-                />
-                <button id="followupBtn" class="primary" type="button">질문</button>
-              </div>
-            </div>
-          </article>
-
-          <article id="tab-table" class="tab-page">
-            <div id="tableMeta" class="table-meta"></div>
-            <div class="table-wrap">
-              <table id="resultTable"></table>
-            </div>
-          </article>
-
-          <article id="tab-sql" class="tab-page">
-            <pre id="sqlBox" class="sql-box"></pre>
-          </article>
-
-          <article id="tab-history" class="tab-page">
-            <div id="historyBox" class="history-box"></div>
-          </article>
         </section>
 
-        <section id="emptyState" class="empty-state">
-          <div class="empty-card">
-            <h3>내부 데이터 분석 콘솔</h3>
-            <p>매출, 가맹점, 심사, 한도, 연체, 대손비용률 질문을 입력하세요.</p>
+        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="paramTitle">
+          <div class="param-card">
+            <div class="panel-head">
+              <div>
+                <span class="eyebrow">Input required</span>
+                <h3 id="paramTitle">필수 값 입력</h3>
+              </div>
+              <button id="cancelParamsBtn" class="icon-button" type="button" title="닫기">×</button>
+            </div>
+            <form id="paramForm" class="param-form"></form>
           </div>
+        </section>
+
+        <section id="queryPanel" class="composer">
+          <div class="prompt-marker">›</div>
+          <textarea id="questionInput" rows="3" placeholder="새로 조회할 질문을 입력하세요."></textarea>
+          <button id="submitBtn" type="button">조회</button>
         </section>
       </main>
+
+      <aside class="inspector">
+        <div class="inspector-tabs" role="tablist">
+          <button class="tab active" data-tab="context" type="button">Context</button>
+          <button class="tab" data-tab="data" type="button">Data</button>
+          <button class="tab" data-tab="sql" type="button">SQL</button>
+          <button class="tab" data-tab="history" type="button">Log</button>
+        </div>
+
+        <article id="tab-context" class="tab-page active">
+          <div id="resultMeta" class="result-meta hidden"></div>
+          <div id="compactSummary" class="compact-summary hidden"></div>
+        </article>
+
+        <article id="tab-data" class="tab-page">
+          <div id="tableMeta" class="table-meta">조회 데이터가 없습니다.</div>
+          <div class="table-wrap">
+            <table id="resultTable"></table>
+          </div>
+        </article>
+
+        <article id="tab-sql" class="tab-page">
+          <pre id="sqlBox" class="sql-box">실행 SQL이 없습니다.</pre>
+        </article>
+
+        <article id="tab-history" class="tab-page">
+          <div id="historyBox" class="history-box"></div>
+        </article>
+      </aside>
     </div>
 
     <div id="toast" class="toast hidden"></div>
@@ -193,7 +191,7 @@ const API_BASE = String(window.TEXT2SQL_API_BASE || (window.location.protocol ==
 const WEBAPP_USER_ID = (() => {
   const configured = String(window.TEXT2SQL_USER_ID || "").trim();
   if (configured) return configured;
-  const key = "text2sql:webapp:user-id";
+  const key = "text2sql:claude-code-ui:user-id";
   let stored = localStorage.getItem(key);
   if (!stored) {
     const randomId = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -203,6 +201,9 @@ const WEBAPP_USER_ID = (() => {
   return stored;
 })();
 const WEBAPP_QUERY_STREAM_PATH = `api/v1/agent/${encodeURIComponent(WEBAPP_AGENT_NAME)}/query/stream`;
+
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const shouldStripCorporateSalesSegment = () =>
   PREFIXLESS_API_HOSTS.has(window.location.host);
 const currentDirectoryPath = () => {
@@ -221,15 +222,9 @@ const apiUrl = (path) => {
   return path;
 };
 
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-
 function currentDateParts() {
   const now = new Date();
-  return {
-    year: now.getFullYear(),
-    month: String(now.getMonth() + 1).padStart(2, "0"),
-  };
+  return { year: now.getFullYear(), month: String(now.getMonth() + 1).padStart(2, "0") };
 }
 
 function currentYm() {
@@ -246,10 +241,11 @@ function currentYmKorean() {
   return `${year}년 ${Number(month)}월`;
 }
 
-const queryPanel = $(".query-panel");
+const queryPanel = $("#queryPanel");
 const questionInput = $("#questionInput");
 const submitBtn = $("#submitBtn");
 const modeButtons = $$("[data-query-mode]");
+const themeToggle = $("#themeToggle");
 const clearBtn = $("#clearBtn");
 const newSessionBtn = $("#newSessionBtn");
 const sessionList = $("#sessionList");
@@ -283,17 +279,43 @@ const suggestionList = $("#suggestionList");
 const followupInput = $("#followupInput");
 const followupBtn = $("#followupBtn");
 
+const THEME_KEY = "text2sql:claude-code-ui:theme";
+function getTheme() {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function setTheme(theme) {
+  const nextTheme = theme === "light" ? "light" : "dark";
+  if (nextTheme === "light") {
+    document.documentElement.dataset.theme = "light";
+  } else {
+    delete document.documentElement.dataset.theme;
+  }
+  if (themeToggle) {
+    themeToggle.textContent = nextTheme === "light" ? "Dark" : "Light";
+    themeToggle.setAttribute("aria-pressed", String(nextTheme === "light"));
+    themeToggle.title = nextTheme === "light" ? "어두운 테마로 전환" : "밝은 테마로 전환";
+  }
+  try {
+    localStorage.setItem(THEME_KEY, nextTheme);
+  } catch (_) {
+    /* Theme preference is non-critical. */
+  }
+}
+
+setTheme(getTheme());
+
 const progressLabels = [
-  ["요청 이해", "질문 의도와 업무 범위를 확인합니다."],
-  ["조회 준비", "사용할 경로, 데이터, 조건을 정리합니다."],
-  ["데이터 조회", "SQL 생성/검증과 DB 조회를 수행합니다."],
-  ["결과 정리", "표, 요약, 다음 분석 질문을 준비합니다."],
+  ["Intent", "질문 의도와 업무 범위를 확인합니다."],
+  ["Plan", "사용 경로, 데이터, 조건을 정리합니다."],
+  ["Run", "SQL 생성/검증과 DB 조회를 수행합니다."],
+  ["Answer", "표, 요약, 다음 분석 질문을 준비합니다."],
 ];
 const followupProgressLabels = [
-  ["맥락 확인", "직전 결과와 대화 이력을 확인합니다."],
-  ["요청 해석", "기존 결과 분석인지 추가 조회인지 판단합니다."],
-  ["분석 실행", "필요한 조회 또는 결과 재해석을 수행합니다."],
-  ["결과 정리", "답변과 다음 분석 질문을 준비합니다."],
+  ["Context", "직전 결과와 대화 이력을 확인합니다."],
+  ["Route", "기존 결과 분석인지 추가 조회인지 판단합니다."],
+  ["Run", "필요한 조회 또는 결과 재해석을 수행합니다."],
+  ["Answer", "답변과 다음 분석 질문을 준비합니다."],
 ];
 const progressGroupIndex = {
   start: 0,
@@ -358,6 +380,102 @@ function eventErrorMessage(data, fallback) {
   return data?.detail || data?.data?.error || data?.message || fallback;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatCell(value) {
+  if (typeof value === "number") {
+    return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 }).format(value);
+  }
+  return String(value ?? "");
+}
+
+async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...webappHeaders(),
+    ...(options.headers || {}),
+  };
+  const response = await fetch(apiUrl(path), { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
+  }
+  return body;
+}
+
+async function streamApi(path, payload, onEvent, options = {}) {
+  const response = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
+  }
+  if (!response.body) {
+    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    for (const rawEvent of events) {
+      const lines = rawEvent.split("\n");
+      const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim() || "message";
+      const dataText = lines
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+      if (!dataText) continue;
+      onEvent(eventName, JSON.parse(dataText));
+    }
+  }
+}
+
+function webappHeaders() {
+  return {
+    "X-User-ID": WEBAPP_USER_ID,
+    "X-Agent-Name": WEBAPP_AGENT_NAME,
+  };
+}
+
+function conversationHistory(limit = 10) {
+  return state.conversation.slice(-limit).map((message) => ({
+    role: message.role,
+    content: message.text || "",
+  }));
+}
+
+function webappQueryPayload(payload = {}) {
+  const query = String(payload.query || payload.question || "").trim();
+  const body = {
+    query,
+    agent_name: WEBAPP_AGENT_NAME,
+    top_k: payload.top_k || 10,
+    session_id: payload.session_id || state.sessionId,
+    conversation_history: conversationHistory(),
+  };
+  if (payload.params) body.params = payload.params;
+  if (payload.continuation) body.continuation = payload.continuation;
+  if (payload.result_id) body.result_id = payload.result_id;
+  return body;
+}
+
 function canUseFollowupMode() {
   return Boolean(state.lastResultId && state.canFollowup && !state.continuation);
 }
@@ -396,7 +514,26 @@ function setBusy(isBusy) {
 
 function setFollowupBusy(isBusy) {
   followupBtn.disabled = isBusy;
-  followupBtn.textContent = isBusy ? "분석 중" : "질문";
+  followupBtn.textContent = isBusy ? "분석 중" : "Ask";
+}
+
+function isProgressEvent(eventName) {
+  return ["start", "search_plan", "aggregate_review", "response", "progress", "text2sql_progress"].includes(eventName);
+}
+
+function normalizeProgressEvent(progress) {
+  const data = progress?.data || {};
+  return {
+    step: progress?.step || progress?.text2sql_step || data.text2sql_step || data.step || "",
+    phase: progress?.phase || data.phase || "",
+    title: progress?.title || data.title || "",
+    message: progress?.message || data.message || "",
+  };
+}
+
+function progressIndexFor(step, phase = "") {
+  const index = progressGroupIndex[step] ?? progressPhaseGroupIndex[phase] ?? 1;
+  return Math.max(0, Math.min(index, activeProgressLabels.length - 1));
 }
 
 function setProgressStep(index) {
@@ -425,21 +562,6 @@ function startProgressAutoAdvance() {
   }, 2500);
 }
 
-function normalizeProgressEvent(progress) {
-  const data = progress?.data || {};
-  return {
-    step: progress?.step || progress?.text2sql_step || data.text2sql_step || data.step || "",
-    phase: progress?.phase || data.phase || "",
-    title: progress?.title || data.title || "",
-    message: progress?.message || data.message || "",
-  };
-}
-
-function progressIndexFor(step, phase = "") {
-  const index = progressGroupIndex[step] ?? progressPhaseGroupIndex[phase] ?? 1;
-  return Math.max(0, Math.min(index, activeProgressLabels.length - 1));
-}
-
 function appendProgressDetail(item, progress, step) {
   const details = item.querySelector(".progress-detail");
   const list = item.querySelector(".progress-detail-list");
@@ -456,8 +578,7 @@ function appendProgressDetail(item, progress, step) {
   `;
   details.classList.remove("hidden");
   details.open = true;
-  const count = list.querySelectorAll("li").length;
-  item.querySelector(".progress-count").textContent = `${count}`;
+  item.querySelector(".progress-count").textContent = `${list.querySelectorAll("li").length}`;
 }
 
 function renderProgressEvent(progress) {
@@ -468,6 +589,35 @@ function renderProgressEvent(progress) {
   setProgressStep(groupIndex);
   if (item) appendProgressDetail(item, normalized, step);
   progressTitle.textContent = normalized.message || normalized.title || "처리 중입니다.";
+}
+
+function renderStreamProgress(eventName, data) {
+  const webappStep = {
+    start: "start",
+    search_plan: "search_plan",
+    aggregate_review: "aggregate_review",
+    response: "response",
+  }[eventName];
+  if (eventName === "start") {
+    renderProgressEvent({
+      step: "start",
+      title: "요청 접수",
+      message: data?.message || "질문을 분석 중입니다...",
+    });
+    return;
+  }
+  if (webappStep) {
+    const progressData = data?.data || {};
+    renderProgressEvent({
+      ...data,
+      step: progressData.text2sql_step || webappStep,
+      phase: progressData.phase || "",
+      title: progressData.title || progressData.operation || "",
+      message: progressData.progress_message || data?.message || "",
+    });
+    return;
+  }
+  renderProgressEvent(data);
 }
 
 function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
@@ -546,6 +696,35 @@ function clearInlineError() {
   errorMessage.textContent = "";
 }
 
+function setExportEnabled(enabled) {
+  $("[data-export]").forEach((button) => {
+    button.disabled = !enabled;
+  });
+}
+
+function resetResultPanels() {
+  resultPanel.classList.add("hidden");
+  emptyState.classList.remove("hidden");
+  answerBox.innerHTML = "";
+  sqlBox.textContent = "실행 SQL이 없습니다.";
+  historyBox.innerHTML = "";
+  resultTable.innerHTML = "";
+  tableMeta.textContent = "조회 데이터가 없습니다.";
+  compactSummary.innerHTML = "";
+  compactSummary.classList.add("hidden");
+  resultMeta.innerHTML = "";
+  resultMeta.classList.add("hidden");
+  sourceLabel.textContent = "";
+  resultBadges.innerHTML = "";
+  excelBox.innerHTML = "";
+  excelBox.classList.add("hidden");
+  suggestionList.innerHTML = "";
+  followupInput.value = "";
+  followupBox.classList.add("hidden");
+  downloadList.innerHTML = "";
+  setExportEnabled(false);
+}
+
 function showInlineError(message, title = "요청을 처리하지 못했습니다.", appendMessage = true) {
   const safeMessage = String(message || "알 수 없는 오류가 발생했습니다.");
   errorTitle.textContent = title;
@@ -572,151 +751,14 @@ function showInlineError(message, title = "요청을 처리하지 못했습니�
   }
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function formatCell(value) {
-  if (typeof value === "number") {
-    return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 }).format(value);
-  }
-  return String(value ?? "");
-}
-
-async function api(path, options = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    ...webappHeaders(),
-    ...(options.headers || {}),
-  };
-  const response = await fetch(apiUrl(path), {
-    ...options,
-    headers,
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
-  }
-  return body;
-}
-
-async function streamApi(path, payload, onEvent, options = {}) {
-  const response = await fetch(apiUrl(path), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
-  }
-  if (!response.body) {
-    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
-    for (const rawEvent of events) {
-      const lines = rawEvent.split("\n");
-      const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim() || "message";
-      const dataText = lines
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .join("\n");
-      if (!dataText) continue;
-      onEvent(eventName, JSON.parse(dataText));
-    }
-  }
-}
-
-function webappHeaders() {
-  return {
-    "X-User-ID": WEBAPP_USER_ID,
-    "X-Agent-Name": WEBAPP_AGENT_NAME,
-  };
-}
-
-function conversationHistory(limit = 10) {
-  return state.conversation.slice(-limit).map((message) => ({
-    role: message.role,
-    content: message.text || "",
-  }));
-}
-
-function webappQueryPayload(payload = {}) {
-  const query = String(payload.query || payload.question || "").trim();
-  const body = {
-    query,
-    agent_name: WEBAPP_AGENT_NAME,
-    top_k: payload.top_k || 10,
-    session_id: payload.session_id || state.sessionId,
-    conversation_history: conversationHistory(),
-  };
-  if (payload.params) body.params = payload.params;
-  if (payload.continuation) body.continuation = payload.continuation;
-  if (payload.result_id) body.result_id = payload.result_id;
-  return body;
-}
-
-function isProgressEvent(eventName) {
-  return ["start", "search_plan", "aggregate_review", "response", "progress", "text2sql_progress"].includes(eventName);
-}
-
-function renderStreamProgress(eventName, data) {
-  const webappStep = {
-    start: "start",
-    search_plan: "search_plan",
-    aggregate_review: "aggregate_review",
-    response: "response",
-  }[eventName];
-  if (eventName === "start") {
-    renderProgressEvent({
-      step: "start",
-      title: "요청 접수",
-      message: data?.message || "질문을 분석 중입니다...",
-    });
-    return;
-  }
-  if (webappStep) {
-    const progressData = data?.data || {};
-    renderProgressEvent({
-      ...data,
-      step: progressData.text2sql_step || webappStep,
-      phase: progressData.phase || "",
-      title: progressData.title || progressData.operation || "",
-      message: progressData.progress_message || data?.message || "",
-    });
-    return;
-  }
-  renderProgressEvent(data);
-}
-
 async function loadHealth() {
   try {
-    const data = await api("api/health");
+    const data = await api("health");
     const status = data.llm_status || (data.llm_ready === false ? "unavailable" : "ready");
-    const label =
-      status === "ready"
-        ? "연결됨"
-        : status === "auth_error"
-          ? "인증 확인 필요"
-          : "연결 확인 필요";
-    $("#serviceStatus").textContent = `${data.model} · ${label}`;
+    const label = status === "ready" ? "ready" : status === "auth_error" ? "auth" : "check";
+    $("#serviceStatus").textContent = `${data.model || "model"} · ${label}`;
   } catch {
-    $("#serviceStatus").textContent = "서비스 확인 필요";
+    $("#serviceStatus").textContent = "service · check";
   }
 }
 
@@ -725,7 +767,7 @@ async function loadExamples() {
   try {
     const data = await api("api/examples");
     box.innerHTML = "";
-    data.examples.forEach((item) => {
+    (data.examples || []).forEach((item) => {
       const button = document.createElement("button");
       button.className = "example";
       button.type = "button";
@@ -750,7 +792,9 @@ async function createSession() {
   state.pendingQuestion = "";
   state.conversation = [];
   state.queryMode = "new";
-  renderConversation();
+  queryPanel.classList.remove("awaiting-param");
+  closeParamDialog();
+  resetResultPanels();
   syncQueryModeUi();
   await loadSessions();
   return data.session;
@@ -777,7 +821,7 @@ function renderSessions(sessions) {
     button.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
     button.innerHTML = `
       <span>${escapeHtml(session.title || "새 대화")}</span>
-      <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
+      <small>${escapeHtml(String(session.message_count || 0))} messages</small>
     `;
     button.addEventListener("click", () => loadSession(session.id));
     sessionList.appendChild(button);
@@ -819,20 +863,9 @@ async function loadSession(sessionId) {
     }
     return;
   }
-  syncQueryModeUi();
-  if (pendingMessage) {
-    applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
-  }
+  resetResultPanels();
   renderConversation();
-  renderHistory({ question: "", original_answer: "", analysis_history: [] });
-  renderCompactSummary([], []);
-  renderTable([], []);
-  renderResultMeta(null);
-  sqlBox.textContent = "";
-  sourceLabel.textContent = "";
-  resultBadges.innerHTML = "";
-  emptyState.classList.add("hidden");
-  resultPanel.classList.remove("hidden");
+  syncQueryModeUi();
   await loadSessions();
 }
 
@@ -874,7 +907,7 @@ function applyPendingParamPrompt(params = []) {
   queryPanel.classList.add("awaiting-param");
   questionInput.placeholder = labels
     ? `${labels} 값을 채팅하듯 입력하세요. 예: ${currentYmKorean()}로 해줘`
-    : "필요한 추가 정보를 채팅하듯 입력하세요";
+    : "필요한 추가 정보를 채팅하듯 입력하세요.";
 }
 
 function paramPlaceholder(param) {
@@ -910,13 +943,7 @@ function openParamDialog(params = []) {
         <div class="field">
           <label for="param-${index}">${escapeHtml(label)}</label>
           ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
-          <input
-            id="param-${index}"
-            name="${escapeHtml(name)}"
-            data-param-field
-            autocomplete="off"
-            placeholder="${escapeHtml(paramPlaceholder(param))}"
-          />
+          <input id="param-${index}" name="${escapeHtml(name)}" data-param-field autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}" />
         </div>
       `;
     })
@@ -924,19 +951,12 @@ function openParamDialog(params = []) {
   paramForm.innerHTML = `
     <div class="field param-natural">
       <label for="param-natural-input">문장으로 답하기</label>
-      <input
-        id="param-natural-input"
-        name="_natural_input"
-        autocomplete="off"
-        placeholder="${escapeHtml(paramNaturalPlaceholder(params))}"
-      />
+      <input id="param-natural-input" name="_natural_input" autocomplete="off" placeholder="${escapeHtml(paramNaturalPlaceholder(params))}" />
     </div>
-    <div class="param-grid">
-      ${fields || ""}
-    </div>
+    <div class="param-grid">${fields || ""}</div>
     <div class="param-actions">
-      <button class="primary" type="submit">계속</button>
-      <button class="secondary" type="button" data-use-chat-input>질문창에 적기</button>
+      <button type="submit">계속</button>
+      <button type="button" data-use-chat-input>질문창에 적기</button>
     </div>
   `;
   paramForm.querySelector("[data-use-chat-input]")?.addEventListener("click", () => {
@@ -951,18 +971,12 @@ function closeParamDialog() {
   paramPanel.classList.add("hidden");
 }
 
-function setExportEnabled(enabled) {
-  $$("[data-export]").forEach((button) => {
-    button.disabled = !enabled;
-  });
-}
-
 function renderBadges(data) {
   const badges = [];
   const dataSources = data.result_meta?.data_sources || data.selected_tables || [];
-  if (data.selected_tool) badges.push(`전용 도구: ${data.selected_tool}`);
-  if (data.matched_query_name) badges.push(`검증 쿼리: ${data.matched_query_name}`);
-  if (dataSources.length) badges.push(`사용 데이터 ${dataSources.length}개`);
+  if (data.selected_tool) badges.push(`tool: ${data.selected_tool}`);
+  if (data.matched_query_name) badges.push(`verified: ${data.matched_query_name}`);
+  if (dataSources.length) badges.push(`${dataSources.length} sources`);
   resultBadges.innerHTML = badges.map((b) => `<span class="badge">${escapeHtml(b)}</span>`).join("");
 }
 
@@ -995,24 +1009,10 @@ function renderResultMeta(data) {
   const path = meta.execution_path || data.source || "처리 경로 없음";
   const conditions = formatConditions(meta.conditions || {});
   resultMeta.innerHTML = `
-    <div class="meta-item">
-      <span>사용 경로</span>
-      <strong>${escapeHtml(path)}</strong>
-    </div>
-    <div class="meta-item">
-      <span>표시 행</span>
-      <strong>${escapeHtml(rowText)}</strong>
-      <small>${escapeHtml(limitedText)}</small>
-    </div>
-    <div class="meta-item">
-      <span>SQL 사용 데이터</span>
-      <strong>${escapeHtml(dataSources)}</strong>
-      ${sourceNote ? `<small>${escapeHtml(sourceNote)}</small>` : ""}
-    </div>
-    <div class="meta-item">
-      <span>적용 조건</span>
-      <strong>${escapeHtml(conditions)}</strong>
-    </div>
+    <div class="meta-item"><span>Path</span><strong>${escapeHtml(path)}</strong></div>
+    <div class="meta-item"><span>Rows</span><strong>${escapeHtml(rowText)}</strong><small>${escapeHtml(limitedText)}</small></div>
+    <div class="meta-item"><span>Sources</span><strong>${escapeHtml(dataSources)}</strong>${sourceNote ? `<small>${escapeHtml(sourceNote)}</small>` : ""}</div>
+    <div class="meta-item"><span>Conditions</span><strong>${escapeHtml(conditions)}</strong></div>
   `;
   resultMeta.classList.remove("hidden");
 }
@@ -1023,7 +1023,6 @@ function renderTable(columns, rows) {
     resultTable.innerHTML = "";
     return;
   }
-
   tableMeta.textContent = `${rows.length.toLocaleString("ko-KR")}건 표시`;
   const thead = `<thead><tr>${columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
   const tbody = rows
@@ -1047,9 +1046,8 @@ function renderCompactSummary(columns, rows) {
     compactSummary.innerHTML = "";
     return;
   }
-
   const summaryColumns = columns.slice(0, Math.min(columns.length, 5));
-  const summaryRows = rows.slice(0, Math.min(rows.length, 3));
+  const summaryRows = rows.slice(0, Math.min(rows.length, 4));
   const header = summaryColumns.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
   const body = summaryRows
     .map((row) => {
@@ -1063,13 +1061,9 @@ function renderCompactSummary(columns, rows) {
       return `<tr>${cells}</tr>`;
     })
     .join("");
-
   compactSummary.innerHTML = `
-    <div class="compact-summary-title">조회 결과 미리보기 (${rows.length.toLocaleString("ko-KR")}건)</div>
-    <table>
-      <thead><tr>${header}</tr></thead>
-      <tbody>${body}</tbody>
-    </table>
+    <div class="compact-summary-title">Preview · ${rows.length.toLocaleString("ko-KR")} rows</div>
+    <table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>
   `;
   compactSummary.classList.remove("hidden");
 }
@@ -1085,13 +1079,11 @@ function renderAnswerHtml(text) {
       i += 1;
       continue;
     }
-
     if (line.startsWith("### ")) {
       chunks.push(`<h3>${escapeHtml(line.replace(/^###\s+/, ""))}</h3>`);
       i += 1;
       continue;
     }
-
     if (line.startsWith("|") && line.endsWith("|")) {
       const tableLines = [];
       while (i < lines.length && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
@@ -1109,7 +1101,6 @@ function renderAnswerHtml(text) {
       chunks.push(`<table class="answer-table">${rowsHtml}</table>`);
       continue;
     }
-
     if (line.startsWith("- ")) {
       const items = [];
       while (i < lines.length && lines[i].trim().startsWith("- ")) {
@@ -1119,7 +1110,6 @@ function renderAnswerHtml(text) {
       chunks.push(`<ul>${items.join("")}</ul>`);
       continue;
     }
-
     chunks.push(`<p>${escapeHtml(line)}</p>`);
     i += 1;
   }
@@ -1139,16 +1129,13 @@ function rebuildConversationFromResult(data) {
   }
   const messages = [];
   const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
-  if (originalQuestion) {
-    messages.push({ role: "user", text: originalQuestion });
-  }
-  if (data.original_answer) {
-    messages.push({ role: "assistant", text: data.original_answer });
-  }
+  if (originalQuestion) messages.push({ role: "user", text: originalQuestion });
+  if (data.original_answer) messages.push({ role: "assistant", text: data.original_answer });
   (data.analysis_history || []).forEach((item) => {
     if (item.question) messages.push({ role: "user", text: item.question });
     if (item.answer) messages.push({ role: "assistant", text: item.answer });
   });
+  if (!messages.length && data.answer) messages.push({ role: "assistant", text: data.answer });
   return messages;
 }
 
@@ -1159,27 +1146,27 @@ function renderConversation() {
   }
 
   answerBox.innerHTML = state.conversation
-    .map((message, index) => {
-      const label = message.role === "user" ? "내 질문" : "분석 답변";
+    .map((message) => {
+      const label = message.role === "user" ? "user" : message.status === "error" ? "error" : "assistant";
       const content =
         message.role === "assistant"
           ? `${renderAnswerHtml(message.text || "응답이 없습니다.")}`
           : `<p>${escapeHtml(message.text || "")}</p>`;
       return `
-        <div class="conversation-message ${message.role}">
+        <div class="conversation-message ${escapeHtml(message.role)}">
           <div class="message-label">${label}</div>
           <div class="message-body">${content}</div>
         </div>
       `;
     })
     .join("");
-
+  resultPanel.scrollTop = resultPanel.scrollHeight;
 }
 
 function renderHistory(data) {
   const entries = [];
   const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
-  if (originalQuestion || data.original_answer) {
+  if (originalQuestion || data.original_answer || data.answer) {
     entries.push({
       mode: "초기 질문",
       question: originalQuestion,
@@ -1189,8 +1176,7 @@ function renderHistory(data) {
       source: data.source || "",
     });
   }
-
-  (data.analysis_history || []).forEach((item, index) => {
+  (data.analysis_history || []).forEach((item) => {
     entries.push({
       mode: ["query", "rewrite_sql", "new_sql"].includes(item.mode) ? "후속 SQL" : "후속 분석",
       question: item.question || "",
@@ -1198,38 +1184,34 @@ function renderHistory(data) {
       sql: item.sql || "",
       row_count: item.row_count ?? "",
       source: item.source || "",
-      index: index + 1,
     });
   });
-
   if (!entries.length) {
     historyBox.innerHTML = `<div class="history-empty">아직 대화 이력이 없습니다.</div>`;
     return;
   }
-
   historyBox.innerHTML = entries
     .map((entry) => {
       const sql = entry.sql ? `<pre>${escapeHtml(entry.sql)}</pre>` : `<span class="muted-text">SQL 없음</span>`;
       return `
         <section class="history-item">
-          <div class="history-head">
-            <strong>${escapeHtml(entry.mode)}</strong>
-            <span>${escapeHtml(entry.source || "")}</span>
-          </div>
+          <div class="history-head"><strong>${escapeHtml(entry.mode)}</strong><span>${escapeHtml(entry.source || "")}</span></div>
           <dl>
-            <dt>질문</dt>
-            <dd>${escapeHtml(entry.question || "")}</dd>
-            <dt>결과</dt>
-            <dd>${escapeHtml(String(entry.row_count || 0))}건</dd>
-            <dt>답변</dt>
-            <dd class="history-answer">${renderAnswerHtml(entry.answer || "응답 없음")}</dd>
-            <dt>SQL</dt>
-            <dd>${sql}</dd>
+            <dt>질문</dt><dd>${escapeHtml(entry.question || "")}</dd>
+            <dt>결과</dt><dd>${escapeHtml(String(entry.row_count || 0))}건</dd>
+            <dt>답변</dt><dd class="history-answer">${renderAnswerHtml(entry.answer || "응답 없음")}</dd>
+            <dt>SQL</dt><dd>${sql}</dd>
           </dl>
         </section>
       `;
     })
     .join("");
+}
+
+function normalizeFileUrl(url) {
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  return apiUrl(url);
 }
 
 function renderDownloads(files) {
@@ -1267,7 +1249,6 @@ function renderSuggestions(suggestions) {
     followupBox.classList.add("hidden");
     return;
   }
-
   suggestions.forEach((item) => {
     const button = document.createElement("button");
     button.className = "suggestion";
@@ -1278,12 +1259,6 @@ function renderSuggestions(suggestions) {
   });
   followupInput.value = "";
   followupBox.classList.remove("hidden");
-}
-
-function normalizeFileUrl(url) {
-  if (!url) return "";
-  if (/^https?:\/\//i.test(url)) return url;
-  return apiUrl(url);
 }
 
 function renderResult(data, context = {}) {
@@ -1393,25 +1368,30 @@ async function submitQuestion(payload) {
   startProgress();
   let receivedTerminalEvent = false;
   try {
-    await streamApi(WEBAPP_QUERY_STREAM_PATH, webappQueryPayload({ session_id: state.sessionId, ...payload }), (eventName, data) => {
-      if (isProgressEvent(eventName)) {
-        renderStreamProgress(eventName, data);
-      } else if (eventName === "result" || eventName === "done") {
-        receivedTerminalEvent = true;
-        const resultData = eventName === "done" ? data.data || data : data;
-        if (resultData.status === "requires_params") {
-          renderMissingParams(resultData);
-        } else {
-          renderResult(resultData, { mode: "query" });
+    await streamApi(
+      WEBAPP_QUERY_STREAM_PATH,
+      webappQueryPayload({ session_id: state.sessionId, ...payload }),
+      (eventName, data) => {
+        if (isProgressEvent(eventName)) {
+          renderStreamProgress(eventName, data);
+        } else if (eventName === "result" || eventName === "done") {
+          receivedTerminalEvent = true;
+          const resultData = eventName === "done" ? data.data || data : data;
+          if (resultData.status === "requires_params") {
+            renderMissingParams(resultData);
+          } else {
+            renderResult(resultData, { mode: "query" });
+          }
+        } else if (eventName === "parameter_required") {
+          receivedTerminalEvent = true;
+          renderMissingParams(data.data || data);
+        } else if (eventName === "error") {
+          receivedTerminalEvent = true;
+          throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
         }
-      } else if (eventName === "parameter_required") {
-        receivedTerminalEvent = true;
-        renderMissingParams(data.data || data);
-      } else if (eventName === "error") {
-        receivedTerminalEvent = true;
-        throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
-      }
-    }, { headers: webappHeaders() });
+      },
+      { headers: webappHeaders() },
+    );
     if (!receivedTerminalEvent) {
       throw new Error("질문 응답이 완료되지 않았습니다. 서버 로그를 확인한 뒤 다시 시도해주세요.");
     }
@@ -1434,11 +1414,10 @@ submitBtn.addEventListener("click", () => {
   downloadList.innerHTML = "";
   questionInput.value = "";
   if (state.continuation) {
-    const naturalInput = question;
     submitQuestion({
       question: state.continuation.question || state.pendingQuestion || "추가 입력",
       session_id: state.sessionId,
-      params: { _natural_input: naturalInput },
+      params: { _natural_input: question },
       continuation: state.continuation,
     });
   } else if (state.queryMode === "followup" && state.lastResultId && state.canFollowup) {
@@ -1453,10 +1432,6 @@ submitBtn.addEventListener("click", () => {
 questionInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    submitBtn.click();
-    return;
-  }
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     submitBtn.click();
   }
 });
@@ -1512,25 +1487,8 @@ newSessionBtn.addEventListener("click", async () => {
   try {
     await createSession();
     questionInput.value = "";
-    answerBox.textContent = "";
-    sqlBox.textContent = "";
-    historyBox.innerHTML = "";
-    resultTable.innerHTML = "";
-    compactSummary.innerHTML = "";
-    compactSummary.classList.add("hidden");
-    renderResultMeta(null);
-    followupInput.value = "";
-    suggestionList.innerHTML = "";
-    followupBox.classList.add("hidden");
     stopProgress();
     clearInlineError();
-    paramPanel.classList.add("hidden");
-    queryPanel.classList.remove("awaiting-param");
-    state.queryMode = "new";
-    syncQueryModeUi();
-    resultPanel.classList.add("hidden");
-    emptyState.classList.remove("hidden");
-    setExportEnabled(false);
   } catch (error) {
     showToast(error.message);
   }
@@ -1542,6 +1500,10 @@ modeButtons.forEach((button) => {
 
 clearBtn.addEventListener("click", () => {
   newSessionBtn.click();
+});
+
+themeToggle?.addEventListener("click", () => {
+  setTheme(getTheme() === "light" ? "dark" : "light");
 });
 
 $$(".tab").forEach((button) => {
@@ -1579,6 +1541,7 @@ $$("[data-export]").forEach((button) => {
 loadHealth();
 loadExamples();
 createSession();
+
     </script>
   </body>
 </html>

@@ -1,5 +1,6 @@
 """Semantic schema loading, prompt context builders, and schema validation."""
 
+import functools
 import json
 import os
 import re
@@ -11,6 +12,30 @@ import yaml
 from .config import DB_SCHEMA, DB_SCHEMA_PREFIX, SCHEMA_PATH
 from .db import _DANGEROUS_SQL_RE
 from .llm import _call_llm, _normalize_llm_text
+from .tools.verified_queries import load_external_verified_queries
+
+
+def _memoize_by_schema_identity(func):
+    """Cache a ``schema -> str`` summary builder keyed on the schema object identity.
+
+    The summary builders are pure functions of the (effectively immutable) loaded
+    schema, yet they are called on every graph node. Memoizing avoids rebuilding the
+    same large strings on each request. The cache holds a reference to the schema
+    object so its ``id`` cannot be reused by a different object while cached.
+    """
+    cache: dict[int, tuple[object, str]] = {}
+
+    @functools.wraps(func)
+    def wrapper(schema: dict) -> str:
+        key = id(schema)
+        hit = cache.get(key)
+        if hit is not None and hit[0] is schema:
+            return hit[1]
+        result = func(schema)
+        cache[key] = (schema, result)
+        return result
+
+    return wrapper
 
 # ---------------------------------------------------------------------------
 # 3. Semantic Layer 로더
@@ -43,6 +68,7 @@ def load_semantic_layer(path: str | None = None) -> dict:
     return schema
 
 
+@_memoize_by_schema_identity
 def build_table_summary(schema: dict) -> str:
     lines = []
     for t in schema.get("tables", []):
@@ -78,6 +104,7 @@ def build_table_summary(schema: dict) -> str:
     return "\n".join(lines)
 
 
+@_memoize_by_schema_identity
 def build_metrics_summary(schema: dict) -> str:
     lines = []
     for m in schema.get("metrics", []):
@@ -89,6 +116,7 @@ def build_metrics_summary(schema: dict) -> str:
     return "\n".join(lines)
 
 
+@_memoize_by_schema_identity
 def build_glossary_summary(schema: dict) -> str:
     lines = []
     for g in schema.get("glossary", []):
@@ -238,6 +266,7 @@ def _canonical_metrics_by_domain(schema: dict) -> dict[str, list[dict]]:
     return grouped
 
 
+@_memoize_by_schema_identity
 def build_semantic_contract_summary(schema: dict) -> str:
     contract = schema.get("llm_semantic_contract", {})
     lines = []
@@ -677,5 +706,17 @@ def _result_summary(columns: list, rows: list[tuple], max_top_values: int = 5) -
 
 
 
-SCHEMA = load_semantic_layer()
+def _merge_external_verified_queries(schema: dict) -> dict:
+    extra_queries = load_external_verified_queries()
+    if not extra_queries:
+        return schema
+    merged = dict(schema)
+    # Keep verified query definitions in one authoritative file. The semantic
+    # schema may still contain legacy copies, but runtime matching uses the
+    # external file whenever it is present.
+    merged["verified_queries"] = extra_queries
+    return merged
+
+
+SCHEMA = _merge_external_verified_queries(load_semantic_layer())
 VERIFIED_QUERIES = SCHEMA.get("verified_queries", [])

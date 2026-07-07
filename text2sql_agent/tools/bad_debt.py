@@ -425,7 +425,7 @@ def _tool_fn_대손비용률(params: dict) -> dict:
 
     combined_data = "\n\n".join(summary_parts) + corr_summary if summary_parts else "데이터 없음"
 
-    answer_prompt = f"""당신은 KB카드 법인영업 데이터 분석가입니다.
+    answer_prompt = f"""당신은 KB카드 기업영업 데이터 분석가입니다.
 아래 쿼리 결과를 종합하여 '{merchant}'의 {yyyymm} 대손비용률 분석 결과를 짧고 직관적으로 작성하세요.
 
 ## 대손비용률 계산 로직

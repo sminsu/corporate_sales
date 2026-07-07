@@ -36,6 +36,13 @@ def _env(*names: str, default: str = "") -> str:
     return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def _or(value, default):
     """Return ``value`` unless it is None (so 0 / 0.0 are kept, not replaced)."""
     return default if value is None else value
@@ -105,9 +112,16 @@ EMBED_API_KEY = _clean_api_key(
     _env("EMBED_API_KEY", "EMBEDDING_API_KEY", default=((_EMBED.api_key if _EMBED else None) or ""))
 )
 EMBED_TIMEOUT = float(_env("EMBED_TIMEOUT", default=str(_or(_EMBED.timeout if _EMBED else None, 60))))
+EMBED_BATCH_SIZE = max(1, int(_env("EMBED_BATCH_SIZE", "EMBEDDING_BATCH_SIZE", default="10")))
 
-EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.75"))
-ENABLE_EMBEDDING_PRECOMPUTE = os.getenv("ENABLE_EMBEDDING_PRECOMPUTE", "false").lower() == "true"
+EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.86"))
+ENABLE_EMBEDDING_PRECOMPUTE = _env_bool("ENABLE_EMBEDDING_PRECOMPUTE", False)
+ENABLE_VERIFIED_QUERY_MATCHING = _env_bool("ENABLE_VERIFIED_QUERY_MATCHING", True)
+ENABLE_VERIFIED_QUERY_LLM_FALLBACK = _env_bool("ENABLE_VERIFIED_QUERY_LLM_FALLBACK", False)
+VERIFIED_QUERY_LLM_CANDIDATE_LIMIT = int(os.getenv("VERIFIED_QUERY_LLM_CANDIDATE_LIMIT", "8"))
+VERIFIED_QUERY_MIN_LEXICAL_SCORE = int(os.getenv("VERIFIED_QUERY_MIN_LEXICAL_SCORE", "2"))
+VERIFIED_QUERY_RULE_MATCH_THRESHOLD = int(os.getenv("VERIFIED_QUERY_RULE_MATCH_THRESHOLD", "5"))
+VERIFIED_QUERY_RULE_MATCH_MARGIN = int(os.getenv("VERIFIED_QUERY_RULE_MATCH_MARGIN", "2"))
 
 # ---------------------------------------------------------------------------
 # Agent identity

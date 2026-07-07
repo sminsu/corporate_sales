@@ -1,1 +1,1 @@
-"""Tool SQL builders and registry."""
+"""Verified query SQL builders and Tool registry."""

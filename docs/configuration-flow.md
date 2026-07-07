@@ -82,7 +82,7 @@ embedding client도 같은 패턴입니다.
 2. 없으면 `TEIEmbeddingClient(base_url=, model=, api_key=, timeout=)`.
 
 `_call_llm`은 system/user 두 메시지(역할 분리)로 호출하고, `RetryableProviderError`(타임아웃·일시
-오류·5xx)는 짧은 backoff로 자동 재시도합니다. `probe_llm`은 `/api/health`에서 쓰는 1-token readiness
+오류·5xx)는 짧은 backoff로 자동 재시도합니다. `probe_llm`은 `/health`에서 쓰는 1-token readiness
 probe입니다. 그 외 surface는 `_normalize_llm_text`, `_get_embedding`, `_get_embeddings_batch`,
 `_cosine_similarity`입니다.
 

@@ -1,0 +1,2194 @@
+# =============================================================================
+# Text2SQL Semantic Layer (cleansed) - KB카드 법인영업 시스템
+# =============================================================================
+# schema_v5.yaml에서 common_athena text2sql 코드가 실제로 소비하는 섹션만 남긴 버전.
+#
+# 유지(코드에서 사용):
+#   1. tables           - 테이블/컬럼 정의 (select_tables가 yaml.dump로 LLM에 주입,
+#                         build_table_summary / 스키마 검증에서 사용)
+#   2. relationships    - JOIN 경로 (from/to/join_expr)
+#   3. metrics          - build_metrics_summary
+#   4. glossary         - build_glossary_summary
+#   5. query_references - find_relevant_references
+#
+# 삭제(미사용):
+#   - model_info        : 코드에서 읽지 않는 순수 메타데이터
+#   - verified_queries  : 런타임에 tools/sql_verified_queries.yaml 외부 파일이
+#                         _merge_external_verified_queries()로 항상 덮어쓰므로 미사용
+#   - domains           : 코드는 v6 키 canonical_domains만 읽고 v5의 domains는 읽지 않음
+# =============================================================================
+
+# =============================================================================
+# 1. TABLES - 테이블 및 컬럼 정의
+# =============================================================================
+tables:
+  # ── 카드사 마스터 ──
+  - name: tbdaaaf17
+    physical_table: card_system.tbdaaaf17
+    description: >
+      카드사 기본 정보 마스터 테이블. 한 행은 하나의 카드사를 나타냅니다.
+    grain: "카드사 1개"
+    primary_key: [카드사코드]
+
+    dimensions:
+      - name: 카드사코드
+        description: "카드사 고유 식별 코드"
+        expr: 카드사코드
+        data_type: VARCHAR
+        unique: true
+
+      - name: 카드사명
+        description: "카드사 명칭"
+        expr: 카드사명
+        data_type: VARCHAR
+        synonyms: ["카드사이름", "카드회사명"]
+        sample_values: ["KB국민카드", "신한카드", "삼성카드"]
+
+      - name: 대표전화
+        description: "카드사 대표 전화번호"
+        expr: 대표전화
+        data_type: VARCHAR
+
+      - name: 홈페이지
+        description: "카드사 홈페이지 URL"
+        expr: 홈페이지
+        data_type: VARCHAR
+
+    time_dimensions:
+      - name: 설립일
+        description: "카드사 설립일"
+        expr: 설립일
+        data_type: DATE
+
+  # ── 기업 신용심사 ──
+  - name: tbdaaaf23
+    physical_table: card_system.tbdaaaf23
+    description: >
+      기업 신용심사 정보 테이블. 한 행은 하나의 기업카드 신청 심사건을 나타냅니다.
+      신용평가등급, 재무정보, 심사결과(승인/거절)를 포함합니다.
+    grain: "심사 신청건 1건"
+    primary_key: [신청서접수번호]
+
+    dimensions:
+      - name: 신청서접수번호
+        description: "심사 신청서 접수 고유번호"
+        expr: 신청서접수번호
+        data_type: VARCHAR
+        unique: true
+
+      - name: 관리부점코드
+        description: "심사 관리 부점(지점) 코드"
+        expr: 관리부점코드
+        data_type: VARCHAR
+        synonyms: ["지점코드", "부점"]
+
+      - name: 신용평가모형구분코드
+        description: "적용된 신용평가 모형 유형"
+        expr: 신용평가모형구분코드
+        data_type: VARCHAR
+
+      - name: 신용평가등급코드
+        description: "기업 신용평가 등급"
+        expr: 신용평가등급코드
+        data_type: VARCHAR
+        synonyms: ["신용등급", "평가등급", "기업등급"]
+
+      - name: 고객군형태구분코드
+        description: "고객군 형태 구분 (대기업/중소기업 등)"
+        expr: 고객군형태구분코드
+        data_type: VARCHAR
+        synonyms: ["고객유형", "기업규모"]
+
+      - name: 카드기업형태구분코드
+        description: "카드 발급 기업 형태 구분"
+        expr: 카드기업형태구분코드
+        data_type: VARCHAR
+
+      - name: 본사사업자등록번호
+        description: "심사 대상 기업의 본사 사업자등록번호"
+        expr: 본사사업자등록번호
+        data_type: VARCHAR
+        synonyms: ["사업자번호", "사업자등록번호"]
+
+      - name: 개인법인구분코드
+        description: "개인사업자/법인 구분"
+        expr: 개인법인구분코드
+        data_type: VARCHAR
+        synonyms: ["개인법인구분"]
+
+      - name: 카드처리결과구분코드
+        description: "심사 처리 결과 (승인/거절 등)"
+        expr: 카드처리결과구분코드
+        data_type: VARCHAR
+        synonyms: ["심사결과", "처리결과", "승인여부"]
+
+      - name: 처리결과사유구분코드
+        description: "심사 결과 사유 코드"
+        expr: 처리결과사유구분코드
+        data_type: VARCHAR
+
+      - name: 표준산업분류코드
+        description: "기업의 표준산업분류 코드"
+        expr: 표준산업분류코드
+        data_type: VARCHAR
+        synonyms: ["산업분류", "업종코드"]
+
+      - name: kis신용등급코드
+        description: "KIS(한국신용평가) 신용등급"
+        expr: kis신용등급코드
+        data_type: VARCHAR
+        synonyms: ["KIS등급"]
+
+      - name: cass신용등급코드
+        description: "CASS 신용등급"
+        expr: cass신용등급코드
+        data_type: VARCHAR
+
+      - name: 재무모형등급코드
+        description: "재무모형 기반 평가등급"
+        expr: 재무모형등급코드
+        data_type: VARCHAR
+
+      - name: kb카드연체여부
+        description: "KB카드 연체 이력 여부"
+        expr: kb카드연체여부
+        data_type: VARCHAR
+        synonyms: ["연체여부"]
+
+      - name: 타사연체여부
+        description: "타 카드사 연체 이력 여부"
+        expr: 타사연체여부
+        data_type: VARCHAR
+
+      - name: 유효기업카드소지여부
+        description: "현재 유효한 기업카드 보유 여부"
+        expr: 유효기업카드소지여부
+        data_type: VARCHAR
+
+      - name: 거래정지업체여부
+        description: "거래정지 업체 여부"
+        expr: 거래정지업체여부
+        data_type: VARCHAR
+
+      - name: 대기업분류여부
+        description: "대기업 분류 여부"
+        expr: 대기업분류여부
+        data_type: VARCHAR
+        synonyms: ["대기업여부"]
+
+    measures:
+      - name: 자기자본금
+        description: "기업 자기자본금 (원)"
+        expr: 자기자본금
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["자본금"]
+
+      - name: 매출금액
+        description: "기업 매출금액 (원)"
+        expr: 매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["기업매출"]
+
+      - name: 자산총계금액
+        description: "기업 자산 총계 (원)"
+        expr: 자산총계금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["총자산", "자산총계"]
+
+      - name: 당기순이익
+        description: "당기 순이익 (원)"
+        expr: 당기순이익
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 부채총계금액
+        description: "부채 총계 (원)"
+        expr: 부채총계금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["총부채", "부채총계"]
+
+      - name: 영업점부여한도금액
+        description: "영업점에서 부여한 한도 금액 (원)"
+        expr: 영업점부여한도금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최종부여한도금액
+        description: "최종 부여된 한도 금액 (원)"
+        expr: 최종부여한도금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["부여한도", "승인한도"]
+
+      - name: 종업원수
+        description: "기업 종업원 수"
+        expr: 종업원수
+        data_type: NUMERIC
+        default_aggregation: avg
+        synonyms: ["직원수", "임직원수"]
+
+      - name: kis신용평점
+        description: "KIS 신용평점"
+        expr: kis신용평점
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: cass신용평점
+        description: "CASS 신용평점"
+        expr: cass신용평점
+        data_type: NUMERIC
+        default_aggregation: avg
+
+    time_dimensions:
+      - name: 최종심사년월일
+        description: "최종 심사 완료일"
+        expr: 최종심사년월일
+        data_type: VARCHAR
+        synonyms: ["심사일", "심사일자"]
+
+      - name: 설립년월일
+        description: "기업 설립일"
+        expr: 설립년월일
+        data_type: VARCHAR
+
+    filters:
+      - name: 승인건
+        description: "심사 승인된 건만 필터"
+        expr: "카드처리결과구분코드 = '01'"
+        synonyms: ["승인", "승인완료"]
+
+      - name: 거절건
+        description: "심사 거절된 건만 필터"
+        expr: "카드처리결과구분코드 = '02'"
+        synonyms: ["거절", "반려"]
+
+      - name: 법인기업
+        description: "법인 기업만 필터"
+        expr: "개인법인구분코드 = '2'"
+        synonyms: ["법인", "법인사업자"]
+
+  # ── 기업고객 마스터 ──
+  - name: tbdaaat14
+    physical_table: card_system.tbdaaat14
+    description: >
+      기업고객 종합 마스터 테이블. 한 행은 하나의 기업고객 레코드를 나타냅니다.
+      기업정보, 가맹점정보, 카드보유현황을 포함합니다.
+    grain: "기업고객 1건 (기준년월일 기준)"
+    primary_key: [고객식별자, 기준년월일]
+
+    time_dimensions:
+      - name: 기준년월일
+        description: "데이터 기준일"
+        expr: 기준년월일
+        data_type: VARCHAR
+        synonyms: ["기준일", "기준날짜"]
+
+    dimensions:
+      - name: 고객식별자
+        description: "기업고객 고유 식별자"
+        expr: 고객식별자
+        data_type: VARCHAR
+        synonyms: ["고객ID", "고객번호"]
+
+      - name: 고객관리번호
+        description: "고객 관리번호"
+        expr: 고객관리번호
+        data_type: VARCHAR
+
+      - name: 법인등록번호
+        description: "법인 등록번호"
+        expr: 법인등록번호
+        data_type: VARCHAR
+        synonyms: ["법인번호"]
+
+      - name: 본사사업자등록번호
+        description: "본사 사업자등록번호"
+        expr: 본사사업자등록번호
+        data_type: VARCHAR
+        synonyms: ["사업자번호", "사업자등록번호"]
+
+      - name: 가맹점명
+        description: "기업 가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+
+      - name: 표준산업분류코드
+        description: "표준산업분류 코드"
+        expr: 표준산업분류코드
+        data_type: VARCHAR
+        synonyms: ["산업분류", "업종"]
+
+      - name: 업종구분코드
+        description: "업종 구분 코드"
+        expr: 업종구분코드
+        data_type: VARCHAR
+
+      - name: 가맹점번호
+        description: "가맹점 고유번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+
+      - name: 가맹점업종코드
+        description: "가맹점 업종 코드"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+
+      - name: 가맹점상태구분코드
+        description: "가맹점 상태 (정상/해지 등)"
+        expr: 가맹점상태구분코드
+        data_type: VARCHAR
+        synonyms: ["가맹점상태"]
+
+      - name: 기업대표자고객식별자
+        description: "기업 대표자의 고객 식별자"
+        expr: 기업대표자고객식별자
+        data_type: VARCHAR
+
+    measures:
+      - name: 회원보유신용카드수
+        description: "보유 신용카드 수"
+        expr: 회원보유신용카드수
+        data_type: INTEGER
+        default_aggregation: sum
+        synonyms: ["신용카드수", "신용카드보유수"]
+
+      - name: 회원보유체크카드수
+        description: "보유 체크카드 수"
+        expr: 회원보유체크카드수
+        data_type: INTEGER
+        default_aggregation: sum
+        synonyms: ["체크카드수", "체크카드보유수"]
+
+      - name: 회원유효신용카드수
+        description: "유효한 신용카드 수"
+        expr: 회원유효신용카드수
+        data_type: INTEGER
+        default_aggregation: sum
+        synonyms: ["유효신용카드"]
+
+      - name: 회원유효체크카드수
+        description: "유효한 체크카드 수"
+        expr: 회원유효체크카드수
+        data_type: INTEGER
+        default_aggregation: sum
+        synonyms: ["유효체크카드"]
+
+  # ── 고객 마스터 ──
+  - name: tbdaaat01
+    physical_table: card_system.tbdaaat01
+    description: >
+      고객 기본 마스터 테이블. 한 행은 하나의 고객을 나타냅니다.
+      개인/기업 고객 공통 정보(상태, 연락처, 주소, 마케팅 동의 등)를 포함합니다.
+    grain: "고객 1명"
+    primary_key: [고객식별자]
+
+    dimensions:
+      - name: 고객식별자
+        description: "고객 고유 식별자"
+        expr: 고객식별자
+        data_type: VARCHAR
+        unique: true
+        synonyms: ["고객ID"]
+
+      - name: 고객관리번호
+        description: "고객 관리번호"
+        expr: 고객관리번호
+        data_type: VARCHAR
+
+      - name: 개인기업구분코드
+        description: "개인/기업 구분 코드"
+        expr: 개인기업구분코드
+        data_type: VARCHAR
+        synonyms: ["개인법인구분"]
+        sample_values: ["1 (개인)", "2 (기업)"]
+
+      - name: 고객상태구분코드
+        description: "고객 상태 (정상/해지 등)"
+        expr: 고객상태구분코드
+        data_type: VARCHAR
+        synonyms: ["고객상태"]
+
+      - name: 고객유형분류구분코드
+        description: "고객 유형 분류"
+        expr: 고객유형분류구분코드
+        data_type: VARCHAR
+
+      - name: 법인등록번호
+        description: "법인등록번호"
+        expr: 법인등록번호
+        data_type: VARCHAR
+
+      - name: 본사사업자등록번호
+        description: "본사 사업자등록번호"
+        expr: 본사사업자등록번호
+        data_type: VARCHAR
+
+      - name: 가맹점명
+        description: "기업/가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+        synonyms: ["업체명", "기업명", "회사명"]
+
+      - name: 표준산업분류코드
+        description: "표준산업분류 코드"
+        expr: 표준산업분류코드
+        data_type: VARCHAR
+
+      - name: 성별구분코드
+        description: "대표자 성별"
+        expr: 성별구분코드
+        data_type: VARCHAR
+
+      - name: 카드거래정지여부
+        description: "카드 거래정지 상태 여부"
+        expr: 카드거래정지여부
+        data_type: VARCHAR
+
+      - name: 유효카드존재회원여부
+        description: "유효한 카드가 있는 회원인지 여부"
+        expr: 유효카드존재회원여부
+        data_type: VARCHAR
+
+      - name: 카드고객서비스구분코드
+        description: "고객 서비스 등급 구분"
+        expr: 카드고객서비스구분코드
+        data_type: VARCHAR
+        synonyms: ["고객등급", "서비스등급"]
+
+    time_dimensions:
+      - name: 최초등록년월일
+        description: "고객 최초 등록일"
+        expr: 최초등록년월일
+        data_type: VARCHAR
+        synonyms: ["가입일", "등록일"]
+
+    filters:
+      - name: 기업고객
+        description: "기업 고객만 필터"
+        expr: "개인기업구분코드 = '2'"
+        synonyms: ["법인고객", "기업"]
+
+      - name: 유효카드보유
+        description: "유효 카드를 보유한 고객만 필터"
+        expr: "유효카드존재회원여부 = 'Y'"
+
+  # ── 매출전표 (팩트) ──
+  - name: tbdaabt30
+    physical_table: card_system.tbdaabt30
+    description: >
+      카드 매출전표 상세 팩트 테이블. 한 행은 하나의 매출전표(거래)를 나타냅니다.
+      카드 승인/매입 금액, 가맹점, 할부정보, 수수료 등을 포함합니다.
+      법인카드 이용 분석의 핵심 테이블입니다.
+    grain: "매출전표 1건"
+    primary_key: [매출전표번호, 기준년월]
+
+    time_dimensions:
+      - name: 전표매출년월일
+        description: "매출 발생일 (실제 결제일)"
+        expr: 전표매출년월일
+        data_type: VARCHAR
+        synonyms: ["매출일", "결제일자", "거래일"]
+
+      - name: 전표매입년월일
+        description: "매입 처리일"
+        expr: 전표매입년월일
+        data_type: VARCHAR
+        synonyms: ["매입일"]
+
+      - name: 기준년월
+        description: "데이터 기준 년월"
+        expr: 기준년월
+        data_type: VARCHAR
+
+    dimensions:
+      - name: 매출전표번호
+        description: "매출전표 고유번호"
+        expr: 매출전표번호
+        data_type: VARCHAR
+        unique: true
+
+      - name: 카드매출유형구분코드
+        description: "매출 유형 (일시불/할부/CA 등)"
+        expr: 카드매출유형구분코드
+        data_type: VARCHAR
+        synonyms: ["매출유형", "거래유형"]
+
+      - name: 가맹점번호
+        description: "거래 발생 가맹점 번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+
+      - name: 가맹점업종코드
+        description: "거래 가맹점의 업종 코드"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+        synonyms: ["업종코드"]
+
+      - name: 가맹점명
+        description: "거래 가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+
+      - name: 카드식별자
+        description: "사용 카드 식별자"
+        expr: 카드식별자
+        data_type: VARCHAR
+
+      - name: 소유자고객식별자
+        description: "카드 소유자(기업) 고객 식별자"
+        expr: 소유자고객식별자
+        data_type: VARCHAR
+
+      - name: 본인고객식별자
+        description: "실제 카드 사용자 고객 식별자"
+        expr: 본인고객식별자
+        data_type: VARCHAR
+
+      - name: 기업고객식별자
+        description: "기업 고객 식별자"
+        expr: 기업고객식별자
+        data_type: VARCHAR
+
+      - name: 개인기업구분코드
+        description: "개인/기업 거래 구분"
+        expr: 개인기업구분코드
+        data_type: VARCHAR
+        synonyms: ["개인법인구분"]
+
+      - name: 카드브랜드구분코드
+        description: "카드 브랜드 (VISA/Master/국내 등)"
+        expr: 카드브랜드구분코드
+        data_type: VARCHAR
+        synonyms: ["카드브랜드"]
+
+      - name: 카드등급구분코드
+        description: "카드 등급"
+        expr: 카드등급구분코드
+        data_type: VARCHAR
+        synonyms: ["카드등급"]
+
+      - name: 전표취소구분코드
+        description: "전표 취소 여부/유형"
+        expr: 전표취소구분코드
+        data_type: VARCHAR
+        synonyms: ["취소여부"]
+
+      - name: mcc업종코드
+        description: "MCC(Merchant Category Code) 업종코드"
+        expr: mcc업종코드
+        data_type: VARCHAR
+        synonyms: ["MCC코드"]
+
+      - name: 온라인거래여부
+        description: "온라인 거래 여부"
+        expr: 온라인거래여부
+        data_type: VARCHAR
+
+      - name: 가맹점사업자등록번호
+        description: "거래 가맹점 사업자등록번호"
+        expr: 가맹점사업자등록번호
+        data_type: VARCHAR
+
+      - name: year
+        description: "파티션 연도"
+        expr: year
+        data_type: VARCHAR
+
+      - name: month
+        description: "파티션 월"
+        expr: month
+        data_type: VARCHAR
+
+      - name: day
+        description: "파티션 일"
+        expr: day
+        data_type: VARCHAR
+
+    measures:
+      - name: 매출금액
+        description: "매출 금액 (원)"
+        expr: 매출금액
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["거래금액", "이용금액", "결제금액"]
+
+      - name: 카드승인금액
+        description: "카드 승인 금액 (원)"
+        expr: 카드승인금액
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["승인금액"]
+
+      - name: 할부기간개월수
+        description: "할부 개월 수"
+        expr: 할부기간개월수
+        data_type: BIGINT
+        default_aggregation: avg
+        synonyms: ["할부개월"]
+
+      - name: 가맹점수수료
+        description: "가맹점 수수료 (원)"
+        expr: 가맹점수수료
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["수수료"]
+
+      - name: 가맹점수수료율
+        description: "가맹점 수수료율 (%)"
+        expr: 가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: ca수수료
+        description: "CA(현금서비스) 수수료 (원)"
+        expr: ca수수료
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 봉사료
+        description: "봉사료 (원)"
+        expr: 봉사료
+        data_type: BIGINT
+        default_aggregation: sum
+
+    filters:
+      - name: 기업거래
+        description: "기업(법인) 카드 거래만 필터"
+        expr: "개인기업구분코드 = '2'"
+        synonyms: ["법인거래", "기업카드거래"]
+
+      - name: 정상거래
+        description: "취소되지 않은 정상 거래만 필터"
+        expr: "전표취소구분코드 IS NULL OR 전표취소구분코드 = '0'"
+        synonyms: ["취소제외"]
+
+      - name: 온라인거래
+        description: "온라인 거래만 필터"
+        expr: "온라인거래여부 = 'Y'"
+
+  # ── 무이자할부 서비스 ──
+  - name: tbdaada23
+    physical_table: card_system.tbdaada23
+    description: >
+      무이자할부 서비스 정보 테이블. 한 행은 하나의 무이자할부 적용 조건을 나타냅니다.
+      가맹점/제휴업체별 무이자할부 기간과 금액 조건을 포함합니다.
+    grain: "무이자할부 조건 1건"
+    primary_key: [서비스코드, 가맹점번호, 정보적용일련번호]
+
+    dimensions:
+      - name: 서비스코드
+        description: "무이자할부 서비스 코드"
+        expr: 서비스코드
+        data_type: VARCHAR
+
+      - name: 제휴업체코드
+        description: "제휴업체 코드"
+        expr: 제휴업체코드
+        data_type: VARCHAR
+
+      - name: 가맹점번호
+        description: "적용 가맹점 번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+
+      - name: 무이자할부수수료적용구분코드
+        description: "무이자할부 수수료 적용 구분"
+        expr: 무이자할부수수료적용구분코드
+        data_type: VARCHAR
+
+    measures:
+      - name: 최소무이자할부개월수
+        description: "최소 무이자 할부 개월 수"
+        expr: 최소무이자할부개월수
+        data_type: NUMERIC
+        default_aggregation: min
+
+      - name: 최대무이자할부개월수
+        description: "최대 무이자 할부 개월 수"
+        expr: 최대무이자할부개월수
+        data_type: NUMERIC
+        default_aggregation: max
+        synonyms: ["무이자할부기간"]
+
+      - name: 무이자할부거래건당최소금액
+        description: "무이자할부 적용 최소 거래 금액 (원)"
+        expr: 무이자할부거래건당최소금액
+        data_type: NUMERIC
+        default_aggregation: min
+
+      - name: 무이자할부거래건당최대금액
+        description: "무이자할부 적용 최대 거래 금액 (원)"
+        expr: 무이자할부거래건당최대금액
+        data_type: NUMERIC
+        default_aggregation: max
+
+    time_dimensions:
+      - name: 정보적용시작년월일
+        description: "무이자할부 적용 시작일"
+        expr: 정보적용시작년월일
+        data_type: VARCHAR
+
+      - name: 정보적용종료년월일
+        description: "무이자할부 적용 종료일"
+        expr: 정보적용종료년월일
+        data_type: VARCHAR
+
+  # ── 가맹점 업종코드 마스터 ──
+  - name: tbdaadb17
+    physical_table: card_system.tbdaadb17
+    description: >
+      가맹점 업종코드 마스터 테이블. 한 행은 하나의 업종코드를 나타냅니다.
+      업종 분류체계(대분류/중분류), 수수료율, 할부 가능 여부 등을 포함합니다.
+    grain: "업종코드 1개"
+    primary_key: [가맹점업종코드]
+
+    dimensions:
+      - name: 가맹점업종코드
+        description: "가맹점 업종 코드 (PK)"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+        unique: true
+        synonyms: ["업종코드"]
+
+      - name: 가맹점업종명
+        description: "가맹점 업종 명칭"
+        expr: 가맹점업종명
+        data_type: VARCHAR
+        synonyms: ["업종명", "업종이름"]
+
+      - name: 업종대분류코드명
+        description: "업종 대분류 명칭"
+        expr: 업종대분류코드명
+        data_type: VARCHAR
+        synonyms: ["대분류", "업종대분류"]
+
+      - name: 가맹점업종대분류구분코드
+        description: "업종 대분류 구분 코드"
+        expr: 가맹점업종대분류구분코드
+        data_type: VARCHAR
+
+      - name: 가맹점업종중분류구분코드
+        description: "업종 중분류 구분 코드"
+        expr: 가맹점업종중분류구분코드
+        data_type: VARCHAR
+        synonyms: ["중분류코드"]
+
+      - name: mcc업종코드
+        description: "MCC 업종코드"
+        expr: mcc업종코드
+        data_type: VARCHAR
+
+      - name: 할부가능여부
+        description: "해당 업종의 할부 거래 가능 여부"
+        expr: 할부가능여부
+        data_type: VARCHAR
+
+      - name: 사용여부
+        description: "업종코드 사용 여부"
+        expr: 사용여부
+        data_type: VARCHAR
+
+    measures:
+      - name: 신용카드가맹점수수료율
+        description: "신용카드 가맹점 수수료율 (%)"
+        expr: 신용카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+        synonyms: ["신용수수료율"]
+
+      - name: 체크카드가맹점수수료율
+        description: "체크카드 가맹점 수수료율 (%)"
+        expr: 체크카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+        synonyms: ["체크수수료율"]
+
+      - name: 할부가능개월수
+        description: "할부 가능 최대 개월 수"
+        expr: 할부가능개월수
+        data_type: NUMERIC
+        default_aggregation: max
+
+  # ── 가맹점 마스터 (일단위) ──
+  - name: tbdaadt01
+    physical_table: card_system.tbdaadt01
+    description: >
+      가맹점 일단위 마스터 테이블. 한 행은 하나의 가맹점 정보를 나타냅니다.
+      가맹점 기본정보, 수수료, 한도, 매출 등을 포함합니다.
+    grain: "가맹점 1개 (실적기준년월일 기준)"
+    primary_key: [가맹점번호, 실적기준년월일]
+
+    time_dimensions:
+      - name: 실적기준년월일
+        description: "실적 기준일"
+        expr: 실적기준년월일
+        data_type: VARCHAR
+        synonyms: ["기준일"]
+
+      - name: 가맹점신규년월일
+        description: "가맹점 신규 등록일"
+        expr: 가맹점신규년월일
+        data_type: VARCHAR
+        synonyms: ["가맹점등록일", "가입일"]
+
+      - name: 가맹점해지년월일
+        description: "가맹점 해지일"
+        expr: 가맹점해지년월일
+        data_type: VARCHAR
+        synonyms: ["해지일"]
+
+    dimensions:
+      - name: 가맹점번호
+        description: "가맹점 고유번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+        synonyms: ["가맹점ID"]
+
+      - name: 가맹점명
+        description: "가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+        synonyms: ["상호명", "가맹점이름"]
+
+      - name: 가맹점상태구분코드
+        description: "가맹점 상태 (정상/해지/거래정지 등)"
+        expr: 가맹점상태구분코드
+        data_type: VARCHAR
+        synonyms: ["가맹점상태"]
+
+      - name: 가맹점업종코드
+        description: "가맹점 업종 코드"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+
+      - name: mcc업종코드
+        description: "MCC 업종코드"
+        expr: mcc업종코드
+        data_type: VARCHAR
+
+      - name: 사업자등록번호
+        description: "가맹점 사업자등록번호"
+        expr: 사업자등록번호
+        data_type: VARCHAR
+
+      - name: 가맹점유형구분코드
+        description: "가맹점 유형 구분"
+        expr: 가맹점유형구분코드
+        data_type: VARCHAR
+
+      - name: 가맹점관리부점코드
+        description: "가맹점 관리 부점(지점) 코드"
+        expr: 가맹점관리부점코드
+        data_type: VARCHAR
+        synonyms: ["관리지점"]
+
+      - name: 가맹점거래정지여부
+        description: "거래정지 여부"
+        expr: 가맹점거래정지여부
+        data_type: VARCHAR
+
+      - name: 기업고객식별자
+        description: "가맹점 소속 기업 고객 식별자"
+        expr: 기업고객식별자
+        data_type: VARCHAR
+
+      - name: 가맹점수수료구분코드
+        description: "수수료 구분 코드"
+        expr: 가맹점수수료구분코드
+        data_type: VARCHAR
+
+    measures:
+      - name: 신용카드가맹점수수료율
+        description: "신용카드 수수료율 (%)"
+        expr: 신용카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: 체크카드가맹점수수료율
+        description: "체크카드 수수료율 (%)"
+        expr: 체크카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: 금년가맹점신용판매매출금액
+        description: "금년 신용카드 판매 매출금액 (원)"
+        expr: 금년가맹점신용판매매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["금년매출", "올해매출"]
+
+      - name: 전년가맹점신용판매매출금액
+        description: "전년 신용카드 판매 매출금액 (원)"
+        expr: 전년가맹점신용판매매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["전년매출", "작년매출"]
+
+      - name: 가맹점1회승인한도금액
+        description: "1회 승인 한도 금액 (원)"
+        expr: 가맹점1회승인한도금액
+        data_type: NUMERIC
+        default_aggregation: avg
+        synonyms: ["건당한도"]
+
+      - name: 가맹점일승인한도금액
+        description: "일 승인 한도 금액 (원)"
+        expr: 가맹점일승인한도금액
+        data_type: NUMERIC
+        default_aggregation: avg
+        synonyms: ["일한도"]
+
+      - name: 가맹점월승인한도금액
+        description: "월 승인 한도 금액 (원)"
+        expr: 가맹점월승인한도금액
+        data_type: NUMERIC
+        default_aggregation: avg
+        synonyms: ["월한도"]
+
+    filters:
+      - name: 정상가맹점
+        description: "정상 상태 가맹점만 필터"
+        expr: "가맹점거래정지여부 = 'N' OR 가맹점거래정지여부 IS NULL"
+        synonyms: ["활성가맹점"]
+
+  # ── KCIS 기업 여신현황 ──
+  - name: tbdaaha97
+    physical_table: card_system.tbdaaha97
+    description: >
+      KCIS(한국신용정보원) 기업 카드 여신현황 테이블.
+      한 행은 특정 기업의 특정 금융기관 카드 이용 현황을 나타냅니다.
+      한도, 이용금액, 연체 정보를 포함합니다.
+    grain: "기업-금융기관 여신 1건 (작업기준년월 기준)"
+    primary_key: [사업자등록번호, 금융기관공동코드, 작업기준년월]
+
+    time_dimensions:
+      - name: 작업기준년월
+        description: "데이터 기준 년월"
+        expr: 작업기준년월
+        data_type: VARCHAR
+        synonyms: ["기준년월", "기준월"]
+
+    dimensions:
+      - name: 사업자등록번호
+        description: "기업 사업자등록번호"
+        expr: 사업자등록번호
+        data_type: VARCHAR
+        synonyms: ["사업자번호"]
+
+      - name: 금융기관공동코드
+        description: "금융기관 공동 코드 (카드사 식별)"
+        expr: 금융기관공동코드
+        data_type: VARCHAR
+        synonyms: ["금융기관코드", "카드사코드"]
+
+      - name: 상호명
+        description: "기업 상호명"
+        expr: 상호명
+        data_type: VARCHAR
+        synonyms: ["기업명", "회사명"]
+
+      - name: 기업계열명
+        description: "기업 계열 명칭"
+        expr: 기업계열명
+        data_type: VARCHAR
+        synonyms: ["계열사명", "그룹명"]
+
+      - name: kcis차주구분코드
+        description: "KCIS 차주 구분"
+        expr: kcis차주구분코드
+        data_type: VARCHAR
+
+      - name: 리볼빙약정구분코드
+        description: "리볼빙 약정 여부/구분"
+        expr: 리볼빙약정구분코드
+        data_type: VARCHAR
+
+    measures:
+      - name: 총한도금액
+        description: "카드 총 한도 금액 (원)"
+        expr: 총한도금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["총한도", "카드한도"]
+
+      - name: ca한도금액
+        description: "CA(현금서비스) 한도 금액 (원)"
+        expr: ca한도금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["현금서비스한도"]
+
+      - name: 카드이용합계금액
+        description: "카드 이용 합계 금액 (원)"
+        expr: 카드이용합계금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["총이용금액", "카드이용액"]
+
+      - name: 신용판매이용금액
+        description: "신용판매 이용 금액 (원)"
+        expr: 신용판매이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 일시불이용금액
+        description: "일시불 이용 금액 (원)"
+        expr: 일시불이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 할부이용금액
+        description: "할부 이용 금액 (원)"
+        expr: 할부이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: ca이용금액
+        description: "CA(현금서비스) 이용 금액 (원)"
+        expr: ca이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["현금서비스이용액"]
+
+      - name: 연체금액
+        description: "연체 금액 (원)"
+        expr: 연체금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 미도래청구합계잔액
+        description: "미도래 청구 잔액 합계 (원)"
+        expr: 미도래청구합계잔액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+    time_dimensions_extra:
+      - name: 연체기산년월일
+        description: "연체 기산일"
+        expr: 연체기산년월일
+        data_type: VARCHAR
+
+  # ── 기업고객 월별 집계 ──
+  - name: tmdaa2e17
+    physical_table: card_system.tmdaa2e17
+    description: >
+      기업고객 월별 종합 집계 테이블. 한 행은 한 기업고객의 월별 실적을 나타냅니다.
+      카드 보유 현황, 월별 이용금액(일시불/할부/CA 등) 세부 항목을 포함합니다.
+    grain: "기업고객-월 1건"
+    primary_key: [고객식별자, 기준년월]
+
+    time_dimensions:
+      - name: 기준년월
+        description: "실적 기준 년월"
+        expr: 기준년월
+        data_type: VARCHAR
+        synonyms: ["기준월"]
+
+    dimensions:
+      - name: 고객식별자
+        description: "기업고객 식별자"
+        expr: 고객식별자
+        data_type: VARCHAR
+        synonyms: ["고객ID"]
+
+      - name: 가맹점번호
+        description: "가맹점 번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+
+      - name: 기업검색명
+        description: "기업 검색명"
+        expr: 기업검색명
+        data_type: VARCHAR
+        synonyms: ["기업명", "회사명"]
+
+      - name: 가맹점명
+        description: "가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+
+      - name: 표준산업분류코드
+        description: "표준산업분류 코드"
+        expr: 표준산업분류코드
+        data_type: VARCHAR
+
+      - name: 가맹점업종코드
+        description: "가맹점 업종 코드"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+
+      - name: 기업카드발급이력여부
+        description: "기업카드 발급 이력 존재 여부"
+        expr: 기업카드발급이력여부
+        data_type: VARCHAR
+
+      - name: 가맹점가입이력여부
+        description: "가맹점 가입 이력 존재 여부"
+        expr: 가맹점가입이력여부
+        data_type: VARCHAR
+
+      - name: 카드고객서비스구분코드
+        description: "고객 서비스 등급 구분"
+        expr: 카드고객서비스구분코드
+        data_type: VARCHAR
+
+      - name: year
+        description: "파티션 연도"
+        expr: year
+        data_type: VARCHAR
+
+      - name: month
+        description: "파티션 월"
+        expr: month
+        data_type: VARCHAR
+
+    measures:
+      - name: 유효신용카드수
+        description: "유효 신용카드 수"
+        expr: 유효신용카드수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 유효체크카드수
+        description: "유효 체크카드 수"
+        expr: 유효체크카드수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 기업보유실물카드수
+        description: "기업 보유 실물카드 수"
+        expr: 기업보유실물카드수
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["카드수", "보유카드수"]
+
+      - name: 금월일시불이용금액
+        description: "당월 일시불 이용 금액 (원)"
+        expr: 금월일시불이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["일시불이용액"]
+
+      - name: 금월할부이용금액
+        description: "당월 할부 이용 금액 (원)"
+        expr: 금월할부이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["할부이용액"]
+
+      - name: 금월ca이용금액
+        description: "당월 CA(현금서비스) 이용 금액 (원)"
+        expr: 금월ca이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["CA이용액", "현금서비스이용액"]
+
+      - name: 금월주유이용금액
+        description: "당월 주유 이용 금액 (원)"
+        expr: 금월주유이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 금월국세이용금액
+        description: "당월 국세 납부 금액 (원)"
+        expr: 금월국세이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 금월지방세이용금액
+        description: "당월 지방세 납부 금액 (원)"
+        expr: 금월지방세이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 금월4대보험이용금액
+        description: "당월 4대보험 납부 금액 (원)"
+        expr: 금월4대보험이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 금월택시이용금액
+        description: "당월 택시 이용 금액 (원)"
+        expr: 금월택시이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 금월kb페이이용금액
+        description: "당월 KB페이 이용 금액 (원)"
+        expr: 금월kb페이이용금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점일시불매입금액
+        description: "가맹점 일시불 매입 금액 (원)"
+        expr: 가맹점일시불매입금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점할부매입금액
+        description: "가맹점 할부 매입 금액 (원)"
+        expr: 가맹점할부매입금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 정상가맹점수
+        description: "정상 상태 가맹점 수"
+        expr: 정상가맹점수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+  # ── 카드 월별 상세 ──
+  - name: tmdaa3e16
+    physical_table: card_system.tmdaa3e16
+    description: >
+      카드별 월별 상세 실적 테이블. 한 행은 하나의 카드 월별 실적을 나타냅니다.
+      청구/이용 건수와 금액, 연체 정보 등을 카드 단위로 포함합니다.
+    grain: "카드-월 1건"
+    primary_key: [카드구분키번호, 기준년월]
+
+    time_dimensions:
+      - name: 기준년월
+        description: "실적 기준 년월"
+        expr: 기준년월
+        data_type: VARCHAR
+
+    dimensions:
+      - name: 카드구분키번호
+        description: "카드 구분 키 번호"
+        expr: 카드구분키번호
+        data_type: VARCHAR
+
+      - name: 카드식별자
+        description: "카드 식별자"
+        expr: 카드식별자
+        data_type: VARCHAR
+        synonyms: ["카드ID", "카드번호"]
+
+      - name: 고객식별자
+        description: "카드 소유 고객 식별자"
+        expr: 고객식별자
+        data_type: VARCHAR
+
+      - name: 개인기업구분코드
+        description: "개인/기업 구분"
+        expr: 개인기업구분코드
+        data_type: VARCHAR
+
+      - name: 카드브랜드구분코드
+        description: "카드 브랜드 (VISA/Master 등)"
+        expr: 카드브랜드구분코드
+        data_type: VARCHAR
+        synonyms: ["카드브랜드"]
+
+      - name: 카드등급구분코드
+        description: "카드 등급"
+        expr: 카드등급구분코드
+        data_type: VARCHAR
+        synonyms: ["카드등급"]
+
+      - name: 상품코드
+        description: "카드 상품 코드"
+        expr: 상품코드
+        data_type: VARCHAR
+
+      - name: 유효신용카드여부
+        description: "유효 신용카드 여부"
+        expr: 유효신용카드여부
+        data_type: VARCHAR
+
+      - name: 유효체크카드여부
+        description: "유효 체크카드 여부"
+        expr: 유효체크카드여부
+        data_type: VARCHAR
+
+      - name: 회원거래정지여부
+        description: "회원 거래 정지 여부"
+        expr: 회원거래정지여부
+        data_type: VARCHAR
+
+      - name: 카드거래정지여부
+        description: "카드 거래 정지 여부"
+        expr: 카드거래정지여부
+        data_type: VARCHAR
+
+      - name: year
+        description: "파티션 연도"
+        expr: year
+        data_type: VARCHAR
+
+      - name: month
+        description: "파티션 월"
+        expr: month
+        data_type: VARCHAR
+
+    measures:
+      - name: 기업카드신용한도금액
+        description: "기업카드 신용 한도 금액 (원)"
+        expr: 기업카드신용한도금액
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["카드한도", "신용한도"]
+
+      - name: 금월이용합계건수
+        description: "당월 이용 합계 건수"
+        expr: 금월이용합계건수
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["이용건수"]
+
+      - name: 금월이용합계금액
+        description: "당월 이용 합계 금액 (원)"
+        expr: 금월이용합계금액
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["이용금액", "당월이용액"]
+
+      - name: 금월일시불이용건수
+        description: "당월 일시불 이용 건수"
+        expr: 금월일시불이용건수
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 금월일시불이용금액
+        description: "당월 일시불 이용 금액 (원)"
+        expr: 금월일시불이용금액
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 금월할부이용건수
+        description: "당월 할부 이용 건수"
+        expr: 금월할부이용건수
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 금월할부이용금액
+        description: "당월 할부 이용 금액 (원)"
+        expr: 금월할부이용금액
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 금월ca이용건수
+        description: "당월 CA 이용 건수"
+        expr: 금월ca이용건수
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 금월ca이용금액
+        description: "당월 CA 이용 금액 (원)"
+        expr: 금월ca이용금액
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 금월청구금액
+        description: "당월 청구 금액 (원)"
+        expr: 금월청구금액
+        data_type: BIGINT
+        default_aggregation: sum
+        synonyms: ["청구금액"]
+
+      - name: 금월청구건수
+        description: "당월 청구 건수"
+        expr: 금월청구건수
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 최근1년카드이용건수
+        description: "최근 1년 카드 이용 건수"
+        expr: 최근1년카드이용건수
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 최근1년카드이용금액
+        description: "최근 1년 카드 이용 금액 (원)"
+        expr: 최근1년카드이용금액
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 연체원금
+        description: "연체 원금 (원)"
+        expr: 연체원금
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 연체회차
+        description: "연체 회차"
+        expr: 연체회차
+        data_type: BIGINT
+        default_aggregation: max
+
+    filters:
+      - name: 기업카드
+        description: "기업카드만 필터"
+        expr: "개인기업구분코드 = '2'"
+        synonyms: ["법인카드"]
+
+      - name: 유효카드
+        description: "유효한 카드만 필터"
+        expr: "유효신용카드여부 = 'Y' OR 유효체크카드여부 = 'Y'"
+
+      - name: 연체발생
+        description: "연체가 발생한 카드만 필터"
+        expr: "연체원금 > 0"
+
+  # ── 가맹점 월별 마스터 ──
+  - name: tmdaa5d01
+    physical_table: card_system.tmdaa5d01
+    description: >
+      가맹점 월별 마스터 스냅샷 테이블. 한 행은 한 가맹점의 월별 상태를 나타냅니다.
+      가맹점 기본정보, 수수료, 한도 등의 월별 스냅샷입니다.
+    grain: "가맹점-월 1건"
+    primary_key: [가맹점번호, 기준년월]
+
+    time_dimensions:
+      - name: 기준년월
+        description: "기준 년월"
+        expr: 기준년월
+        data_type: VARCHAR
+
+    dimensions:
+      - name: 가맹점번호
+        description: "가맹점 번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+
+      - name: 가맹점명
+        description: "가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+
+      - name: 가맹점상태구분코드
+        description: "가맹점 상태"
+        expr: 가맹점상태구분코드
+        data_type: VARCHAR
+
+      - name: 가맹점업종코드
+        description: "가맹점 업종 코드"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+
+      - name: 사업자등록번호
+        description: "사업자등록번호"
+        expr: 사업자등록번호
+        data_type: VARCHAR
+
+      - name: 가맹점관리부점코드
+        description: "관리 부점 코드"
+        expr: 가맹점관리부점코드
+        data_type: VARCHAR
+
+      - name: 가맹점유형구분코드
+        description: "가맹점 유형"
+        expr: 가맹점유형구분코드
+        data_type: VARCHAR
+
+      - name: year
+        description: "파티션 연도"
+        expr: year
+        data_type: VARCHAR
+
+      - name: month
+        description: "파티션 월"
+        expr: month
+        data_type: VARCHAR
+
+    measures:
+      - name: 금년가맹점신용판매매출금액
+        description: "금년 신용판매 매출 (원)"
+        expr: 금년가맹점신용판매매출금액
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 전년가맹점신용판매매출금액
+        description: "전년 신용판매 매출 (원)"
+        expr: 전년가맹점신용판매매출금액
+        data_type: BIGINT
+        default_aggregation: sum
+
+      - name: 신용카드가맹점수수료율
+        description: "신용카드 수수료율"
+        expr: 신용카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: 체크카드가맹점수수료율
+        description: "체크카드 수수료율"
+        expr: 체크카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+  # ── 가맹점 월별 실적 ──
+  - name: tmdaa5e11
+    physical_table: card_system.tmdaa5e11
+    description: >
+      가맹점 월별 실적 테이블. 한 행은 한 가맹점의 월별 실적을 나타냅니다.
+      매출건수, 매출금액, 수수료, 기간별 실적 등을 포함합니다.
+      가맹점 실적 분석의 핵심 테이블입니다.
+    grain: "가맹점-월 1건"
+    primary_key: [가맹점번호, 기준년월]
+
+    time_dimensions:
+      - name: 기준년월
+        description: "실적 기준 년월"
+        expr: 기준년월
+        data_type: VARCHAR
+        synonyms: ["기준월"]
+
+    dimensions:
+      - name: 가맹점번호
+        description: "가맹점 번호"
+        expr: 가맹점번호
+        data_type: VARCHAR
+
+      - name: 사업자등록번호
+        description: "사업자등록번호"
+        expr: 사업자등록번호
+        data_type: VARCHAR
+
+      - name: 가맹점업종코드
+        description: "가맹점 업종 코드"
+        expr: 가맹점업종코드
+        data_type: VARCHAR
+
+      - name: mcc업종코드
+        description: "MCC 업종코드"
+        expr: mcc업종코드
+        data_type: VARCHAR
+
+      - name: 가맹점명
+        description: "가맹점 명칭"
+        expr: 가맹점명
+        data_type: VARCHAR
+
+      - name: 가맹점관리부점코드
+        description: "관리 부점 코드"
+        expr: 가맹점관리부점코드
+        data_type: VARCHAR
+
+      - name: 가맹점유형구분코드
+        description: "가맹점 유형"
+        expr: 가맹점유형구분코드
+        data_type: VARCHAR
+
+      - name: 가맹점거래정지여부
+        description: "거래 정지 여부"
+        expr: 가맹점거래정지여부
+        data_type: VARCHAR
+
+      - name: year
+        description: "파티션 연도"
+        expr: year
+        data_type: VARCHAR
+
+      - name: month
+        description: "파티션 월"
+        expr: month
+        data_type: VARCHAR
+
+    measures:
+      - name: 가맹점일시불매입건수
+        description: "일시불 매입 건수"
+        expr: 가맹점일시불매입건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점일시불매입금액
+        description: "일시불 매입 금액 (원)"
+        expr: 가맹점일시불매입금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["일시불매출"]
+
+      - name: 가맹점할부매입건수
+        description: "할부 매입 건수"
+        expr: 가맹점할부매입건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점할부매입금액
+        description: "할부 매입 금액 (원)"
+        expr: 가맹점할부매입금액
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["할부매출"]
+
+      - name: 가맹점일시불매출건수
+        description: "일시불 매출 건수"
+        expr: 가맹점일시불매출건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점일시불매출금액
+        description: "일시불 매출 금액 (원)"
+        expr: 가맹점일시불매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점할부매출건수
+        description: "할부 매출 건수"
+        expr: 가맹점할부매출건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점할부매출금액
+        description: "할부 매출 금액 (원)"
+        expr: 가맹점할부매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 가맹점수입수수료
+        description: "가맹점 수입수수료 (원)"
+        expr: 가맹점수입수수료
+        data_type: NUMERIC
+        default_aggregation: sum
+        synonyms: ["수수료수입"]
+
+      - name: 금년가맹점신용판매매출금액
+        description: "금년 신용판매 매출 (원)"
+        expr: 금년가맹점신용판매매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 전년가맹점신용판매매출금액
+        description: "전년 신용판매 매출 (원)"
+        expr: 전년가맹점신용판매매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최근3개월가맹점매출건수
+        description: "최근 3개월 매출 건수"
+        expr: 최근3개월가맹점매출건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최근3개월가맹점매출금액
+        description: "최근 3개월 매출 금액 (원)"
+        expr: 최근3개월가맹점매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최근6개월가맹점매출건수
+        description: "최근 6개월 매출 건수"
+        expr: 최근6개월가맹점매출건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최근6개월가맹점매출금액
+        description: "최근 6개월 매출 금액 (원)"
+        expr: 최근6개월가맹점매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최근1년가맹점매출건수
+        description: "최근 1년 매출 건수"
+        expr: 최근1년가맹점매출건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 최근1년가맹점매출금액
+        description: "최근 1년 매출 금액 (원)"
+        expr: 최근1년가맹점매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 신용카드가맹점수수료율
+        description: "신용카드 수수료율 (%)"
+        expr: 신용카드가맹점수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: 체크카드수수료율
+        description: "체크카드 수수료율 (%)"
+        expr: 체크카드수수료율
+        data_type: NUMERIC
+        default_aggregation: avg
+
+      - name: 체크카드수수료
+        description: "체크카드 수수료 (원)"
+        expr: 체크카드수수료
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 해외가맹점매출건수
+        description: "해외 매출 건수"
+        expr: 해외가맹점매출건수
+        data_type: NUMERIC
+        default_aggregation: sum
+
+      - name: 해외가맹점매출금액
+        description: "해외 매출 금액 (원)"
+        expr: 해외가맹점매출금액
+        data_type: NUMERIC
+        default_aggregation: sum
+
+    filters:
+      - name: 활성가맹점
+        description: "거래정지가 아닌 가맹점만 필터"
+        expr: "가맹점거래정지여부 = 'N' OR 가맹점거래정지여부 IS NULL"
+
+# =============================================================================
+# 2. RELATIONSHIPS - 테이블 간 관계 (JOIN 경로)
+# =============================================================================
+relationships:
+  # 고객 체계
+  - from: tbdaaat14
+    to: tbdaaat01
+    type: many_to_one
+    join_expr: "tbdaaat14.고객식별자 = tbdaaat01.고객식별자"
+    description: "기업고객 마스터 -> 고객 기본 마스터 (고객 기본정보 참조)"
+
+  # 기업심사 -> 기업고객
+  - from: tbdaaaf23
+    to: tbdaaat14
+    type: many_to_one
+    join_expr: "tbdaaaf23.본사사업자등록번호 = tbdaaat14.본사사업자등록번호"
+    description: "기업 심사건 -> 기업고객 (사업자등록번호 기준)"
+
+  # 매출전표 -> 가맹점
+  - from: tbdaabt30
+    to: tbdaadt01
+    type: many_to_one
+    join_expr: "tbdaabt30.가맹점번호 = tbdaadt01.가맹점번호"
+    description: "매출전표 -> 가맹점 마스터 (가맹점 상세정보 참조)"
+
+  # 매출전표 -> 업종코드
+  - from: tbdaabt30
+    to: tbdaadb17
+    type: many_to_one
+    join_expr: "tbdaabt30.가맹점업종코드 = tbdaadb17.가맹점업종코드"
+    description: "매출전표 -> 업종코드 마스터 (업종명 참조)"
+
+  # 매출전표 -> 기업고객
+  - from: tbdaabt30
+    to: tbdaaat14
+    type: many_to_one
+    join_expr: "tbdaabt30.기업고객식별자 = tbdaaat14.고객식별자"
+    description: "매출전표 -> 기업고객 마스터 (기업 정보 참조)"
+
+  # 기업고객 월별 집계 -> 기업고객
+  - from: tmdaa2e17
+    to: tbdaaat14
+    type: many_to_one
+    join_expr: "tmdaa2e17.고객식별자 = tbdaaat14.고객식별자"
+    description: "기업고객 월별 집계 -> 기업고객 마스터"
+
+  # 기업고객 월별 집계 -> 업종코드
+  - from: tmdaa2e17
+    to: tbdaadb17
+    type: many_to_one
+    join_expr: "tmdaa2e17.가맹점업종코드 = tbdaadb17.가맹점업종코드"
+    description: "기업고객 월별 집계 -> 업종코드 마스터"
+
+  # 카드 월별 -> 기업고객
+  - from: tmdaa3e16
+    to: tbdaaat14
+    type: many_to_one
+    join_expr: "tmdaa3e16.고객식별자 = tbdaaat14.고객식별자"
+    description: "카드 월별 실적 -> 기업고객 마스터"
+
+  # 가맹점 월별 실적 -> 가맹점 월별 마스터
+  - from: tmdaa5e11
+    to: tmdaa5d01
+    type: one_to_one
+    join_expr: "tmdaa5e11.가맹점번호 = tmdaa5d01.가맹점번호 AND tmdaa5e11.기준년월 = tmdaa5d01.기준년월"
+    description: "가맹점 월별 실적 -> 가맹점 월별 마스터 (같은 기준년월)"
+
+  # 가맹점 월별 실적 -> 업종코드
+  - from: tmdaa5e11
+    to: tbdaadb17
+    type: many_to_one
+    join_expr: "tmdaa5e11.가맹점업종코드 = tbdaadb17.가맹점업종코드"
+    description: "가맹점 월별 실적 -> 업종코드 마스터"
+
+  # KCIS 여신 -> 기업고객
+  - from: tbdaaha97
+    to: tbdaaat14
+    type: many_to_one
+    join_expr: "tbdaaha97.사업자등록번호 = tbdaaat14.본사사업자등록번호"
+    description: "KCIS 여신현황 -> 기업고객 (사업자등록번호 기준)"
+
+  # 무이자할부 -> 가맹점
+  - from: tbdaada23
+    to: tbdaadt01
+    type: many_to_one
+    join_expr: "tbdaada23.가맹점번호 = tbdaadt01.가맹점번호"
+    description: "무이자할부 서비스 -> 가맹점 마스터"
+
+  # 가맹점 마스터 -> 업종코드
+  - from: tbdaadt01
+    to: tbdaadb17
+    type: many_to_one
+    join_expr: "tbdaadt01.가맹점업종코드 = tbdaadb17.가맹점업종코드"
+    description: "가맹점 마스터 -> 업종코드 마스터 (업종명 참조)"
+
+# =============================================================================
+# 3. METRICS - 비즈니스 메트릭 정의
+# =============================================================================
+metrics:
+  # ── 매출/이용 메트릭 ──
+  - name: 법인카드총이용금액
+    description: >
+      법인카드 총 이용금액: 기업(법인) 카드의 매출전표 매출금액 합계.
+      반드시 개인기업구분코드 = '2' 조건을 포함해야 합니다.
+    sql: "SUM(CASE WHEN 개인기업구분코드 = '2' THEN 매출금액 ELSE 0 END)"
+    source_table: tbdaabt30
+    type: currency_krw
+    time_dimension: 전표매출년월일
+    synonyms: ["법인이용금액", "기업카드이용액", "법인카드매출"]
+
+  - name: 전표매출건수
+    description: "매출전표 총 건수"
+    sql: "COUNT(DISTINCT 매출전표번호)"
+    source_table: tbdaabt30
+    type: count
+    time_dimension: 전표매출년월일
+    synonyms: ["거래건수", "매출건수", "이용건수"]
+
+  - name: 일시불이용금액합계
+    description: "일시불 이용 금액 합계"
+    sql: "SUM(금월일시불이용금액)"
+    source_table: tmdaa3e16
+    type: currency_krw
+    time_dimension: 기준년월
+    synonyms: ["일시불이용액", "일시불합계"]
+
+  - name: 할부이용금액합계
+    description: "할부 이용 금액 합계"
+    sql: "SUM(금월할부이용금액)"
+    source_table: tmdaa3e16
+    type: currency_krw
+    time_dimension: 기준년월
+    synonyms: ["할부이용액", "할부합계"]
+
+  - name: CA이용금액합계
+    description: "CA(현금서비스) 이용 금액 합계"
+    sql: "SUM(금월ca이용금액)"
+    source_table: tmdaa3e16
+    type: currency_krw
+    time_dimension: 기준년월
+    synonyms: ["현금서비스이용액", "CA합계"]
+
+  # ── 가맹점 실적 메트릭 ──
+  - name: 가맹점총매출금액
+    description: "가맹점 총 매출 금액 (일시불 + 할부)"
+    sql: "SUM(가맹점일시불매출금액 + 가맹점할부매출금액)"
+    source_table: tmdaa5e11
+    type: currency_krw
+    time_dimension: 기준년월
+    synonyms: ["가맹점매출", "가맹점총매출"]
+
+  - name: 가맹점총매출건수
+    description: "가맹점 총 매출 건수 (일시불 + 할부)"
+    sql: "SUM(가맹점일시불매출건수 + 가맹점할부매출건수)"
+    source_table: tmdaa5e11
+    type: count
+    time_dimension: 기준년월
+    synonyms: ["가맹점매출건수"]
+
+  - name: 가맹점평균수수료율
+    description: "가맹점 평균 신용카드 수수료율"
+    sql: "AVG(신용카드가맹점수수료율)"
+    source_table: tmdaa5e11
+    type: ratio
+    time_dimension: 기준년월
+    synonyms: ["평균수수료율"]
+
+  - name: 가맹점수수료수입합계
+    description: "가맹점 수수료 수입 합계 금액"
+    sql: "SUM(가맹점수입수수료)"
+    source_table: tmdaa5e11
+    type: currency_krw
+    time_dimension: 기준년월
+    synonyms: ["수수료수입", "수수료합계"]
+
+  # ── 심사 메트릭 ──
+  - name: 심사신청건수
+    description: "기업카드 심사 신청 총 건수"
+    sql: "COUNT(DISTINCT 신청서접수번호)"
+    source_table: tbdaaaf23
+    type: count
+    time_dimension: 최종심사년월일
+    synonyms: ["신청건수", "심사건수"]
+
+  - name: 심사승인건수
+    description: "심사 승인 건수"
+    sql: "COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END)"
+    source_table: tbdaaaf23
+    type: count
+    time_dimension: 최종심사년월일
+    synonyms: ["승인건수"]
+
+  - name: 심사승인율
+    description: "심사 승인율: 승인건수 / 전체 심사건수"
+    sql: >
+      COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END)::FLOAT
+      / NULLIF(COUNT(DISTINCT 신청서접수번호), 0)
+    source_table: tbdaaaf23
+    type: ratio
+    time_dimension: 최종심사년월일
+    synonyms: ["승인율", "심사통과율"]
+
+  - name: 평균부여한도
+    description: "심사 시 평균 최종 부여 한도 금액"
+    sql: "AVG(최종부여한도금액)"
+    source_table: tbdaaaf23
+    type: currency_krw
+    time_dimension: 최종심사년월일
+    synonyms: ["평균한도"]
+
+  # ── 고객/카드 메트릭 ──
+  - name: 기업고객수
+    description: "기업 고객 수 (고유 고객식별자 기준)"
+    sql: "COUNT(DISTINCT 고객식별자)"
+    source_table: tmdaa2e17
+    type: count
+    time_dimension: 기준년월
+    synonyms: ["법인고객수", "기업수"]
+
+  - name: 유효카드수
+    description: "유효한 기업 카드 수 (신용 + 체크)"
+    sql: "SUM(유효신용카드수 + 유효체크카드수)"
+    source_table: tmdaa2e17
+    type: count
+    time_dimension: 기준년월
+    synonyms: ["유효카드", "보유카드수"]
+
+  # ── 여신/연체 메트릭 ──
+  - name: 총여신한도
+    description: "KCIS 기준 총 카드 한도 합계"
+    sql: "SUM(총한도금액)"
+    source_table: tbdaaha97
+    type: currency_krw
+    time_dimension: 작업기준년월
+    synonyms: ["총한도", "여신한도"]
+
+  - name: 총연체금액
+    description: "연체 금액 합계"
+    sql: "SUM(연체금액)"
+    source_table: tbdaaha97
+    type: currency_krw
+    time_dimension: 작업기준년월
+    synonyms: ["연체합계", "연체총액"]
+
+  - name: 연체율
+    description: "연체율: 연체금액 / 카드이용합계금액"
+    sql: "SUM(연체금액)::FLOAT / NULLIF(SUM(카드이용합계금액), 0)"
+    source_table: tbdaaha97
+    type: ratio
+    time_dimension: 작업기준년월
+    synonyms: ["연체비율"]
+
+  # ── 건당/비율 메트릭 ──
+  - name: 건당평균이용금액
+    description: "거래 1건당 평균 이용 금액"
+    sql: "SUM(금월이용합계금액)::FLOAT / NULLIF(SUM(금월이용합계건수), 0)"
+    source_table: tmdaa3e16
+    type: currency_krw
+    time_dimension: 기준년월
+    synonyms: ["건당이용액", "평균거래금액", "객단가"]
+
+  - name: 가맹점전년대비성장률
+    description: "가맹점 매출 전년대비 성장률"
+    sql: >
+      (SUM(금년가맹점신용판매매출금액) - SUM(전년가맹점신용판매매출금액))::FLOAT
+      / NULLIF(SUM(전년가맹점신용판매매출금액), 0)
+    source_table: tmdaa5e11
+    type: ratio
+    time_dimension: 기준년월
+    synonyms: ["매출성장률", "전년대비", "YoY"]
+
+# =============================================================================
+# 4. GLOSSARY - 비즈니스 용어 사전
+# =============================================================================
+glossary:
+  - term: "법인카드"
+    canonical: "개인기업구분코드 = '2'인 카드"
+    description: "기업(법인) 명의로 발급된 카드. 개인기업구분코드가 '2'인 레코드"
+    aliases: ["기업카드", "법인신용카드", "corporate card"]
+
+  - term: "CA"
+    canonical: "현금서비스(Cash Advance)"
+    description: "카드를 이용한 현금 인출 서비스. ca이용금액, ca수수료 등의 컬럼에서 사용"
+    aliases: ["현금서비스", "Cash Advance", "캐시어드밴스"]
+
+  - term: "가맹점"
+    canonical: "카드 결제를 받는 상점"
+    description: "KB카드와 가맹 계약을 맺고 카드 결제를 수용하는 업소"
+    aliases: ["merchant", "상점", "매장", "업소"]
+
+  - term: "매입"
+    canonical: "카드사가 매출전표를 접수하여 정산 처리하는 행위"
+    description: "가맹점의 카드 거래를 카드사가 승인 후 정산 처리. 매입건수/매입금액으로 집계"
+    aliases: ["acquisition", "전표매입"]
+
+  - term: "일시불"
+    canonical: "할부 없이 1회 전액 결제"
+    description: "할부기간개월수 = 0 또는 카드매출유형 중 일시불에 해당하는 거래"
+    aliases: ["일괄결제", "lump sum"]
+
+  - term: "연체"
+    canonical: "결제 기한 경과 후 미납 상태"
+    description: "카드 이용 대금을 결제일까지 납부하지 않은 상태. 연체원금, 연체금액, 연체회차로 관리"
+    aliases: ["미납", "delinquency", "overdue"]
+
+  - term: "MCC"
+    canonical: "Merchant Category Code"
+    description: "국제 표준 가맹점 업종 분류 코드. mcc업종코드 컬럼에 저장"
+    aliases: ["MCC코드", "업종분류코드"]
+
+  - term: "수수료"
+    canonical: "가맹점이 카드사에 지불하는 결제 대행 수수료"
+    description: "거래금액 대비 일정 비율(수수료율)로 산정. 신용카드/체크카드별 별도 수수료율 적용"
+    aliases: ["가맹점수수료", "merchant fee", "결제수수료"]
+
+  - term: "부점"
+    canonical: "영업점/지점"
+    description: "카드사의 영업 관리 단위. 관리부점코드, 모집부점코드 등으로 참조"
+    aliases: ["영업점", "지점", "부점코드", "branch"]
+
+  - term: "KCIS"
+    canonical: "한국신용정보원"
+    description: "금융권 신용정보 집중/관리 기관. tbdaaha97 테이블의 여신 정보 출처"
+    aliases: ["한국신용정보원", "신용정보원"]
+
+  - term: "KIS"
+    canonical: "한국신용평가"
+    description: "기업 신용등급 평가기관. kis신용등급코드/kis신용평점 컬럼에서 사용"
+    aliases: ["한국신용평가", "KIS등급"]
+
+  - term: "CRS"
+    canonical: "Credit Rating System (신용등급평가시스템)"
+    description: "카드사 자체 신용등급 평가 시스템. crs 관련 컬럼들에서 사용"
+    aliases: ["신용등급시스템", "Credit Rating"]
+
+  - term: "심사"
+    canonical: "기업카드 발급 심사 (tbdaaaf23)"
+    description: "기업카드 발급 신청에 대한 신용 심사 과정. 승인/거절 결과와 부여한도 결정"
+    aliases: ["신용심사", "카드심사", "발급심사", "credit review"]
+
+  - term: "한도"
+    canonical: "카드 이용 가능 최대 금액"
+    description: "기업카드의 이용 가능 한도. 최종부여한도금액, 가맹점월승인한도금액 등"
+    aliases: ["이용한도", "신용한도", "승인한도", "credit limit"]
+
+  - term: "전표"
+    canonical: "매출전표 (tbdaabt30)"
+    description: "카드 거래 발생 시 생성되는 거래 기록. 매출전표번호로 식별"
+    aliases: ["매출전표", "거래전표", "slip"]
+
+  - term: "기준년월"
+    canonical: "데이터 스냅샷 기준 시점 (YYYYMM 형식)"
+    description: "월별 집계/스냅샷 테이블의 기준 시점. YYYYMM 형식의 VARCHAR"
+    aliases: ["기준월", "기준시점"]
+    sql_hint: "기준년월 형식은 'YYYYMM'입니다. 예: '202604'"
+
+  - term: "기준년월일"
+    canonical: "데이터 스냅샷 기준 시점 (YYYYMMDD 형식)"
+    description: "일별 스냅샷 테이블의 기준 시점. YYYYMMDD 형식의 VARCHAR"
+    aliases: ["기준일"]
+    sql_hint: "기준년월일 형식은 'YYYYMMDD'입니다. 예: '20260416'"
+
+  - term: "신규 고객"
+    canonical: "고객 최초 등록일 기준 신규 고객"
+    description: "실제 모집 테이블이 확정되지 않은 경우 고객 마스터(tbdaaat01)의 최초등록년월일 기준 신규 등록 고객으로만 해석합니다."
+    aliases: ["신규고객", "가입고객", "등록고객"]
+    sql_hint: "신규/가입/등록 고객 질의는 tbdaaat01.최초등록년월일을 사용합니다. '모집고객'은 별도 실테이블이 없으면 임의 매핑하지 말고 추가 확인이 필요합니다."
+
+  - term: "여성 고객"
+    canonical: "성별구분코드 = '2'"
+    description: "성별 코드 기준 여성 고객. 실제 코드 사전이 있으면 그 값을 우선합니다."
+    aliases: ["여성", "여자", "여자고객", "female"]
+    sql_hint: "여성 조건은 성별구분코드 = '2'를 기본값으로 사용합니다."
+
+# =============================================================================
+# 5. QUERY REFERENCES - 질의별 컬럼/필터/조인 선택 지침
+# =============================================================================
+query_references:
+  - intent: 신규등록고객_월별_기본조회
+    when_user_says:
+      - "12월 신규 고객 알려줘"
+      - "12월 가입 고객 수"
+      - "2025년 12월 등록고객"
+      - "월별 신규 고객 추이"
+    primary_table: tbdaaat01
+    recommended_columns:
+      time_filter: "SUBSTRING(최초등록년월일, 1, 6) = '{기준년월}'"
+      metric: "COUNT(DISTINCT 고객식별자) AS 신규고객수"
+      display: ["기준년월", "신규고객수"]
+    rules:
+      - "신규/가입/등록 고객은 tbdaaat01.최초등록년월일을 기준으로 해석합니다."
+      - "모집고객이라는 표현은 실테이블이 확정되지 않았으므로 tbdaaat01로 임의 치환하지 않습니다."
+      - "월 조건은 YYYYMM 형식으로 변환합니다."
+    sql_pattern: |
+      SELECT
+        SUBSTRING(최초등록년월일, 1, 6) AS 기준년월,
+        COUNT(DISTINCT 고객식별자) AS 신규고객수
+      FROM card_system.tbdaaat01
+      WHERE SUBSTRING(최초등록년월일, 1, 6) = '{기준년월}'
+      GROUP BY SUBSTRING(최초등록년월일, 1, 6)
+
+  - intent: 신규등록고객_성별필터
+    when_user_says:
+      - "12월 신규 고객 중 여성 고객을 뽑아줘"
+      - "가입 고객 중 여자 고객만 보여줘"
+      - "여성 신규 고객 수"
+      - "등록고객을 성별로 나눠줘"
+    primary_table: tbdaaat01
+    recommended_columns:
+      filters: ["성별구분코드 = '2' for 여성", "성별구분코드 = '1' for 남성"]
+      metric: "COUNT(DISTINCT 고객식별자)"
+      display: ["기준년월", "성별구분코드", "고객수"]
+    rules:
+      - "여성/남성 조건은 tbdaaat01.성별구분코드를 사용합니다."
+      - "성별별 분포를 묻는 경우 WHERE 성별 조건을 걸지 말고 GROUP BY 성별구분코드를 사용합니다."
+
+  - intent: 기업고객_신규등록_대표자성별
+    when_user_says:
+      - "12월 신규 기업고객 중 대표자가 여성인 고객"
+      - "여성 대표자 기업고객"
+      - "신규 법인고객 중 여성 대표자"
+    primary_table: tbdaaat14
+    join_tables: [tbdaaat01]
+    join_rule: "tbdaaat14.기업대표자고객식별자 = tbdaaat01.고객식별자"
+    recommended_columns:
+      time_filter: "SUBSTRING(tbdaaat14.최초등록년월일, 1, 6) = '{기준년월}'"
+      gender_filter: "tbdaaat01.성별구분코드 = '2'"
+      metric: "COUNT(DISTINCT tbdaaat14.고객식별자) AS 기업고객수"
+    rules:
+      - "기업 자체의 성별이 아니라 대표자 성별을 묻는 경우 tbdaaat14.기업대표자고객식별자로 tbdaaat01을 조인합니다."
+      - "기업고객 수는 tbdaaat14.고객식별자 distinct count를 사용합니다."
+
+  - intent: 기업고객_월별이용_복합질의
+    when_user_says:
+      - "신규 기업고객의 이후 카드 이용금액"
+      - "기업고객 중 여성 대표자의 월별 이용금액"
+      - "기업고객 등록월과 이용월을 같이 보여줘"
+    primary_table: tbdaaat14
+    join_tables: [tmdaa2e17, tbdaaat01]
+    join_rule: "tbdaaat14.고객식별자 = tmdaa2e17.고객식별자; tbdaaat14.기업대표자고객식별자 = tbdaaat01.고객식별자"
+    recommended_columns:
+      registration_month: "SUBSTRING(tbdaaat14.최초등록년월일, 1, 6)"
+      usage_month: "tmdaa2e17.기준년월"
+      usage_metric: "SUM(tmdaa2e17.금월일시불이용금액 + tmdaa2e17.금월할부이용금액 + tmdaa2e17.금월ca이용금액)"
+    rules:
+      - "등록월과 이용월은 서로 다른 시간축이므로 SELECT alias를 명확히 분리합니다."
+      - "이용금액은 tmdaa2e17의 월별 기업고객 집계 컬럼을 우선 사용합니다."
+
+  - intent: 기업심사_조건결합_복합질의
+    when_user_says:
+      - "여성 대표자 기업의 심사 승인율"
+      - "신규 기업고객의 심사 승인 현황"
+      - "특정 기간 기업고객 심사와 한도"
+    primary_table: tbdaaaf23
+    join_tables: [tbdaaat14, tbdaaat01]
+    join_rule: "tbdaaaf23.본사사업자등록번호 = tbdaaat14.본사사업자등록번호; tbdaaat14.기업대표자고객식별자 = tbdaaat01.고객식별자"
+    recommended_columns:
+      approval_metric: "COUNT(DISTINCT CASE WHEN tbdaaaf23.카드처리결과구분코드 = '01' THEN tbdaaaf23.신청서접수번호 END)"
+      approval_rate: "승인건수 / 전체심사건수"
+      limit_metric: "AVG(tbdaaaf23.최종부여한도금액)"
+    rules:
+      - "심사 승인/거절은 tbdaaaf23.카드처리결과구분코드를 사용합니다."
+      - "기업/대표자 조건은 tbdaaat14/tbdaaat01 조인으로 보강합니다."
