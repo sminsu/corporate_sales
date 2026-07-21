@@ -9,6 +9,11 @@ from typing import TypedDict
 class Text2SQLState(TypedDict):
     question: str
     question_type: str
+    # --- Multi-turn context (optional values, initialized as empty strings) ---
+    previous_question: str
+    previous_sql: str
+    previous_answer: str
+    followup_question: str
     # --- Domain Routing ---
     selected_domain: str
     domain_candidates: list[dict]
@@ -18,6 +23,9 @@ class Text2SQLState(TypedDict):
     selected_tool: str
     tool_params: dict
     tool_completed: bool
+    skip_tool_selection: bool
+    selected_capability_type: str
+    selected_capability_name: str
     # --- 범용 파라미터 프롬프트 ---
     missing_params: list
     param_stage: str
@@ -27,6 +35,7 @@ class Text2SQLState(TypedDict):
     matched_query_sql: str
     matched_query_params: dict
     extracted_params: dict
+    skip_verified_query_matching: bool
     # --- SQL 생성 ---
     selected_tables: list[str]
     table_details: str
@@ -35,6 +44,7 @@ class Text2SQLState(TypedDict):
     is_valid: bool
     retry_count: int
     final_sql: str
+    implicit_time_basis: str
     # --- 공통 결과 ---
     query_columns: list[str]
     query_rows: list[tuple]

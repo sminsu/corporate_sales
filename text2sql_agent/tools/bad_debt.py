@@ -7,10 +7,10 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from ..config import BAD_DEBT_OUTPUT_DIR
+from ..config import BAD_DEBT_OUTPUT_DIR, DB_SCHEMA, DB_SCHEMA_PREFIX
 from ..db import execute_sql
-from ..llm import _call_llm
-from .sql_builders import _calc_months_back, _escape_like, _sanitize_param
+from ..llm import _call_llm, _normalize_llm_text
+from .sql_builders import _athena_partition_conds, _calc_months_back, _escape_like, _sanitize_param
 
 # ---------------------------------------------------------------------------
 # 5. 대손비용률 Tool 구현
@@ -21,13 +21,13 @@ BAD_DEBT_QUERIES = {
     "월초충당금": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE "가맹점명" ILIKE '%{가맹점명}%'
+    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%'){partition_tmdaa5d01_기준년월}
 ),
 cm AS (
     SELECT 기준년월, 고객식별자,
         SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '2'
+    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_월초년월}
     GROUP BY 기준년월, 고객식별자
 ),
 join_s AS (
@@ -43,13 +43,13 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     "월말충당금": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE "가맹점명" ILIKE '%{가맹점명}%'
+    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%'){partition_tmdaa5d01_기준년월}
 ),
 cm AS (
     SELECT 기준년월, 고객식별자,
         SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '2'
+    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_기준년월}
     GROUP BY 기준년월, 고객식별자
 ),
 join_s AS (
@@ -65,15 +65,15 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     "상각내역": """WITH cor_table AS (
     SELECT DISTINCT a.기업고객식별자
     FROM card_system.tbdaadt01 a
-    WHERE a.가맹점상태구분코드 IN ('1', '01') AND a.가맹점명 ILIKE '%{가맹점명}%'
+    WHERE a.가맹점상태구분코드 IN ('1', '01') AND LOWER(a.가맹점명) LIKE LOWER('%{가맹점명}%'){partition_tbdaadt01_기준년월}
 ),
 sd06 AS (
     SELECT 고객식별자,
         SUM(특수채권편입원금) AS 특수채권편입원금, SUM(특수채권편입가지급금) AS 특수채권편입가지급금,
         SUM(특수채권편입원금 + 특수채권편입가지급금) AS 상각금액
     FROM card_system.tbmaisd06
-    WHERE LEFT(특수채권편입기준년월일, 6)::int BETWEEN '{시작년월}'::int AND '{기준년월}'::int
-      AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'
+    WHERE CAST(SUBSTR(특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
+      AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'{partition_tbmaisd06_기간}
     GROUP BY 고객식별자
 ),
 sd06_a AS (
@@ -89,12 +89,12 @@ FROM sd06_a GROUP BY 구분 ORDER BY 구분""",
     "대손비용률종합": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE "가맹점명" ILIKE '%{가맹점명}%'
+    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%'){partition_tmdaa5d01_기준년월}
 ),
 cm_start AS (
     SELECT 고객식별자, SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '2'
+    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_월초년월}
     GROUP BY 고객식별자
 ),
 cm_start_flagged AS (
@@ -105,7 +105,7 @@ cm_start_flagged AS (
 cm_end AS (
     SELECT 고객식별자, SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '2'
+    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_기준년월}
     GROUP BY 고객식별자
 ),
 cm_end_flagged AS (
@@ -115,13 +115,13 @@ cm_end_flagged AS (
 ),
 cor_table_full AS (
     SELECT DISTINCT a.기업고객식별자 FROM card_system.tbdaadt01 a
-    WHERE a.가맹점상태구분코드 IN ('1', '01') AND a.가맹점명 ILIKE '%{가맹점명}%'
+    WHERE a.가맹점상태구분코드 IN ('1', '01') AND LOWER(a.가맹점명) LIKE LOWER('%{가맹점명}%'){partition_tbdaadt01_기준년월}
 ),
 sd06 AS (
     SELECT 고객식별자, SUM(특수채권편입원금 + 특수채권편입가지급금) AS 상각금액
     FROM card_system.tbmaisd06
-    WHERE LEFT(특수채권편입기준년월일, 6)::int BETWEEN '{시작년월}'::int AND '{기준년월}'::int
-      AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'
+    WHERE CAST(SUBSTR(특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
+      AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'{partition_tbmaisd06_기간}
     GROUP BY 고객식별자
 ),
 sd06_flagged AS (
@@ -166,15 +166,51 @@ FROM with_cost c CROSS JOIN total t ORDER BY c.구분""",
 }
 
 
+def _to_float(value) -> float:
+    """SQL 결과 셀을 float으로 변환한다. NULL/빈 값/변환 실패는 0.0으로 처리한다."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _partition_and(table_name: str, start: str, end: str = "", alias: str = "") -> str:
+    try:
+        conds = _athena_partition_conds(table_name, start=start, end=end or start, alias=alias)
+    except Exception:
+        return ""
+    if not conds:
+        return ""
+    return "".join(f"\n      AND {cond}" for cond in conds)
+
+
 def _build_bad_debt_sql(query_template: str, params: dict) -> str:
     merchant = _escape_like(params.get("가맹점명", ""))
     yyyymm = _sanitize_param(params.get("기준년월", ""))
     prev_month = _calc_months_back(yyyymm, 1) if yyyymm else ""
     start_month = _calc_months_back(yyyymm, 0) if yyyymm else ""
-    sql = query_template.replace("{가맹점명}", merchant)
+    sql = query_template
+    if params.get("이름정확일치") is True:
+        sql = sql.replace("'%{가맹점명}%'", "'{가맹점명}'")
+    sql = sql.replace("{가맹점명}", merchant)
     sql = sql.replace("{기준년월}", yyyymm)
     sql = sql.replace("{월초년월}", prev_month)
     sql = sql.replace("{시작년월}", start_month)
+    partition_replacements = {
+        "{partition_tmdaa5d01_기준년월}": _partition_and("tmdaa5d01", yyyymm),
+        "{partition_tbmewcm94_월초년월}": _partition_and("tbmewcm94", prev_month),
+        "{partition_tbmewcm94_기준년월}": _partition_and("tbmewcm94", yyyymm),
+        "{partition_tbdaadt01_기준년월}": _partition_and("tbdaadt01", yyyymm, alias="a"),
+        "{partition_tbmaisd06_기간}": _partition_and("tbmaisd06", start_month, yyyymm),
+    }
+    for placeholder, condition in partition_replacements.items():
+        sql = sql.replace(placeholder, condition)
+    # 템플릿의 고정 prefix(card_system.)를 설정된 스키마 prefix로 치환한다.
+    # 기본 설정(card_system)이면 변화 없음, 다른 스키마면 교체, 빈 스키마면 prefix 제거.
+    if DB_SCHEMA != "card_system":
+        sql = sql.replace("card_system.", DB_SCHEMA_PREFIX)
     return sql
 
 
@@ -362,8 +398,9 @@ def _tool_fn_대손비용률(params: dict) -> dict:
         col_map = {c: i for i, c in enumerate(summary_cols)}
         for row in summary_rows:
             grp = row[col_map.get("구분", 0)] if "구분" in col_map else ""
-            cost_rate = float(row[col_map["대손비용률_퍼센트"]]) if "대손비용률_퍼센트" in col_map else 0
-            corr = float(row[col_map["보정계수"]]) if "보정계수" in col_map else 0
+            # 보정계수/대손비용률은 구분·잔액 조건에 따라 SQL에서 NULL이 나올 수 있다.
+            cost_rate = _to_float(row[col_map["대손비용률_퍼센트"]]) if "대손비용률_퍼센트" in col_map else 0.0
+            corr = _to_float(row[col_map["보정계수"]]) if "보정계수" in col_map else 0.0
             summary_for_correction.append((grp, cost_rate, corr))
 
     if summary_for_correction:
@@ -433,7 +470,7 @@ def _tool_fn_대손비용률(params: dict) -> dict:
 답변:"""
 
     try:
-        answer = _call_llm(answer_prompt).strip()
+        answer = _normalize_llm_text(_call_llm(answer_prompt, max_tokens=1200))
     except Exception:
         answer = f"'{merchant}' {yyyymm} 대손비용률 분석 결과가 엑셀 파일로 생성되었습니다."
     answer += f"\n\n상세 분석 엑셀 파일: {excel_path}"

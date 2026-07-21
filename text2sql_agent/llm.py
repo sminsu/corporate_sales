@@ -1,125 +1,229 @@
-"""vLLM chat and embedding clients."""
+"""LLM chat and embedding clients, backed entirely by kbcard-agent-common.
 
+This module is the single seam between the agent and the common SDK. It exposes a
+tiny surface the rest of the code depends on: ``_call_llm``, ``_normalize_llm_text``,
+``_get_embedding``, ``_get_embeddings_batch``, and ``_cosine_similarity``.
+"""
+
+import json
 import math
+import os
+import re
+import time
 from typing import Any
 
-import requests
+from kbcard_agent_common.embedding import EmbeddingClient, TEIEmbeddingClient
+from kbcard_agent_common.errors import RetryableProviderError
+from kbcard_agent_common.llm import KBCardOpenAI
 
 from .config import (
-    VLLM_API_KEY,
-    VLLM_BASE_URL,
-    VLLM_EMBED_API_KEY,
-    VLLM_EMBED_MODEL,
-    VLLM_EMBED_URL,
-    VLLM_MODEL,
+    COMMON_CONFIG,
+    EMBED_API_KEY,
+    EMBED_BASE_URL,
+    EMBED_MODEL,
+    EMBED_TIMEOUT,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    EMBED_BATCH_SIZE,
+    LLM_ENDPOINT_PATH,
+    LLM_EXTRA_BODY,
+    LLM_EXTRA_HEADERS,
+    LLM_MAX_TOKENS,
+    LLM_MODEL,
+    LLM_PROVIDER,
+    LLM_TEMPERATURE,
+    LLM_TIMEOUT,
 )
 
-try:
-    from kbcard_agent_common.embedding import TEIEmbeddingClient
-    from kbcard_agent_common.llm import KBCardOpenAI
-except ModuleNotFoundError:
-    KBCardOpenAI = None
-    TEIEmbeddingClient = None
+# A short system message that establishes the assistant's role for every call.
+# Individual prompts still carry their task-specific instructions; this just gives
+# the model consistent grounding (role separation) without touching each call site.
+DEFAULT_SYSTEM_PROMPT = (
+    "당신은 KB카드 법인영업 데이터베이스를 다루는 한국어 데이터 분석 어시스턴트입니다. "
+    "주어진 스키마/메트릭/규칙에 충실하게, 요청한 출력 형식만 정확히 반환하세요."
+)
 
-_COMMON_LLM_CLIENT: Any = None
-_COMMON_EMBED_CLIENT: Any = None
+# Number of additional attempts after a transient (retryable) provider failure.
+_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+_RETRY_BACKOFF_SECONDS = float(os.getenv("LLM_RETRY_BACKOFF", "0.5"))
 
-
-def _get_common_llm_client():
-    global _COMMON_LLM_CLIENT
-    if _COMMON_LLM_CLIENT is not None:
-        return _COMMON_LLM_CLIENT
-
-    if KBCardOpenAI is None:
-        return None
-
-    _COMMON_LLM_CLIENT = KBCardOpenAI.from_endpoint(
-        base_url=VLLM_BASE_URL,
-        default_model=VLLM_MODEL,
-        api_key=VLLM_API_KEY,
-        timeout=120,
-    )
-    return _COMMON_LLM_CLIENT
+_LLM_CLIENT: KBCardOpenAI | None = None
+_EMBED_CLIENT: Any = None
 
 
-def _get_common_embed_client():
-    global _COMMON_EMBED_CLIENT
-    if _COMMON_EMBED_CLIENT is not None:
-        return _COMMON_EMBED_CLIENT
+def _get_llm_client() -> KBCardOpenAI:
+    """Build (once) the common chat client from YAML config or a direct endpoint."""
+    global _LLM_CLIENT
+    if _LLM_CLIENT is None:
+        if COMMON_CONFIG is not None and COMMON_CONFIG.llm is not None:
+            _LLM_CLIENT = KBCardOpenAI.from_config(COMMON_CONFIG, default_model=LLM_MODEL)
+        else:
+            _LLM_CLIENT = KBCardOpenAI.from_endpoint(
+                base_url=LLM_BASE_URL,
+                default_model=LLM_MODEL,
+                api_key=LLM_API_KEY or None,
+                provider=LLM_PROVIDER,
+                endpoint_path=LLM_ENDPOINT_PATH,
+                timeout=LLM_TIMEOUT,
+            )
+    return _LLM_CLIENT
 
-    if TEIEmbeddingClient is None:
-        return None
 
-    _COMMON_EMBED_CLIENT = TEIEmbeddingClient(
-        base_url=VLLM_EMBED_URL,
-        model=VLLM_EMBED_MODEL,
-        api_key=VLLM_EMBED_API_KEY,
-        timeout=60,
-    )
-    return _COMMON_EMBED_CLIENT
+def _get_embed_client():
+    """Build (once) the common embedding client from YAML config or a TEI endpoint."""
+    global _EMBED_CLIENT
+    if _EMBED_CLIENT is None:
+        if COMMON_CONFIG is not None and COMMON_CONFIG.embedding is not None:
+            _EMBED_CLIENT = EmbeddingClient.from_config(COMMON_CONFIG)
+        else:
+            _EMBED_CLIENT = TEIEmbeddingClient(
+                base_url=EMBED_BASE_URL,
+                model=EMBED_MODEL,
+                api_key=EMBED_API_KEY or None,
+                timeout=EMBED_TIMEOUT,
+            )
+    return _EMBED_CLIENT
 
 
-def _call_llm(prompt: str) -> str:
-    common_client = _get_common_llm_client()
-    if common_client is not None:
-        response = common_client.chat.completions.create(
-            model=VLLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            timeout=120,
+def close_common_clients() -> None:
+    """Release HTTP resources held by the cached clients (called on shutdown)."""
+    global _LLM_CLIENT, _EMBED_CLIENT
+    for client in (_LLM_CLIENT, _EMBED_CLIENT):
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    _LLM_CLIENT = None
+    _EMBED_CLIENT = None
+
+
+def _with_retry(operation, *, what: str):
+    """Run ``operation``, retrying on transient provider errors with linear backoff.
+
+    Non-retryable errors propagate immediately. After the retries are exhausted the
+    original RetryableProviderError is re-raised so the web layer can map it to a
+    503 status (see common_services.common_http_status).
+    """
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return operation()
+        except RetryableProviderError:
+            if attempt >= _MAX_RETRIES:
+                raise
+            time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+
+def _call_llm(prompt: str, system: str | None = None, max_tokens: int | None = None) -> str:
+    """Send one prompt as a user message (with a system role) and return the text."""
+    messages = [
+        {"role": "system", "content": system or DEFAULT_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+    def _create():
+        # Do not swallow provider exceptions here.  The retry/error mapping layer
+        # needs the original exception (especially RetryableProviderError) in
+        # order to retry it or return the correct HTTP status to the caller.
+        return _get_llm_client().chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            temperature=LLM_TEMPERATURE,
+            max_tokens=max_tokens if max_tokens is not None else LLM_MAX_TOKENS,
+            timeout=LLM_TIMEOUT,
+            extra_body=LLM_EXTRA_BODY,
+            extra_headers=LLM_EXTRA_HEADERS,
         )
-        return response.content
 
-    url = f"{VLLM_BASE_URL}/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {VLLM_API_KEY}",
-    }
-    data = {
-        "model": VLLM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0,
-    }
-    resp = requests.post(url, json=data, headers=headers, timeout=120)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    response = _with_retry(_create, what="LLM chat completion")
+    try:
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise ValueError("LLM 응답에 choices[0].message.content가 없습니다.") from exc
+    return _normalize_llm_text(content)
+
+def _normalize_llm_text(text: Any) -> str:
+    """Coerce a model response to final-answer text without reasoning blocks."""
+    if isinstance(text, str):
+        value = text
+    elif isinstance(text, (dict, list)):
+        value = json.dumps(text, ensure_ascii=False)
+    elif text is None:
+        value = ""
+    else:
+        value = str(text)
+    final_blocks = re.findall(r"<final>(.*?)</final>", value, flags=re.IGNORECASE | re.DOTALL)
+    if final_blocks:
+        value = final_blocks[-1]
+    value = re.sub(
+        r"<(?:reasoning|think|analysis)>.*?</(?:reasoning|think|analysis)>\s*",
+        "",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+    # Some open-weight serving templates serialize channels as plain text.
+    # Prefer the last explicit final/answer channel over preceding analysis.
+    channel_matches = list(
+        re.finditer(r"(?im)^\s*(?:final|answer|최종\s*답변)\s*:\s*", value)
+    )
+    if channel_matches:
+        value = value[channel_matches[-1].end() :]
+    return value.strip()
+
+
+def probe_llm() -> dict[str, Any]:
+    """Readiness probe: attempt a 1-token chat completion via the common client."""
+    try:
+        _get_llm_client().chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": "ping"}],
+            temperature=0,
+            max_tokens=1,
+            timeout=10.0,
+            extra_body=LLM_EXTRA_BODY,
+            extra_headers=LLM_EXTRA_HEADERS,
+        )
+        return {
+            "llm_ready": True,
+            "llm_status": "ready",
+            "llm_detail": "chat completion probe succeeded",
+        }
+    except Exception as exc:  # noqa: BLE001 - report any failure as not-ready
+        detail = str(exc)
+        status = "auth_error" if ("401" in detail or "403" in detail) else "unavailable"
+        return {
+            "llm_ready": False,
+            "llm_status": status,
+            "llm_detail": f"chat completion probe failed: {type(exc).__name__}: {detail}",
+        }
 
 
 def _get_embedding(text: str) -> list[float]:
-    common_client = _get_common_embed_client()
-    if common_client is not None:
-        return common_client.embed_text(text)
-
-    url = f"{VLLM_EMBED_URL}/v1/embeddings"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {VLLM_EMBED_API_KEY}",
-    }
-    data = {"model": VLLM_EMBED_MODEL, "input": text}
-    resp = requests.post(url, json=data, headers=headers, timeout=30)
-    resp.raise_for_status()
-    return resp.json()["data"][0]["embedding"]
+    """Embed a single text value."""
+    return _with_retry(lambda: _get_embed_client().embed_text(text), what="Embedding request")
 
 
 def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    common_client = _get_common_embed_client()
-    if common_client is not None:
-        return common_client.embed_texts(texts)
+    """Embed multiple texts, preserving input order."""
+    embeddings: list[list[float]] = []
+    total = len(texts)
 
-    url = f"{VLLM_EMBED_URL}/v1/embeddings"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {VLLM_EMBED_API_KEY}",
-    }
-    data = {"model": VLLM_EMBED_MODEL, "input": texts}
-    resp = requests.post(url, json=data, headers=headers, timeout=60)
-    resp.raise_for_status()
-    results = resp.json()["data"]
-    results.sort(key=lambda x: x["index"])
-    return [r["embedding"] for r in results]
+    for start in range(0, total, EMBED_BATCH_SIZE):
+        chunk = texts[start : start + EMBED_BATCH_SIZE]
+        chunk_embeddings = _with_retry(
+            lambda chunk=chunk: _get_embed_client().embed_texts(chunk),
+            what=f"Embedding batch request ({start + 1}-{start + len(chunk)}/{total})",
+        )
+        if len(chunk_embeddings) != len(chunk):
+            raise ValueError(
+                "Embedding batch response size mismatch: "
+                f"expected {len(chunk)}, got {len(chunk_embeddings)}"
+            )
+        embeddings.extend(chunk_embeddings)
+
+    return embeddings
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two equal-length vectors (0.0 if either is zero)."""
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))

@@ -1,0 +1,13 @@
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+langgraph==1.2.8
+psycopg2-binary==2.9.12
+pyathena==3.35.0
+pyyaml==6.0.3
+sqlparse==0.5.5
+requests==2.34.2
+python-dotenv==1.2.2
+python-docx==1.2.0
+openpyxl==3.1.5
+redis==8.0.1
+kbcard-agent-common==0.1.1

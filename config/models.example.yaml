@@ -1,0 +1,18 @@
+models:
+  gpt-oss:120b:
+    provider: vllm
+    base_url: http://127.0.0.1:8000
+    endpoint_path: /v1/chat/completions
+    api_key_env: LLM_API_KEY
+    timeout: 120
+    capabilities:
+      streaming: false
+
+  gemma4-31b:
+    provider: vllm
+    base_url: http://127.0.0.1:8000
+    endpoint_path: /v1/chat/completions
+    api_key_env: LLM_API_KEY
+    timeout: 120
+    capabilities:
+      streaming: false

@@ -3,160 +3,278 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>KB카드 법인영업 Text2SQL</title>
+    <meta name="description" content="자연어 질문으로 기업영업 데이터를 조회하고 후속 분석하는 업무용 Text2SQL 화면" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>KB카드 기업영업 에이전트 · Text2SQL Console</title>
     <script>
-      if (window.location.protocol === "file:") {
-        window.location.replace("http://127.0.0.1:8090/");
-      }
+      (() => {
+        try {
+          const storedTheme = localStorage.getItem("text2sql:console:theme");
+          if (storedTheme === "light") document.documentElement.dataset.theme = "light";
+        } catch (_) {
+          /* Ignore storage errors and keep the default dark theme. */
+        }
+      })();
     </script>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260720" />
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar">
+    <a class="skip-link" href="#questionInput">질문 입력으로 건너뛰기</a>
+    <div class="app" id="app">
+      <!-- ░░ LEFT RAIL ░░ -->
+      <aside class="rail" aria-label="대화 및 보고서 메뉴">
         <div class="brand">
           <div class="brand-mark">KB</div>
-          <div>
-            <h1>법인영업 분석</h1>
-            <p id="serviceStatus">연결 확인 중</p>
+          <div class="brand-text">
+            <h1>Text2SQL</h1>
+            <p id="serviceStatus"><span class="dot"></span>연결 확인 중</p>
           </div>
         </div>
 
-        <section class="side-section">
-          <div class="section-title">대화 세션</div>
-          <button id="newSessionBtn" class="secondary" type="button">새 대화</button>
-          <div id="sessionList" class="session-list"></div>
-        </section>
+        <button id="newSessionBtn" class="new-session" type="button">
+          <span class="plus">+</span> 새 대화 시작
+        </button>
 
-        <section class="side-section">
-          <div class="section-title">예시 질문</div>
-          <div id="examples" class="example-list"></div>
-        </section>
+        <button id="mobileMenuBtn" class="mobile-menu-btn" type="button" aria-controls="railMenu" aria-expanded="false">
+          세션·보고서 메뉴
+        </button>
 
-        <section class="side-section">
-          <div class="section-title">보고서</div>
-          <div class="export-grid">
-            <button class="secondary" data-export="all" disabled>전체</button>
-            <button class="secondary" data-export="word" disabled>Word</button>
-            <button class="secondary" data-export="csv" disabled>CSV</button>
-            <button class="secondary" data-export="text" disabled>Text</button>
-          </div>
-          <div id="downloadList" class="download-list"></div>
-        </section>
+        <nav id="railMenu" class="rail-scroll" aria-label="대화 세션, 저장 쿼리 및 보고서">
+          <section class="rail-section">
+            <div class="section-label">세션</div>
+            <div id="sessionList" class="session-list"></div>
+          </section>
+
+          <section class="rail-section">
+            <div class="section-label">저장 쿼리</div>
+            <button id="saveQueryBtn" class="new-session" type="button">
+              <span class="plus">+</span> 현재 질문 저장
+            </button>
+            <div id="savedQueryList" class="saved-query-list"></div>
+          </section>
+
+          <section class="rail-section">
+            <div class="section-label">보고서 내보내기</div>
+            <div class="export-grid">
+              <button data-export="all" type="button" disabled>전체</button>
+              <button data-export="word" type="button" disabled>Word</button>
+              <button data-export="excel" type="button" disabled>Excel</button>
+              <button data-export="text" type="button" disabled>TXT</button>
+            </div>
+            <div id="downloadList" class="download-list"></div>
+          </section>
+        </nav>
+
+        <div class="rail-foot">common_athena · corporate-sales-agent</div>
       </aside>
 
-      <main class="workspace">
+      <!-- ░░ CENTER THREAD ░░ -->
+      <main class="thread" id="mainContent" aria-busy="false">
         <header class="topbar">
-          <div>
-            <div class="eyebrow">Text2SQL Agent v10</div>
-            <h2>질문하면 SQL 실행, 결과 요약, 파일 생성까지 한 번에 처리합니다.</h2>
+          <div class="topbar-title">
+            <div class="crumb">KB카드 기업영업 에이전트</div>
+            <h2>SQL 실행 · 요약 · 보고서</h2>
           </div>
-          <button id="clearBtn" class="ghost">현재 대화 비우기</button>
+          <div class="topbar-actions">
+            <button id="themeToggle" class="ghost-btn theme-toggle" type="button" aria-pressed="false">밝게</button>
+            <button id="clearBtn" class="ghost-btn" type="button" title="현재 대화 비우기">비우기</button>
+            <button id="inspectorToggle" class="ghost-btn icon-only" type="button" title="상세 패널 숨기기" aria-label="상세 패널 숨기기" aria-controls="inspector" aria-expanded="true">⛶</button>
+          </div>
         </header>
 
-        <section class="query-panel">
-          <label for="questionInput">질문</label>
-          <div class="query-row">
-            <textarea
-              id="questionInput"
-              rows="3"
-              placeholder="질문을 입력하세요. 이어지는 질문은 같은 세션 안에서 계속 처리됩니다."
-            ></textarea>
-            <button id="submitBtn" class="primary">전송</button>
-          </div>
-        </section>
+        <div class="thread-body">
+          <!-- 진행 상태 -->
+          <section id="progressPanel" class="progress-panel hidden" role="status" aria-live="polite" aria-atomic="false">
+            <div class="progress-head">
+              <div class="progress-head-text">
+                <span class="kicker">진행 중</span>
+                <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
+                <p id="progressQuestion" class="progress-question"></p>
+              </div>
+              <div class="progress-actions">
+                <span id="elapsedTime" class="elapsed">0초</span>
+                <button id="cancelRequestBtn" class="cancel-request" type="button">요청 취소</button>
+              </div>
+            </div>
+            <div class="progress-bar"><span id="progressFill"></span></div>
+            <ol id="progressSteps" class="progress-steps"></ol>
+          </section>
 
+          <!-- 오류 -->
+          <section id="errorPanel" class="error-panel hidden" role="alert" aria-live="assertive">
+            <div class="error-icon">!</div>
+            <div class="error-text">
+              <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
+              <p id="errorMessage"></p>
+              <div class="error-actions">
+                <button id="retryBtn" type="button">다시 시도</button>
+                <button id="editQuestionBtn" type="button">질문 수정</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- 빈 상태 -->
+          <section id="emptyState" class="empty-state">
+            <div class="hero">
+              <div class="hero-title">
+                <span class="kicker">Text2SQL Workspace</span>
+                <h3>무엇을 분석할까요?</h3>
+                <p>기간·대상·지표·정렬 기준을 한 문장에 적으면 작은 모델도 더 정확하게 조회할 수 있습니다.</p>
+              </div>
+              <div class="command-line">
+                <strong>›</strong>
+                <span>2025년 월별 법인카드 이용금액 추이를 보여줘</span>
+              </div>
+              <div id="heroExamples" class="starter-grid" aria-label="예시 질문"></div>
+              <div class="question-recipe" aria-label="정확한 질문 작성법">
+                <span><strong>1</strong> 기간</span>
+                <span><strong>2</strong> 대상</span>
+                <span><strong>3</strong> 지표</span>
+                <span><strong>4</strong> 집계·상위 N개</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 결과 스트림 -->
+          <section id="resultPanel" class="result hidden">
+            <div class="result-kicker">
+              <span id="sourceLabel" class="source-pill"></span>
+              <div id="resultBadges" class="badges"></div>
+            </div>
+            <div id="answerBox" class="answer-stream" aria-label="질문과 분석 답변"></div>
+            <section id="chartBox" class="chart-box hidden" aria-labelledby="chartTitle">
+              <div class="chart-head">
+                <div><span class="kicker">기존 결과 Plot</span><h3 id="chartTitle"></h3></div>
+                <small id="chartNote"></small>
+              </div>
+              <div id="chartLegend" class="chart-legend" aria-label="차트 범례"></div>
+              <div class="chart-canvas-wrap"><canvas id="resultChart" role="img"></canvas></div>
+            </section>
+            <div id="excelBox" class="excel-box hidden"></div>
+
+            <div id="followupBox" class="followup-box hidden">
+              <div class="followup-head">
+                <span class="kicker">이어질 분석</span>
+                <strong>이 결과로 더 깊이 들여다보기</strong>
+              </div>
+              <p class="followup-help">아래 질문은 현재 표와 앞선 대화 맥락을 이어받습니다. 새로운 기간·대상을 조회하려면 하단의 ‘새 조회’를 선택하세요.</p>
+              <div id="suggestionList" class="suggestion-list"></div>
+              <div class="followup-row">
+                <label class="sr-only" for="followupInput">현재 결과에 대한 후속 질문</label>
+                <input id="followupInput" autocomplete="off" maxlength="1000" placeholder="예: 이 중 전월 대비 증가율이 가장 큰 기업 5개만 보여줘" />
+                <button id="followupBtn" type="button">질문</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 파라미터 모달 -->
         <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="paramTitle">
           <div class="param-card">
-            <div class="panel-head">
+            <div class="param-card-head">
               <div>
-                <div class="eyebrow">추가 입력</div>
+                <span class="kicker">추가 입력</span>
                 <h3 id="paramTitle">필수 값 입력</h3>
               </div>
-              <button id="cancelParamsBtn" class="ghost" type="button">닫기</button>
+              <button id="cancelParamsBtn" class="icon-btn" type="button" title="닫기" aria-label="닫기">×</button>
             </div>
-            <p class="param-help">필요한 값을 채우면 같은 질문을 이어서 실행합니다. 창을 닫고 아래 채팅창에 자연어로 입력해도 됩니다.</p>
+            <p class="param-help">부족한 값만 알려주면 같은 질문을 이어서 실행합니다.</p>
             <form id="paramForm" class="param-form"></form>
           </div>
         </section>
 
-        <section id="progressPanel" class="progress-panel hidden" aria-live="polite">
-          <div class="progress-head">
-            <div>
-              <div class="eyebrow">진행 상태</div>
-              <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
+        <!-- 저장 쿼리 실행 모달 -->
+        <section id="savedQueryPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="savedQueryTitle">
+          <div class="param-card">
+            <div class="param-card-head">
+              <div>
+                <span class="kicker">저장 쿼리</span>
+                <h3 id="savedQueryTitle">저장 쿼리 실행</h3>
+              </div>
+              <button id="cancelSavedQueryBtn" class="icon-btn" type="button" title="닫기" aria-label="닫기">×</button>
             </div>
-            <div id="elapsedTime" class="elapsed-time">0초</div>
+            <p id="savedQueryPreview" class="param-help"></p>
+            <form id="savedQueryForm" class="param-form"></form>
           </div>
-          <div class="progress-bar"><span id="progressFill"></span></div>
-          <ol id="progressSteps" class="progress-steps"></ol>
         </section>
 
-        <section id="resultPanel" class="result-panel hidden">
-          <div class="result-header">
-            <div>
-              <div id="sourceLabel" class="eyebrow"></div>
-              <h3 id="resultTitle">분석 결과</h3>
+        <!-- 입력 컴포저 -->
+        <section id="queryPanel" class="composer">
+          <div id="contextStrip" class="context-strip hidden" role="status">
+            <div class="context-strip-copy">
+              <span class="context-label">이어받을 맥락</span>
+              <strong id="contextStripTitle">직전 조회 결과</strong>
+              <small id="contextStripMeta"></small>
             </div>
-            <div id="resultBadges" class="badges"></div>
+            <button id="clearContextBtn" type="button">새 조회로 전환</button>
           </div>
-
-          <div class="tabs" role="tablist">
-            <button class="tab active" data-tab="answer">답변</button>
-            <button class="tab" data-tab="table">데이터</button>
-            <button class="tab" data-tab="sql">SQL</button>
-            <button class="tab" data-tab="history">이력</button>
+          <div id="promptSuggestions" class="prompt-suggestions hidden">
+            <div class="prompt-suggestions-head">
+              <span id="promptSuggestionsTitle">예시 질문</span>
+              <button id="hideSuggestionsBtn" type="button" title="예시 질문 닫기" aria-label="예시 질문 닫기">×</button>
+            </div>
+            <div id="examples" class="example-list prompt-example-list"></div>
           </div>
-
-          <article id="tab-answer" class="tab-page active">
-            <div id="compactSummary" class="compact-summary hidden"></div>
-            <div id="answerBox" class="answer-box"></div>
-            <div id="excelBox" class="excel-box hidden"></div>
-            <div id="followupBox" class="followup-box hidden">
-              <div class="followup-head">
-                <div>
-                  <div class="eyebrow">멀티턴 분석</div>
-                  <h4>이 결과로 이어서 분석하기</h4>
-                </div>
-              </div>
-              <div id="suggestionList" class="suggestion-list"></div>
-              <div class="followup-row">
-                <input
-                  id="followupInput"
-                  autocomplete="off"
-                  placeholder="예: 이 결과에서 이상치가 있는지 찾아줘"
-                />
-                <button id="followupBtn" class="primary" type="button">질문</button>
-              </div>
+          <div id="promptCoach" class="prompt-coach" aria-live="polite">
+            <span id="promptCoachMessage">기간·대상·지표·집계 기준을 포함하면 정확도가 높아집니다.</span>
+            <div class="coach-checks" aria-label="질문에 포함된 조건">
+              <span data-coach-check="period">기간</span>
+              <span data-coach-check="target">대상</span>
+              <span data-coach-check="metric">지표</span>
+              <span data-coach-check="shape">집계/범위</span>
             </div>
-          </article>
-
-          <article id="tab-table" class="tab-page">
-            <div id="tableMeta" class="table-meta"></div>
-            <div class="table-wrap">
-              <table id="resultTable"></table>
+          </div>
+          <div class="composer-bar">
+            <span class="composer-marker" aria-hidden="true">›</span>
+            <label class="sr-only" for="questionInput">데이터 조회 질문</label>
+            <textarea id="questionInput" rows="1" maxlength="2000" aria-describedby="promptCoachMessage composerHint" placeholder="예: 2025년 월별 법인카드 이용금액과 전월 대비 증감률을 보여줘"></textarea>
+            <button id="submitBtn" type="button">조회</button>
+          </div>
+          <div class="composer-foot">
+            <div class="seg" role="group" aria-label="질문 처리 방식">
+              <button class="seg-btn active" data-query-mode="new" type="button">새 조회</button>
+              <button class="seg-btn" data-query-mode="followup" type="button" disabled>이어서 분석</button>
             </div>
-          </article>
-
-          <article id="tab-sql" class="tab-page">
-            <pre id="sqlBox" class="sql-box"></pre>
-          </article>
-
-          <article id="tab-history" class="tab-page">
-            <div id="historyBox" class="history-box"></div>
-          </article>
-        </section>
-
-        <section id="emptyState" class="empty-state">
-          <div class="empty-card">
-            <h3>내부 데이터 분석 콘솔</h3>
-            <p>매출, 가맹점, 심사, 한도, 연체, 대손비용률 질문을 입력하세요.</p>
+            <span class="composer-hint" id="composerHint">Enter 전송 · Shift+Enter 줄바꿈</span>
           </div>
         </section>
       </main>
+
+      <!-- ░░ RIGHT INSPECTOR ░░ -->
+      <aside class="inspector" id="inspector">
+        <button id="inspectorClose" class="inspector-mobile-close" type="button" aria-label="상세 패널 닫기">×</button>
+        <div class="inspector-tabs" role="tablist" aria-label="조회 상세 정보">
+          <button id="tab-button-context" class="tab active" data-tab="context" type="button" role="tab" aria-controls="tab-context" aria-selected="true">개요</button>
+          <button id="tab-button-data" class="tab" data-tab="data" type="button" role="tab" aria-controls="tab-data" aria-selected="false">데이터</button>
+          <button id="tab-button-sql" class="tab" data-tab="sql" type="button" role="tab" aria-controls="tab-sql" aria-selected="false">SQL</button>
+          <button id="tab-button-history" class="tab" data-tab="history" type="button" role="tab" aria-controls="tab-history" aria-selected="false">이력</button>
+        </div>
+
+        <article id="tab-context" class="tab-page active" role="tabpanel" aria-labelledby="tab-button-context" tabindex="0">
+          <div id="resultMeta" class="result-meta hidden"></div>
+          <div id="compactSummary" class="compact-summary hidden"></div>
+          <div id="inspectorEmpty" class="inspector-empty">조회를 실행하면 처리 경로·조건·미리보기가 여기에 표시됩니다.</div>
+        </article>
+
+        <article id="tab-data" class="tab-page" role="tabpanel" aria-labelledby="tab-button-data" tabindex="0">
+          <div class="tab-page-toolbar"><div id="tableMeta" class="table-meta">조회 데이터가 없습니다.</div><button id="copyTableBtn" type="button" disabled>표 복사</button></div>
+          <div class="table-wrap">
+            <table id="resultTable"></table>
+          </div>
+        </article>
+
+        <article id="tab-sql" class="tab-page" role="tabpanel" aria-labelledby="tab-button-sql" tabindex="0">
+          <div class="tab-page-toolbar"><span class="table-meta">실행 SQL</span><button id="copySqlBtn" type="button" disabled>SQL 복사</button></div>
+          <pre id="sqlBox" class="sql-box">실행 SQL이 없습니다.</pre>
+        </article>
+
+        <article id="tab-history" class="tab-page" role="tabpanel" aria-labelledby="tab-button-history" tabindex="0">
+          <div id="historyBox" class="history-box"></div>
+        </article>
+      </aside>
     </div>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <script>
 const state = {
   sessionId: null,
@@ -165,23 +283,120 @@ const state = {
   canFollowup: false,
   pendingQuestion: "",
   conversation: [],
+  queryMode: "new",
+  isBusy: false,
+  llmReady: null,
+  llmDetail: "",
+  savedQueries: [],
+  activeSavedQuery: null,
+  activeRequest: null,
+  retryAction: null,
+  lastResultSummary: null,
+  lastResultData: null,
+  lastChart: null,
+  exampleQuestions: [],
+  recommendedQuestions: [],
+  failedRequest: null,
 };
+
+const WEBAPP_AGENT_NAME = "corporate_sales";
+const configuredPrefixlessHosts = Array.isArray(window.TEXT2SQL_PREFIXLESS_API_HOSTS)
+  ? window.TEXT2SQL_PREFIXLESS_API_HOSTS
+  : String(window.TEXT2SQL_PREFIXLESS_API_HOSTS || "").split(",");
+const PREFIXLESS_API_HOSTS = new Set(configuredPrefixlessHosts.map((host) => host.trim()).filter(Boolean));
+const CORPORATE_SALES_SEGMENT = "/corporate-sales";
+const API_BASE = String(window.TEXT2SQL_API_BASE || "").replace(/\/$/, "");
+const WEBAPP_USER_ID = (() => {
+  const configured = String(window.TEXT2SQL_USER_ID || "").trim();
+  if (configured) return configured;
+  const key = "text2sql:console:user-id";
+  let stored = localStorage.getItem(key);
+  if (!stored) {
+    const randomId = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    stored = `anon_${randomId}`;
+    localStorage.setItem(key, stored);
+  }
+  return stored;
+})();
+const WEBAPP_QUERY_STREAM_PATH = `api/v1/agent/${encodeURIComponent(WEBAPP_AGENT_NAME)}/query/stream`;
+const DEFAULT_EXAMPLES = [
+  "2025년 월별 법인카드 이용금액 합계와 전월 대비 증감률을 보여줘",
+  "2025년 업종별 매출액 합계 상위 10개를 내림차순으로 보여줘",
+  "2025년 12월 한빛테크놀로지의 대손비용률 분석해줘",
+  "2025년 월별 해외 카드 이용금액 추이를 보여줘",
+  "2025년 12월 말 기준 연체 회원 수를 알려줘",
+  "2025년 12월 말 기준 여신한도가 큰 기업 상위 10개를 보여줘",
+];
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const shouldStripCorporateSalesSegment = () =>
+  PREFIXLESS_API_HOSTS.has(window.location.host);
+const currentDirectoryPath = () => {
+  const pathname = window.location.pathname || "/";
+  return pathname.endsWith("/") ? pathname : pathname.replace(/\/[^/]*$/, "/");
+};
+const apiUrl = (path) => {
+  if (/^https?:\/\//i.test(path)) return path;
+  const absolutePath = path.startsWith("/") ? path : `/${path}`;
+  if (API_BASE) return `${API_BASE}${absolutePath}`;
+  if (shouldStripCorporateSalesSegment() && window.location.pathname.includes(CORPORATE_SALES_SEGMENT)) {
+    const browserPath = path.startsWith("/") ? path : `${currentDirectoryPath()}${path}`;
+    const strippedPath = browserPath.replace(new RegExp(`${CORPORATE_SALES_SEGMENT}(?=/|$)`), "") || "/";
+    return strippedPath === browserPath ? path : strippedPath;
+  }
+  return path;
+};
 
-const queryPanel = $(".query-panel");
+function currentDateParts() {
+  const now = new Date();
+  return { year: now.getFullYear(), month: String(now.getMonth() + 1).padStart(2, "0") };
+}
+
+function currentYm() {
+  const { year, month } = currentDateParts();
+  return `${year}${month}`;
+}
+
+function currentYear() {
+  return String(currentDateParts().year);
+}
+
+function currentYmKorean() {
+  const { year, month } = currentDateParts();
+  return `${year}년 ${Number(month)}월`;
+}
+
+const appEl = $("#app");
+const queryPanel = $("#queryPanel");
 const questionInput = $("#questionInput");
 const submitBtn = $("#submitBtn");
+const modeButtons = $$("[data-query-mode]");
+const themeToggle = $("#themeToggle");
 const clearBtn = $("#clearBtn");
 const newSessionBtn = $("#newSessionBtn");
+const saveQueryBtn = $("#saveQueryBtn");
+const inspectorToggle = $("#inspectorToggle");
+const inspector = $("#inspector");
+const inspectorClose = $("#inspectorClose");
 const sessionList = $("#sessionList");
+const savedQueryList = $("#savedQueryList");
 const paramPanel = $("#paramPanel");
 const paramForm = $("#paramForm");
 const cancelParamsBtn = $("#cancelParamsBtn");
+const savedQueryPanel = $("#savedQueryPanel");
+const savedQueryForm = $("#savedQueryForm");
+const savedQueryTitle = $("#savedQueryTitle");
+const savedQueryPreview = $("#savedQueryPreview");
+const cancelSavedQueryBtn = $("#cancelSavedQueryBtn");
 const resultPanel = $("#resultPanel");
 const emptyState = $("#emptyState");
 const answerBox = $("#answerBox");
+const chartBox = $("#chartBox");
+const chartTitle = $("#chartTitle");
+const chartNote = $("#chartNote");
+const chartLegend = $("#chartLegend");
+const resultChart = $("#resultChart");
 const sqlBox = $("#sqlBox");
 const historyBox = $("#historyBox");
 const resultTable = $("#resultTable");
@@ -196,27 +411,129 @@ const progressTitle = $("#progressTitle");
 const progressSteps = $("#progressSteps");
 const progressFill = $("#progressFill");
 const elapsedTime = $("#elapsedTime");
+const progressQuestion = $("#progressQuestion");
+const cancelRequestBtn = $("#cancelRequestBtn");
+const errorPanel = $("#errorPanel");
+const errorTitle = $("#errorTitle");
+const errorMessage = $("#errorMessage");
+const retryBtn = $("#retryBtn");
+const editQuestionBtn = $("#editQuestionBtn");
+const resultMeta = $("#resultMeta");
 const compactSummary = $("#compactSummary");
+const inspectorEmpty = $("#inspectorEmpty");
 const followupBox = $("#followupBox");
 const suggestionList = $("#suggestionList");
 const followupInput = $("#followupInput");
 const followupBtn = $("#followupBtn");
+const threadBody = $(".thread-body");
+const promptSuggestions = $("#promptSuggestions");
+const promptSuggestionsTitle = $("#promptSuggestionsTitle");
+const hideSuggestionsBtn = $("#hideSuggestionsBtn");
+const heroExamples = $("#heroExamples");
+const contextStrip = $("#contextStrip");
+const contextStripTitle = $("#contextStripTitle");
+const contextStripMeta = $("#contextStripMeta");
+const clearContextBtn = $("#clearContextBtn");
+const promptCoach = $("#promptCoach");
+const promptCoachMessage = $("#promptCoachMessage");
+const copyTableBtn = $("#copyTableBtn");
+const copySqlBtn = $("#copySqlBtn");
+const mobileMenuBtn = $("#mobileMenuBtn");
+const rail = $(".rail");
+const mainContent = $("#mainContent");
+
+const THEME_KEY = "text2sql:console:theme";
+function getTheme() {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function setTheme(theme) {
+  const nextTheme = theme === "light" ? "light" : "dark";
+  if (nextTheme === "light") {
+    document.documentElement.dataset.theme = "light";
+  } else {
+    delete document.documentElement.dataset.theme;
+  }
+  if (themeToggle) {
+    themeToggle.textContent = nextTheme === "light" ? "어둡게" : "밝게";
+    themeToggle.setAttribute("aria-pressed", String(nextTheme === "light"));
+    themeToggle.title = nextTheme === "light" ? "어두운 테마로 전환" : "밝은 테마로 전환";
+  }
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", nextTheme === "light" ? "#fbfaf7" : "#0e1117");
+  try {
+    localStorage.setItem(THEME_KEY, nextTheme);
+  } catch (_) {
+    /* Theme preference is non-critical. */
+  }
+  if (state.lastChart) window.requestAnimationFrame(() => drawChart(state.lastChart));
+}
+
+setTheme(getTheme());
+let promptSuggestionsDismissed = false;
 
 const progressLabels = [
-  ["질문 분석", "업무 범위와 조회 의도를 분류합니다."],
-  ["도구 선택", "Tool, 검증 쿼리, 자동 SQL 경로를 판단합니다."],
-  ["SQL 실행", "DB 조회와 결과 검증을 수행합니다."],
-  ["결과 정리", "표와 핵심 요약 형태로 답변을 압축합니다."],
+  ["요청 이해", "질문 의도와 업무 범위를 확인합니다."],
+  ["조회 준비", "사용 경로, 데이터, 조건을 정리합니다."],
+  ["데이터 조회", "SQL 생성/검증과 DB 조회를 수행합니다."],
+  ["결과 정리", "표, 요약, 다음 분석 질문을 준비합니다."],
 ];
 const followupProgressLabels = [
-  ["이전 결과 확인", "직전 SQL 결과와 답변을 불러옵니다."],
-  ["후속 의도 분석", "분석형 질문인지 새 SQL이 필요한 요청인지 판단합니다."],
-  ["실행 또는 재해석", "필요하면 새 SQL을 실행하고, 아니면 결과를 재해석합니다."],
-  ["추천 질문 생성", "다음으로 이어질 질문을 정리합니다."],
+  ["맥락 확인", "직전 결과와 대화 이력을 확인합니다."],
+  ["요청 해석", "기존 결과 분석인지 추가 조회인지 판단합니다."],
+  ["분석 실행", "필요한 조회 또는 결과 재해석을 수행합니다."],
+  ["결과 정리", "답변과 다음 분석 질문을 준비합니다."],
 ];
+const progressGroupIndex = {
+  start: 0,
+  search_plan: 1,
+  aggregate_review: 2,
+  response: 3,
+  classify_question: 0,
+  route_domain: 0,
+  followup_route: 0,
+  select_tool: 1,
+  check_tool_params: 1,
+  match_verified_query: 1,
+  extract_and_apply_params: 1,
+  analyze_question: 1,
+  check_sql_gen_params: 1,
+  execute_tool: 2,
+  run_tool_query: 2,
+  run_matched_query: 2,
+  generate_sql: 2,
+  validate_sql: 2,
+  run_query: 2,
+  generate_answer: 3,
+  direct_answer: 3,
+  reject_answer: 3,
+  handle_error: 3,
+  complete: 3,
+};
+const progressPhaseGroupIndex = {
+  question_analysis: 0,
+  domain_routing: 0,
+  followup_route: 0,
+  tool_selection: 1,
+  capability_selection: 1,
+  parameter_check: 1,
+  verified_query_matching: 1,
+  parameter_extraction: 1,
+  table_selection: 1,
+  tool_execution: 2,
+  sql_generation: 2,
+  sql_validation: 2,
+  sql_execution: 2,
+  answer_generation: 3,
+  rejected: 3,
+  error: 3,
+  processing: 1,
+};
 let activeProgressLabels = progressLabels;
 let progressTimer = null;
 let progressStartedAt = 0;
+let progressCurrentIndex = 0;
+let progressHideTimer = null;
+let modalReturnFocus = null;
 
 function showToast(message) {
   toast.textContent = message;
@@ -229,84 +546,35 @@ function eventErrorMessage(data, fallback) {
   return data?.detail || data?.data?.error || data?.message || fallback;
 }
 
-function setBusy(isBusy) {
-  submitBtn.disabled = isBusy;
-  submitBtn.textContent = isBusy ? "처리 중" : state.continuation ? "계속" : "전송";
+function responseError(response, body, fallback) {
+  const error = new Error(body?.detail || body?.message || fallback);
+  error.name = "ApiError";
+  error.status = response.status;
+  return error;
 }
 
-function setFollowupBusy(isBusy) {
-  followupBtn.disabled = isBusy;
-  followupBtn.textContent = isBusy ? "분석 중" : "질문";
+function errorReference(error) {
+  const reference = error?.messageId || error?.streamRequestId || "";
+  return reference ? ` (오류 참조: ${reference})` : "";
 }
 
-function setProgressStep(index) {
-  progressSteps.querySelectorAll("li").forEach((item, idx) => {
-    item.classList.toggle("done", idx < index);
-    item.classList.toggle("active", idx === index);
-  });
-  const safeIndex = Math.min(index, activeProgressLabels.length - 1);
-  progressTitle.textContent = activeProgressLabels[safeIndex][1];
-  progressFill.style.width = `${Math.min(95, 12 + safeIndex * 26)}%`;
-}
-
-function renderProgressEvent(progress) {
-  const step = progress.step || progress.title || "progress";
-  let item = progressSteps.querySelector(`[data-step="${CSS.escape(step)}"]`);
-  if (!item) {
-    item = document.createElement("li");
-    item.dataset.step = step;
-    progressSteps.appendChild(item);
+function friendlyErrorMessage(error, fallback = "요청 처리 중 오류가 발생했습니다.") {
+  if (error?.name === "AbortError") return "요청이 취소되었습니다.";
+  const status = Number(error?.status || 0);
+  if (status === 401 || status === 403) return "접근 권한을 확인해주세요. 계속되면 관리자에게 문의해주세요.";
+  if (status === 408 || status === 504) return "응답 시간이 초과되었습니다. 질문 범위를 줄이거나 잠시 후 다시 시도해주세요.";
+  if (status === 429) return "요청이 많아 잠시 대기 중입니다. 잠시 후 다시 시도해주세요.";
+  if (status >= 500) {
+    return `분석 서버에서 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.${errorReference(error)}`;
   }
-  progressSteps.querySelectorAll("li").forEach((node) => {
-    node.classList.add("done");
-    node.classList.remove("active");
-  });
-  item.classList.add("active");
-  item.classList.remove("done");
-  item.innerHTML = `<strong>${escapeHtml(progress.title || step)}</strong><br />${escapeHtml(progress.message || "")}`;
-  progressTitle.textContent = progress.message || progress.title || "처리 중입니다.";
-  const total = Math.max(progressSteps.querySelectorAll("li").length, 4);
-  const current = Array.from(progressSteps.querySelectorAll("li")).indexOf(item) + 1;
-  progressFill.style.width = `${Math.min(96, Math.max(12, Math.round((current / total) * 96)))}%`;
-}
-
-function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
-  const seedLabels = Array.isArray(labels) ? labels : [];
-  activeProgressLabels = seedLabels.length ? seedLabels : fallbackLabels;
-  progressStartedAt = Date.now();
-  elapsedTime.textContent = "0초";
-  progressFill.style.width = "12%";
-  progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
-  progressSteps.innerHTML = seedLabels
-    .map(([title, desc]) => `<li data-step="${escapeHtml(title)}"><strong>${escapeHtml(title)}</strong><br />${escapeHtml(desc)}</li>`)
-    .join("");
-  progressPanel.classList.remove("hidden");
-  emptyState.classList.add("hidden");
-  if (hideCurrentResult) resultPanel.classList.add("hidden");
-  paramPanel.classList.add("hidden");
-  if (seedLabels.length) setProgressStep(0);
-  window.clearInterval(progressTimer);
-  progressTimer = window.setInterval(() => {
-    const seconds = Math.floor((Date.now() - progressStartedAt) / 1000);
-    elapsedTime.textContent = `${seconds}초`;
-  }, 1000);
-}
-
-function finishProgress() {
-  window.clearInterval(progressTimer);
-  progressTimer = null;
-  progressFill.style.width = "100%";
-  progressSteps.querySelectorAll("li").forEach((item) => {
-    item.classList.add("done");
-    item.classList.remove("active");
-  });
-  window.setTimeout(() => progressPanel.classList.add("hidden"), 300);
-}
-
-function stopProgress() {
-  window.clearInterval(progressTimer);
-  progressTimer = null;
-  progressPanel.classList.add("hidden");
+  if (
+    error?.name === "StreamTransportError"
+    || error instanceof TypeError
+    || /failed to fetch|networkerror|load failed/i.test(String(error?.message || ""))
+  ) {
+    return `서버 스트리밍 연결이 응답 완료 전에 종료되었습니다. 잠시 후 다시 시도해주세요.${errorReference(error)}`;
+  }
+  return String(error?.message || fallback);
 }
 
 function escapeHtml(value) {
@@ -319,109 +587,925 @@ function escapeHtml(value) {
 }
 
 function formatCell(value) {
+  if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "number") {
     return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 }).format(value);
   }
   return String(value ?? "");
 }
 
+function autoGrowInput() {
+  questionInput.style.height = "auto";
+  questionInput.style.height = `${Math.min(questionInput.scrollHeight, 180)}px`;
+}
+
+function scrollThreadToBottom() {
+  if (threadBody) threadBody.scrollTop = threadBody.scrollHeight;
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const headers = {
+    "Content-Type": "application/json",
+    ...webappHeaders(),
+    ...(options.headers || {}),
+  };
+  const response = await fetch(apiUrl(path), { ...options, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
+    throw responseError(response, body, "요청 처리 중 오류가 발생했습니다.");
   }
   return body;
 }
 
-async function streamApi(path, payload, onEvent) {
-  const response = await fetch(path, {
+async function streamApi(path, payload, onEvent, options = {}) {
+  const response = await fetch(apiUrl(path), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     body: JSON.stringify(payload),
+    signal: options.signal,
   });
+  const diagnostics = {
+    streamRequestId: response.headers.get("x-stream-request-id") || "",
+    messageId: response.headers.get("x-stream-message-id") || "",
+    appRelease: response.headers.get("x-app-release") || "",
+  };
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || "요청 처리 중 오류가 발생했습니다.");
+    const error = responseError(response, body, "요청 처리 중 오류가 발생했습니다.");
+    Object.assign(error, diagnostics);
+    throw error;
   }
   if (!response.body) {
-    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
+    const error = new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
+    Object.assign(error, diagnostics);
+    throw error;
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
+  let receivedBytes = 0;
+  let eventCount = 0;
+  let lastEventName = "";
+  let receivedTerminalEvent = false;
+
+  const transportError = (reason, cause) => {
+    const error = new Error("스트리밍 응답이 완료되기 전에 연결이 종료되었습니다.");
+    error.name = "StreamTransportError";
+    Object.assign(error, diagnostics, {
+      reason,
+      causeName: cause?.name || "",
+      causeMessage: cause?.message || "",
+      receivedBytes,
+      eventCount,
+      lastEventName,
+    });
+    console.error("[SSE stream interrupted]", {
+      ...diagnostics,
+      reason,
+      causeName: error.causeName,
+      causeMessage: error.causeMessage,
+      receivedBytes,
+      eventCount,
+      lastEventName,
+    });
+    return error;
+  };
 
   while (true) {
-    const { value, done } = await reader.read();
+    let packet;
+    try {
+      packet = await reader.read();
+    } catch (error) {
+      if (error?.name === "AbortError" || options.signal?.aborted) throw error;
+      throw transportError("reader_failed", error);
+    }
+    const { value, done } = packet;
     if (done) break;
+    receivedBytes += value?.byteLength || 0;
     buffer += decoder.decode(value, { stream: true });
     const events = buffer.split("\n\n");
     buffer = events.pop() || "";
     for (const rawEvent of events) {
       const lines = rawEvent.split("\n");
       const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim() || "message";
+      lastEventName = eventName;
+      eventCount += 1;
+      if (["done", "result", "error", "parameter_required"].includes(eventName)) {
+        receivedTerminalEvent = true;
+      }
       const dataText = lines
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim())
         .join("\n");
       if (!dataText) continue;
-      onEvent(eventName, JSON.parse(dataText));
+      try {
+        onEvent(eventName, JSON.parse(dataText));
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        Object.assign(error, diagnostics, { eventCount, lastEventName, receivedBytes });
+        throw error;
+      }
     }
+  }
+  if (!receivedTerminalEvent) {
+    throw transportError("terminal_event_missing");
+  }
+  return { ...diagnostics, receivedBytes, eventCount, lastEventName };
+}
+
+function webappHeaders() {
+  return {
+    "X-User-ID": WEBAPP_USER_ID,
+    "X-Agent-Name": WEBAPP_AGENT_NAME,
+  };
+}
+
+function conversationHistory(limit = 10) {
+  return state.conversation.slice(-limit).map((message) => ({
+    role: message.role,
+    content: message.text || "",
+  }));
+}
+
+function webappQueryPayload(payload = {}) {
+  const query = String(payload.query || payload.question || "").trim();
+  const body = {
+    query,
+    agent_name: WEBAPP_AGENT_NAME,
+    top_k: payload.top_k || 10,
+    session_id: payload.session_id || state.sessionId,
+    conversation_history: conversationHistory(),
+  };
+  if (payload.params) body.params = payload.params;
+  if (payload.continuation) body.continuation = payload.continuation;
+  if (payload.result_id) body.result_id = payload.result_id;
+  return body;
+}
+
+function canUseFollowupMode() {
+  return Boolean(state.lastResultId && state.canFollowup && !state.continuation);
+}
+
+function beginActiveRequest(kind, question, restoreTarget = "composer") {
+  state.activeRequest?.controller?.abort();
+  const controller = new AbortController();
+  const request = {
+    controller,
+    kind,
+    question: String(question || "").trim(),
+    restoreTarget,
+    cancelled: false,
+  };
+  state.activeRequest = request;
+  mainContent?.setAttribute("aria-busy", "true");
+  cancelRequestBtn.disabled = false;
+  return request;
+}
+
+function endActiveRequest(request) {
+  if (state.activeRequest !== request) return;
+  state.activeRequest = null;
+  mainContent?.setAttribute("aria-busy", "false");
+  cancelRequestBtn.disabled = true;
+}
+
+function cancelActiveRequest() {
+  const request = state.activeRequest;
+  if (!request) return;
+  request.cancelled = true;
+  cancelRequestBtn.disabled = true;
+  progressTitle.textContent = "요청을 취소하고 있습니다.";
+  request.controller.abort();
+}
+
+function restoreCancelledDraft(request) {
+  state.retryAction = null;
+  state.failedRequest = null;
+  if (request?.question) {
+    if (request.kind === "followup" && request.restoreTarget !== "composer") {
+      followupInput.value = request.question;
+    } else {
+      questionInput.value = request.question;
+      autoGrowInput();
+      updatePromptCoach();
+    }
+  }
+  stopProgress();
+  clearInlineError();
+  if (state.conversation.length) {
+    emptyState.classList.add("hidden");
+    resultPanel.classList.remove("hidden");
+  } else {
+    emptyState.classList.remove("hidden");
+    resultPanel.classList.add("hidden");
+  }
+  showToast("요청을 취소했습니다. 질문을 수정해 다시 실행할 수 있습니다.");
+}
+
+function setQueryMode(mode) {
+  const previousMode = state.queryMode;
+  state.queryMode = mode === "followup" && canUseFollowupMode() ? "followup" : "new";
+  if (previousMode !== state.queryMode) resetPromptSuggestionsDismissal();
+  renderPromptSuggestionContent();
+  syncQueryModeUi();
+}
+
+function syncQueryModeUi() {
+  const followupAvailable = canUseFollowupMode();
+  if (!followupAvailable && state.queryMode === "followup") {
+    state.queryMode = "new";
+  }
+  modeButtons.forEach((button) => {
+    const mode = button.dataset.queryMode;
+    button.classList.toggle("active", mode === state.queryMode);
+    button.disabled = state.isBusy || (mode === "followup" && !followupAvailable);
+  });
+  if (state.continuation) {
+    submitBtn.textContent = state.isBusy ? "처리 중" : "계속";
+    updateContextStrip();
+    updatePromptCoach();
+    return;
+  }
+  submitBtn.textContent = state.isBusy ? "처리 중" : state.queryMode === "followup" ? "분석" : "조회";
+  if (!queryPanel.classList.contains("awaiting-param")) {
+    questionInput.placeholder =
+      state.queryMode === "followup" && followupAvailable
+        ? "이전 결과를 바탕으로 이어서 물어보세요."
+        : "예: 2025년 월별 법인카드 이용금액과 전월 대비 증감률을 보여줘";
+  }
+  updateContextStrip();
+  updatePromptCoach();
+}
+
+function setBusy(isBusy) {
+  state.isBusy = isBusy;
+  submitBtn.disabled = isBusy;
+  questionInput.readOnly = isBusy;
+  newSessionBtn.disabled = isBusy;
+  clearBtn.disabled = isBusy;
+  saveQueryBtn.disabled = isBusy;
+  $$(".suggestion").forEach((button) => { button.disabled = isBusy; });
+  syncQueryModeUi();
+}
+
+function setFollowupBusy(isBusy) {
+  followupBtn.disabled = isBusy;
+  followupInput.readOnly = isBusy;
+  followupBtn.textContent = isBusy ? "분석 중" : "질문";
+}
+
+function updateContextStrip() {
+  const showContext = state.queryMode === "followup" && canUseFollowupMode();
+  contextStrip?.classList.toggle("hidden", !showContext);
+  if (!showContext) return;
+  const summary = state.lastResultSummary || {};
+  contextStripTitle.textContent = summary.question || "직전 조회 결과";
+  const meta = [
+    Number.isFinite(summary.rowCount) ? `${summary.rowCount.toLocaleString("ko-KR")}건` : "",
+    summary.source || "",
+    `${state.conversation.filter((item) => item.role === "user").length}번째 질문까지`,
+  ].filter(Boolean);
+  contextStripMeta.textContent = meta.join(" · ");
+}
+
+function promptSignals(text) {
+  const value = String(text || "").trim();
+  return {
+    period: /(19|20)\d{2}|\d{1,2}\s*월|분기|반기|최근|이번|지난|전월|당월|기간|일자|날짜/.test(value),
+    target: /기업|회원|업종|가맹점|법인|카드|사업자|고객|회사|전체|그중|이\s*결과|위\s*결과|[가-힣A-Za-z0-9]{2,}\s*(의|에서|대상)/.test(value),
+    metric: /금액|매출|이용|건수|비율|률|비용|한도|잔액|승인|연체|대손|증감|추이|합계|평균|실적|순이익/.test(value),
+    shape: /월별|일별|연도별|업종별|기업별|상위|하위|순위|추이|비교|목록|명단|총합|평균|\d+\s*개|정렬|증가|감소|분석/.test(value),
+  };
+}
+
+function updatePromptCoach() {
+  if (!promptCoach || !promptCoachMessage) return;
+  const followupMode = state.queryMode === "followup" && canUseFollowupMode();
+  const signals = promptSignals(questionInput.value);
+  if (followupMode) {
+    signals.period = true;
+    signals.target = true;
+  }
+  const found = Object.values(signals).filter(Boolean).length;
+  $$('[data-coach-check]').forEach((item) => {
+    item.classList.toggle("found", Boolean(signals[item.dataset.coachCheck]));
+  });
+  promptCoach.classList.toggle("ready", found >= 3);
+  if (!questionInput.value.trim()) {
+    promptCoachMessage.textContent = followupMode
+      ? "직전 결과의 기간·대상을 이어받습니다. 비교, 필터 또는 상위 N개처럼 원하는 작업을 적어주세요."
+      : "기간·대상·지표·집계 기준을 포함하면 정확도가 높아집니다.";
+  } else if (found >= 3) {
+    promptCoachMessage.textContent = followupMode
+      ? "직전 결과 맥락과 함께 분석할 준비가 되었습니다."
+      : "좋은 질문입니다. 조건을 구체적으로 인식할 수 있습니다.";
+  } else {
+    const missingLabels = { period: "기간", target: "대상", metric: "지표", shape: "집계/범위" };
+    const missing = Object.entries(signals)
+      .filter(([, value]) => !value)
+      .map(([key]) => missingLabels[key]);
+    promptCoachMessage.textContent = `${missing.join("·")}을(를) 더 적으면 조회 정확도가 높아집니다.`;
+  }
+}
+
+function isProgressEvent(eventName) {
+  return ["start", "search_plan", "aggregate_review", "response", "progress", "text2sql_progress", "heartbeat"].includes(eventName);
+}
+
+function normalizeProgressEvent(progress) {
+  const data = progress?.data || {};
+  return {
+    step: progress?.step || progress?.text2sql_step || data.text2sql_step || data.step || "",
+    phase: progress?.phase || data.phase || "",
+    title: progress?.title || data.title || "",
+    message: progress?.message || data.message || "",
+  };
+}
+
+function progressIndexFor(step, phase = "") {
+  const index = progressGroupIndex[step] ?? progressPhaseGroupIndex[phase] ?? 1;
+  return Math.max(0, Math.min(index, activeProgressLabels.length - 1));
+}
+
+function setProgressStep(index) {
+  progressCurrentIndex = index;
+  Array.from(progressSteps.children).forEach((item, idx) => {
+    item.classList.toggle("done", idx < progressCurrentIndex);
+    item.classList.toggle("active", idx === progressCurrentIndex);
+  });
+  const safeIndex = Math.min(progressCurrentIndex, activeProgressLabels.length - 1);
+  progressTitle.textContent = activeProgressLabels[safeIndex][1];
+  progressFill.style.width = `${Math.min(95, 12 + safeIndex * 26)}%`;
+}
+
+function activateProgressItem(item) {
+  const index = Number(item?.dataset?.progressIndex);
+  if (Number.isFinite(index)) {
+    setProgressStep(index);
+  }
+}
+
+function appendProgressDetail(item, progress, step) {
+  const details = item.querySelector(".progress-detail");
+  const list = item.querySelector(".progress-detail-list");
+  if (!details || !list) return;
+  progressSteps.querySelectorAll(".progress-detail-list li.current").forEach((entry) => entry.classList.remove("current"));
+  let detailItem = Array.from(list.querySelectorAll("li")).find((entry) => entry.dataset.step === step);
+  if (!detailItem) {
+    detailItem = document.createElement("li");
+    detailItem.dataset.step = step;
+    list.appendChild(detailItem);
+  }
+  detailItem.innerHTML = `
+    <span>${escapeHtml(progress.title || step)}</span>
+    <small>${escapeHtml(progress.message || "")}</small>
+  `;
+  detailItem.classList.add("current");
+  activateProgressItem(item);
+  details.classList.remove("hidden");
+  details.open = true;
+  item.querySelector(".progress-count").textContent = `${list.querySelectorAll("li").length}`;
+}
+
+function renderProgressEvent(progress) {
+  const normalized = normalizeProgressEvent(progress);
+  const step = normalized.step || normalized.phase || normalized.title || "progress";
+  const groupIndex = progressIndexFor(normalized.step, normalized.phase);
+  const item = progressSteps.querySelector(`[data-progress-index="${groupIndex}"]`);
+  if (item) appendProgressDetail(item, normalized, step);
+  progressTitle.textContent = normalized.message || normalized.title || "처리 중입니다.";
+}
+
+function renderProgressHeartbeat(data) {
+  const normalized = normalizeProgressEvent(data);
+  const targetStep = data?.waiting_step || normalized.step || "";
+  const targetIndex = targetStep ? progressIndexFor(targetStep, data?.waiting_phase || normalized.phase) : progressCurrentIndex;
+  const item = progressSteps.querySelector(`[data-progress-index="${targetIndex}"]`);
+  const heartbeatStep = `heartbeat-${targetStep || targetIndex}`;
+  if (item) {
+    appendProgressDetail(
+      item,
+      {
+        title: data?.waiting_title ? `${data.waiting_title} 대기` : normalized.title || "처리 대기",
+        message: normalized.message || "서버 작업이 계속 진행 중입니다.",
+      },
+      heartbeatStep,
+    );
+  }
+  progressTitle.textContent = normalized.message || "서버 작업이 계속 진행 중입니다.";
+}
+
+function renderStreamProgress(eventName, data) {
+  const webappStep = {
+    start: "start",
+    search_plan: "search_plan",
+    aggregate_review: "aggregate_review",
+    response: "response",
+  }[eventName];
+  if (eventName === "start") {
+    if (data?.data?.session_id) {
+      state.sessionId = data.data.session_id;
+    }
+    renderProgressEvent({
+      step: "start",
+      title: "요청 접수",
+      message: data?.message || "질문을 분석 중입니다...",
+    });
+    return;
+  }
+  if (eventName === "heartbeat") {
+    renderProgressHeartbeat(data);
+    return;
+  }
+  if (webappStep) {
+    const progressData = data?.data || {};
+    renderProgressEvent({
+      ...data,
+      step: progressData.text2sql_step || webappStep,
+      phase: progressData.phase || "",
+      title: progressData.title || progressData.operation || "",
+      message: progressData.progress_message || data?.message || "",
+    });
+    return;
+  }
+  renderProgressEvent(data);
+}
+
+function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
+  const seedLabels = Array.isArray(labels) && labels.length ? labels : fallbackLabels;
+  activeProgressLabels = seedLabels;
+  progressStartedAt = Date.now();
+  progressCurrentIndex = 0;
+  window.clearTimeout(progressHideTimer);
+  progressHideTimer = null;
+  elapsedTime.textContent = "0초";
+  progressFill.style.width = "12%";
+  progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
+  progressQuestion.textContent = state.pendingQuestion || "";
+  progressQuestion.classList.toggle("hidden", !progressQuestion.textContent);
+  cancelRequestBtn.disabled = false;
+  progressSteps.innerHTML = seedLabels
+    .map(
+      ([title, desc], index) => `
+        <li data-progress-index="${index}">
+          <div class="progress-card-title">
+            <strong>${escapeHtml(title)}</strong>
+            <span class="progress-count">0</span>
+          </div>
+          <div class="progress-card-desc">${escapeHtml(desc)}</div>
+          <details class="progress-detail hidden">
+            <summary>처리 상세</summary>
+            <ul class="progress-detail-list"></ul>
+          </details>
+        </li>
+      `,
+    )
+    .join("");
+  progressPanel.classList.remove("hidden");
+  clearInlineError();
+  emptyState.classList.add("hidden");
+  if (hideCurrentResult) resultPanel.classList.add("hidden");
+  paramPanel.classList.add("hidden");
+  setProgressStep(0);
+  scrollThreadToBottom();
+  window.clearInterval(progressTimer);
+  progressTimer = window.setInterval(() => {
+    const seconds = Math.floor((Date.now() - progressStartedAt) / 1000);
+    elapsedTime.textContent = `${seconds}초`;
+  }, 1000);
+}
+
+function finishProgress() {
+  window.clearInterval(progressTimer);
+  progressTimer = null;
+  progressFill.style.width = "100%";
+  progressCurrentIndex = activeProgressLabels.length - 1;
+  Array.from(progressSteps.children).forEach((item) => {
+    item.classList.add("done");
+    item.classList.remove("active");
+  });
+  progressTitle.textContent = "결과를 화면에 표시합니다.";
+  cancelRequestBtn.disabled = true;
+  const elapsed = Date.now() - progressStartedAt;
+  const delay = Math.max(300, 1200 - elapsed);
+  window.clearTimeout(progressHideTimer);
+  progressHideTimer = window.setTimeout(() => {
+    progressPanel.classList.add("hidden");
+    progressHideTimer = null;
+  }, delay);
+}
+
+function stopProgress() {
+  window.clearInterval(progressTimer);
+  progressTimer = null;
+  window.clearTimeout(progressHideTimer);
+  progressHideTimer = null;
+  progressPanel.classList.add("hidden");
+  cancelRequestBtn.disabled = true;
+}
+
+function clearInlineError() {
+  errorPanel.classList.add("hidden");
+  errorTitle.textContent = "요청을 처리하지 못했습니다.";
+  errorMessage.textContent = "";
+  retryBtn.classList.add("hidden");
+  editQuestionBtn.classList.add("hidden");
+}
+
+function setExportEnabled(enabled) {
+  $$("[data-export]").forEach((button) => {
+    button.disabled = !enabled;
+  });
+}
+
+function setInspectorHasData(hasData) {
+  inspectorEmpty?.classList.toggle("hidden", hasData);
+}
+
+function showPromptSuggestions() {
+  if (!promptSuggestions || state.isBusy || promptSuggestionsDismissed) return;
+  renderPromptSuggestionContent();
+  if ($("#examples")?.children.length) {
+    promptSuggestions.classList.remove("hidden");
+  }
+}
+
+function hidePromptSuggestions({ dismiss = false } = {}) {
+  if (dismiss) promptSuggestionsDismissed = true;
+  promptSuggestions?.classList.add("hidden");
+}
+
+function resetPromptSuggestionsDismissal() {
+  promptSuggestionsDismissed = false;
+}
+
+function resetResultPanels() {
+  state.lastResultSummary = null;
+  state.lastResultData = null;
+  resultPanel.classList.add("hidden");
+  emptyState.classList.remove("hidden");
+  answerBox.innerHTML = "";
+  sqlBox.textContent = "실행 SQL이 없습니다.";
+  historyBox.innerHTML = "";
+  resultTable.innerHTML = "";
+  tableMeta.textContent = "조회 데이터가 없습니다.";
+  compactSummary.innerHTML = "";
+  compactSummary.classList.add("hidden");
+  resultMeta.innerHTML = "";
+  resultMeta.classList.add("hidden");
+  sourceLabel.textContent = "";
+  resultBadges.innerHTML = "";
+  excelBox.innerHTML = "";
+  excelBox.classList.add("hidden");
+  suggestionList.innerHTML = "";
+  followupInput.value = "";
+  followupBox.classList.add("hidden");
+  downloadList.innerHTML = "";
+  copyTableBtn.disabled = true;
+  copySqlBtn.disabled = true;
+  setInspectorHasData(false);
+  setExportEnabled(false);
+}
+
+function showInlineError(message, title = "요청을 처리하지 못했습니다.", options = {}) {
+  const settings = typeof options === "boolean" ? { appendMessage: options } : options || {};
+  const appendMessage = settings.appendMessage === true;
+  const safeMessage = String(message || "알 수 없는 오류가 발생했습니다.");
+  errorTitle.textContent = title;
+  errorMessage.textContent = safeMessage;
+  errorPanel.classList.remove("hidden");
+  emptyState.classList.add("hidden");
+  resultPanel.classList.remove("hidden");
+  if (!state.lastResultData) {
+    sourceLabel.textContent = "오류";
+    resultBadges.innerHTML = "";
+    renderResultMeta(null);
+    renderCompactSummary([], []);
+    renderTable([], []);
+    sqlBox.textContent = "실행 SQL이 없습니다.";
+    setExportEnabled(false);
+  }
+  retryBtn.classList.toggle("hidden", typeof state.retryAction !== "function");
+  editQuestionBtn.classList.toggle("hidden", !state.pendingQuestion);
+  if (appendMessage) {
+    const pending = state.pendingQuestion || "";
+    const last = state.conversation[state.conversation.length - 1];
+    if (pending && !(last?.role === "user" && last.text === pending)) {
+      state.conversation.push({ role: "user", text: pending });
+    }
+    state.conversation.push({ role: "assistant", text: `### ${title}\n${safeMessage}`, status: "error" });
+    renderConversation();
+    renderHistory({ question: pending, original_answer: safeMessage, analysis_history: [] });
   }
 }
 
 async function loadHealth() {
+  const statusEl = $("#serviceStatus");
+  const setStatus = (dotClass, text) => {
+    statusEl.innerHTML = `<span class="dot ${dotClass}"></span>${escapeHtml(text)}`;
+  };
   try {
-    const data = await api("api/health");
+    const data = await api("health");
     const status = data.llm_status || (data.llm_ready === false ? "unavailable" : "ready");
-    const label =
-      status === "ready"
-        ? "연결됨"
-        : status === "auth_error"
-          ? "인증 확인 필요"
-          : "연결 확인 필요";
-    $("#serviceStatus").textContent = `${data.model} · ${label}`;
+    state.llmReady = status === "ready";
+    state.llmDetail = data.llm_detail || "";
+    if (status === "ready") {
+      setStatus("ok", "모델 · 연결됨");
+    } else if (status === "auth_error") {
+      setStatus("warn", "인증 확인 필요");
+    } else if (data.ok) {
+      setStatus("warn", "모델 확인 필요");
+    } else {
+      setStatus("warn", "연결 확인 필요");
+    }
   } catch {
-    $("#serviceStatus").textContent = "서비스 확인 필요";
+    state.llmReady = false;
+    state.llmDetail = "서비스 상태를 확인하지 못했습니다.";
+    setStatus("bad", "서비스 확인 필요");
   }
+}
+
+function llmUnavailableMessage() {
+  const detail = state.llmDetail ? `\n\n${state.llmDetail}` : "";
+  return `모델 서버가 응답하지 않습니다. 잠시 후 다시 시도하거나 운영 담당자에게 문의해 주세요.${detail}`;
+}
+
+function chooseExample(item) {
+  questionInput.value = item;
+  autoGrowInput();
+  updatePromptCoach();
+  hidePromptSuggestions();
+  questionInput.focus();
+}
+
+function normalizedQuestions(items) {
+  return Array.from(new Set(
+    (Array.isArray(items) ? items : [])
+      .filter((item) => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ));
+}
+
+function renderExampleButtons(container, examples, className) {
+  if (!container) return;
+  container.innerHTML = "";
+  examples.forEach((item) => {
+    const button = document.createElement("button");
+    button.className = className;
+    button.type = "button";
+    button.textContent = item;
+    button.dataset.example = item;
+    const isRecommendation = className.includes("recommendation");
+    button.setAttribute("aria-label", `${isRecommendation ? "추천" : "예시"} 질문 사용: ${item}`);
+    container.appendChild(button);
+  });
+}
+
+function renderPromptSuggestionContent() {
+  const box = $("#examples");
+  if (!box) return;
+  const isFollowup = state.queryMode === "followup" && canUseFollowupMode();
+  const questions = isFollowup ? state.recommendedQuestions : state.exampleQuestions;
+  promptSuggestionsTitle.textContent = isFollowup ? "추천 질문" : "예시 질문";
+  hideSuggestionsBtn.title = `${isFollowup ? "추천" : "예시"} 질문 닫기`;
+  hideSuggestionsBtn.setAttribute("aria-label", hideSuggestionsBtn.title);
+  renderExampleButtons(box, questions, isFollowup ? "example recommendation" : "example");
+  if (!questions.length) promptSuggestions?.classList.add("hidden");
 }
 
 async function loadExamples() {
-  const box = $("#examples");
   try {
     const data = await api("api/examples");
-    box.innerHTML = "";
-    data.examples.forEach((item) => {
-      const button = document.createElement("button");
-      button.className = "example";
-      button.type = "button";
-      button.textContent = item;
-      button.addEventListener("click", () => {
-        questionInput.value = item;
-        questionInput.focus();
-      });
-      box.appendChild(button);
-    });
+    const apiExamples = Array.isArray(data?.examples) ? data.examples : [];
+    const examples = normalizedQuestions(apiExamples);
+    if (!examples.length) throw new Error("예시 질문 응답이 비어 있습니다.");
+    state.exampleQuestions = examples;
+    renderPromptSuggestionContent();
+    renderExampleButtons(heroExamples, examples.slice(0, 3), "starter-chip");
   } catch {
-    box.innerHTML = "";
+    state.exampleQuestions = normalizedQuestions(DEFAULT_EXAMPLES);
+    renderPromptSuggestionContent();
+    renderExampleButtons(heroExamples, DEFAULT_EXAMPLES.slice(0, 3), "starter-chip");
   }
 }
 
-async function createSession() {
-  const data = await api("api/sessions", { method: "POST", body: JSON.stringify({}) });
-  state.sessionId = data.session.id;
+function extractTemplateParameters(queryTemplate) {
+  const seen = new Set();
+  const parameters = [];
+  String(queryTemplate || "").replace(/{{\s*([A-Za-z0-9_.가-힣-]+)\s*}}/g, (_, name) => {
+    const key = String(name || "").trim();
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      parameters.push(key);
+    }
+    return "";
+  });
+  return parameters;
+}
+
+function savedQuerySubtitle(savedQuery) {
+  const params = savedQuery.parameters?.length ? savedQuery.parameters : extractTemplateParameters(savedQuery.query_template);
+  if (params.length) return `파라미터: ${params.join(", ")}`;
+  return savedQuery.query_template || "";
+}
+
+async function loadSavedQueries() {
+  if (!savedQueryList) return;
+  try {
+    const data = await api("api/saved-queries");
+    state.savedQueries = data.saved_queries || [];
+    renderSavedQueries();
+  } catch {
+    state.savedQueries = [];
+    savedQueryList.innerHTML = `<div class="session-empty">저장 쿼리를 불러오지 못했습니다.</div>`;
+  }
+}
+
+function renderSavedQueries() {
+  if (!savedQueryList) return;
+  savedQueryList.innerHTML = "";
+  if (!state.savedQueries.length) {
+    savedQueryList.innerHTML = `<div class="session-empty">저장된 쿼리가 없습니다.</div>`;
+    return;
+  }
+  state.savedQueries.forEach((savedQuery) => {
+    const item = document.createElement("div");
+    item.className = "saved-query-item";
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "saved-query-open";
+    openButton.innerHTML = `
+      <span>${escapeHtml(savedQuery.name || "저장 쿼리")}</span>
+      <small>${escapeHtml(savedQuerySubtitle(savedQuery))}</small>
+    `;
+    openButton.addEventListener("click", () => openSavedQueryDialog(savedQuery));
+
+    const actions = document.createElement("div");
+    actions.className = "saved-query-actions";
+
+    const runButton = document.createElement("button");
+    runButton.type = "button";
+    runButton.textContent = "▶";
+    runButton.title = "실행";
+    runButton.setAttribute("aria-label", `${savedQuery.name || "저장 쿼리"} 실행`);
+    runButton.addEventListener("click", () => openSavedQueryDialog(savedQuery));
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "×";
+    deleteButton.title = "삭제";
+    deleteButton.setAttribute("aria-label", `${savedQuery.name || "저장 쿼리"} 삭제`);
+    deleteButton.dataset.deleteSavedQuery = savedQuery.id;
+    deleteButton.addEventListener("click", async () => {
+      if (!window.confirm(`"${savedQuery.name || "저장 쿼리"}"를 삭제할까요?`)) return;
+      try {
+        await api(`api/saved-queries/${encodeURIComponent(savedQuery.id)}`, { method: "DELETE" });
+        await loadSavedQueries();
+        showToast("저장 쿼리를 삭제했습니다.");
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+
+    actions.append(runButton, deleteButton);
+    item.append(openButton, actions);
+    savedQueryList.appendChild(item);
+  });
+}
+
+async function saveCurrentQuery() {
+  const queryTemplate = questionInput.value.trim() || state.pendingQuestion.trim();
+  if (!queryTemplate) {
+    showToast("저장할 질문을 입력해주세요.");
+    questionInput.focus();
+    return;
+  }
+  const defaultName = queryTemplate.replace(/{{\s*([A-Za-z0-9_.가-힣-]+)\s*}}/g, "$1").slice(0, 40);
+  const name = window.prompt("저장 쿼리 이름", defaultName || "저장 쿼리");
+  if (name === null) return;
+  try {
+    const data = await api("api/saved-queries", {
+      method: "POST",
+      body: JSON.stringify({
+        name: name.trim() || defaultName || "저장 쿼리",
+        query_template: queryTemplate,
+        parameters: extractTemplateParameters(queryTemplate),
+      }),
+    });
+    await loadSavedQueries();
+    showToast(`"${data.saved_query?.name || "저장 쿼리"}"를 저장했습니다.`);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function closeSavedQueryDialog() {
+  state.activeSavedQuery = null;
+  savedQueryPanel?.classList.add("hidden");
+  if (savedQueryForm) savedQueryForm.innerHTML = "";
+  modalReturnFocus?.focus?.();
+  modalReturnFocus = null;
+}
+
+function openSavedQueryDialog(savedQuery) {
+  modalReturnFocus = document.activeElement;
+  state.activeSavedQuery = savedQuery;
+  const params = savedQuery.parameters?.length ? savedQuery.parameters : extractTemplateParameters(savedQuery.query_template);
+  savedQueryTitle.textContent = savedQuery.name || "저장 쿼리 실행";
+  savedQueryPreview.textContent = savedQuery.query_template || "";
+  const defaults = savedQuery.defaults || {};
+  const fields = params.length
+    ? `<div class="param-grid">${params
+        .map((name) => {
+          const value = defaults[name] ?? "";
+          return `
+            <label class="field">
+              <span>${escapeHtml(name)}</span>
+              <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" autocomplete="off" />
+            </label>
+          `;
+        })
+        .join("")}</div>`
+    : "";
+  savedQueryForm.innerHTML = `
+    ${fields}
+    <div class="param-actions">
+      <button type="button" data-load-saved-query>불러오기</button>
+      <button type="submit">실행</button>
+    </div>
+  `;
+  savedQueryForm.querySelector("[data-load-saved-query]")?.addEventListener("click", async () => {
+    try {
+      const rendered = await renderSavedQueryFromForm();
+      questionInput.value = rendered.query;
+      autoGrowInput();
+      closeSavedQueryDialog();
+      questionInput.focus();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  savedQueryPanel.classList.remove("hidden");
+  savedQueryForm.querySelector("input")?.focus();
+}
+
+async function renderSavedQueryFromForm() {
+  const savedQuery = state.activeSavedQuery;
+  if (!savedQuery) throw new Error("저장 쿼리를 선택해주세요.");
+  const params = {};
+  new FormData(savedQueryForm).forEach((value, key) => {
+    params[key] = String(value).trim();
+  });
+  const data = await api(`api/saved-queries/${encodeURIComponent(savedQuery.id)}/render`, {
+    method: "POST",
+    body: JSON.stringify({ params }),
+  });
+  return data;
+}
+
+async function runSavedQuery() {
+  try {
+    const rendered = await renderSavedQueryFromForm();
+    closeSavedQueryDialog();
+    hidePromptSuggestions();
+    downloadList.innerHTML = "";
+    questionInput.value = "";
+    autoGrowInput();
+    state.pendingQuestion = rendered.query;
+    submitQuestion({ question: rendered.query, session_id: state.sessionId });
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function resetSessionDraft() {
+  resetPromptSuggestionsDismissal();
+  state.retryAction = null;
+  state.failedRequest = null;
+  state.sessionId = null;
   state.lastResultId = "";
   state.canFollowup = false;
+  state.recommendedQuestions = [];
   state.continuation = null;
   state.pendingQuestion = "";
   state.conversation = [];
+  state.queryMode = "new";
+  queryPanel.classList.remove("awaiting-param");
+  closeParamDialog();
+  resetResultPanels();
   renderConversation();
+  renderHistory({ question: "", original_answer: "", analysis_history: [] });
+  renderPromptSuggestionContent();
+  syncQueryModeUi();
+}
+
+async function createSession() {
+  resetSessionDraft();
   await loadSessions();
-  return data.session;
+  return null;
 }
 
 async function loadSessions() {
@@ -435,30 +1519,73 @@ async function loadSessions() {
 
 function renderSessions(sessions) {
   sessionList.innerHTML = "";
-  if (!sessions.length) {
+  const visibleSessions = (sessions || []).filter((session) => Number(session.message_count || 0) > 0);
+  if (!visibleSessions.length) {
     sessionList.innerHTML = `<div class="session-empty">아직 세션이 없습니다.</div>`;
     return;
   }
-  sessions.forEach((session) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
-    button.innerHTML = `
+  visibleSessions.forEach((session) => {
+    const item = document.createElement("div");
+    item.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "session-open";
+    openButton.innerHTML = `
       <span>${escapeHtml(session.title || "새 대화")}</span>
       <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
     `;
-    button.addEventListener("click", () => loadSession(session.id));
-    sessionList.appendChild(button);
+    if (session.id === state.sessionId) openButton.setAttribute("aria-current", "page");
+    openButton.addEventListener("click", () => loadSession(session.id));
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "session-delete";
+    deleteButton.title = "세션 삭제";
+    deleteButton.setAttribute("aria-label", `${session.title || "새 대화"} 세션 삭제`);
+    deleteButton.textContent = "×";
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteSession(session.id);
+    });
+
+    item.appendChild(openButton);
+    item.appendChild(deleteButton);
+    sessionList.appendChild(item);
   });
+}
+
+async function deleteSession(sessionId) {
+  if (!sessionId) return;
+  if (!window.confirm("이 세션을 삭제할까요?")) return;
+  try {
+    await api(`api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (state.sessionId === sessionId) {
+      resetSessionDraft();
+      stopProgress();
+      clearInlineError();
+    }
+    await loadSessions();
+    showToast("세션을 삭제했습니다.");
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 async function loadSession(sessionId) {
   const data = await api(`api/sessions/${encodeURIComponent(sessionId)}`);
+  rail.classList.remove("menu-open");
+  mobileMenuBtn.setAttribute("aria-expanded", "false");
+  mobileMenuBtn.textContent = "세션·보고서 메뉴";
+  state.retryAction = null;
+  state.lastResultSummary = null;
+  state.lastResultData = null;
   state.sessionId = data.session.id;
   state.lastResultId = data.session.last_result_id || "";
   state.canFollowup = Boolean(state.lastResultId);
   state.continuation = null;
   state.pendingQuestion = "";
+  state.queryMode = "new";
   state.conversation = (data.messages || []).map((message) => ({
     role: message.role,
     text: message.text,
@@ -470,28 +1597,31 @@ async function loadSession(sessionId) {
   if (pendingMessage) {
     state.continuation = pendingMessage.continuation;
     state.pendingQuestion = pendingMessage.continuation?.question || "";
-    const labels = (pendingMessage.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
-    queryPanel.classList.add("awaiting-param");
-    submitBtn.textContent = "계속";
-    questionInput.placeholder = labels
-      ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
-      : "필요한 추가 정보를 채팅하듯 입력하세요";
-    openParamDialog(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+    applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
   } else {
     queryPanel.classList.remove("awaiting-param");
-    submitBtn.textContent = "전송";
-    questionInput.placeholder = "질문을 입력하세요";
     closeParamDialog();
   }
+
+  if (data.last_result) {
+    renderResult(data.last_result);
+    if (pendingMessage) {
+      state.continuation = pendingMessage.continuation;
+      state.pendingQuestion = pendingMessage.continuation?.question || "";
+      syncQueryModeUi();
+      applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+    }
+    return;
+  }
+  resetResultPanels();
   renderConversation();
-  renderHistory({ question: "", original_answer: "", analysis_history: [] });
-  emptyState.classList.add("hidden");
-  resultPanel.classList.remove("hidden");
+  syncQueryModeUi();
   await loadSessions();
 }
 
 function renderMissingParams(data) {
   state.continuation = data.continuation;
+  state.queryMode = "new";
   state.pendingQuestion = data.continuation?.question || state.pendingQuestion;
   if (data.session_id) state.sessionId = data.session_id;
   if (data.messages?.length) {
@@ -516,88 +1646,170 @@ function renderMissingParams(data) {
   resultPanel.classList.remove("hidden");
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
-  const labels = (data.missing_params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
-  queryPanel.classList.add("awaiting-param");
-  submitBtn.textContent = "계속";
-  questionInput.placeholder = labels
-    ? `${labels} 값을 채팅하듯 입력하세요. 예: 2025년 12월로 해줘`
-    : "필요한 추가 정보를 채팅하듯 입력하세요";
+  syncQueryModeUi();
+  applyPendingParamPrompt(data.missing_params || data.continuation?.missing_params || []);
   openParamDialog(data.missing_params || data.continuation?.missing_params || []);
   loadSessions();
 }
 
+function applyPendingParamPrompt(params = []) {
+  const labels = (params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
+  const hasManagedScope = (params || []).some(isManagedScopeParam);
+  queryPanel.classList.add("awaiting-param");
+  questionInput.placeholder = hasManagedScope
+    ? "사업자등록번호를 줄바꿈이나 쉼표로 입력하세요."
+    : labels
+    ? `${labels} 값을 채팅하듯 입력하세요. 예: ${currentYmKorean()}로 해줘`
+    : "필요한 추가 정보를 채팅하듯 입력하세요.";
+}
+
+function isManagedScopeParam(param = {}) {
+  const name = String(param.name || param.label || "").replaceAll(" ", "");
+  return String(param.type || "").toLowerCase() === "business_number_list" || name === "관리기업목록";
+}
+
 function paramPlaceholder(param) {
   const key = String(param.name || param.label || "").toLowerCase();
-  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return "예: 202512";
-  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return "예: 2025";
-  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return "예: 2025-12-31";
+  if (isManagedScopeParam(param)) return "예: 123-45-67890, 234-56-78901";
+  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return `예: ${currentYm()}`;
+  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return `예: ${currentYear()}`;
+  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return `예: ${currentYear()}-${currentDateParts().month}-01`;
   return "값을 입력하세요";
 }
 
+function paramNaturalPlaceholder(params = []) {
+  const names = params.map((param) => String(param.name || param.label || "").toLowerCase());
+  if (params.some(isManagedScopeParam)) {
+    return "예: 123-45-67890, 234-56-78901";
+  }
+  if (names.some((name) => name.includes("ls")) || names.some((name) => name.includes("is"))) {
+    return `예: 한빛테크놀로지 ${currentYmKorean()}, LS=0.3, IS=0.3`;
+  }
+  if (names.some((name) => name.includes("가맹점") || name.includes("기업"))) {
+    return "예: 한빛테크놀로지로 해줘";
+  }
+  if (names.some((name) => name.includes("년월") || name.includes("기준월") || name.includes("ym"))) {
+    return `예: ${currentYmKorean()}로 해줘`;
+  }
+  return "예: 필요한 값을 문장으로 입력";
+}
+
 function openParamDialog(params = []) {
+  modalReturnFocus = document.activeElement;
+  $("#paramTitle").textContent = params.length ? `필수 값 ${params.length}개 입력` : "추가 정보 입력";
   const fields = params
     .map((param, index) => {
       const name = param.name || param.label || `param_${index + 1}`;
       const label = param.label || param.name || `필수 값 ${index + 1}`;
-      const required = param.required === false ? "" : "required";
+      const detail = [param.description, param.type ? `형식: ${param.type}` : ""].filter(Boolean).join(" · ");
+      if (isManagedScopeParam(param)) {
+        return `
+          <div class="field managed-scope-field">
+            <label for="param-${index}">${escapeHtml(label)}</label>
+            ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
+            <textarea id="param-${index}" name="${escapeHtml(name)}" data-param-field rows="5" autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}"></textarea>
+            <small class="managed-scope-input-hint">사업자등록번호를 쉼표 또는 줄바꿈으로 구분해 입력하세요. 하이픈은 있어도 됩니다.</small>
+          </div>
+        `;
+      }
       return `
         <div class="field">
           <label for="param-${index}">${escapeHtml(label)}</label>
-          <input
-            id="param-${index}"
-            name="${escapeHtml(name)}"
-            autocomplete="off"
-            placeholder="${escapeHtml(paramPlaceholder(param))}"
-            ${required}
-          />
+          ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
+          <input id="param-${index}" name="${escapeHtml(name)}" data-param-field autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}" />
         </div>
       `;
     })
     .join("");
   paramForm.innerHTML = `
-    <div class="param-grid">
-      ${fields || `<div class="field"><label for="param-0">추가 정보</label><input id="param-0" name="_natural_input" autocomplete="off" placeholder="예: 2025년 12월로 해줘" required /></div>`}
+    <div class="field param-natural">
+      <label for="param-natural-input">문장으로 답하기</label>
+      <input id="param-natural-input" name="_natural_input" autocomplete="off" placeholder="${escapeHtml(paramNaturalPlaceholder(params))}" />
     </div>
+    <div class="param-grid">${fields || ""}</div>
     <div class="param-actions">
-      <button class="primary" type="submit">이 값으로 계속</button>
-      <button class="secondary" type="button" data-close-params>채팅창에 입력</button>
+      <button type="submit">계속</button>
+      <button type="button" data-use-chat-input>질문창에 적기</button>
     </div>
   `;
-  paramForm.querySelector("[data-close-params]")?.addEventListener("click", () => {
+  paramForm.querySelector("[data-use-chat-input]")?.addEventListener("click", () => {
     closeParamDialog();
     questionInput.focus();
   });
   paramPanel.classList.remove("hidden");
-  window.setTimeout(() => paramForm.querySelector("input")?.focus(), 0);
+  const firstParamField = params.some(isManagedScopeParam)
+    ? paramForm.querySelector("[data-param-field]")
+    : paramForm.querySelector("#param-natural-input");
+  window.setTimeout(() => firstParamField?.focus(), 0);
 }
 
 function closeParamDialog() {
   paramPanel.classList.add("hidden");
-}
-
-function setExportEnabled(enabled) {
-  $$("[data-export]").forEach((button) => {
-    button.disabled = !enabled;
-  });
+  modalReturnFocus?.focus?.();
+  modalReturnFocus = null;
 }
 
 function renderBadges(data) {
   const badges = [];
-  if (data.selected_tool) badges.push(`Tool: ${data.selected_tool}`);
-  if (data.matched_query_name) badges.push(`VQ: ${data.matched_query_name}`);
-  if (data.selected_tables?.length) badges.push(`Table: ${data.selected_tables.join(", ")}`);
+  const dataSources = data.result_meta?.data_sources || data.selected_tables || [];
+  if (Array.isArray(data.rows)) badges.push(`조회 결과 ${data.rows.length.toLocaleString("ko-KR")}건`);
+  if (data.selected_tool) badges.push(`전용 도구: ${data.selected_tool}`);
+  if (data.matched_query_name) badges.push(`검증 쿼리: ${data.matched_query_name}`);
+  if (dataSources.length) badges.push(`사용 데이터 ${dataSources.length}개`);
+  if (data.followup_operations?.length) badges.push(`로컬 처리 ${data.followup_operations.length}단계`);
   resultBadges.innerHTML = badges.map((b) => `<span class="badge">${escapeHtml(b)}</span>`).join("");
+}
+
+function formatConditions(conditions = {}) {
+  const entries = Object.entries(conditions).filter(([, value]) => value !== "" && value !== null && value !== undefined);
+  if (!entries.length) return "질문에서 추출된 조건 없음";
+  return entries
+    .map(([key, value]) => {
+      const formatted = typeof value === "object" ? JSON.stringify(value) : String(value);
+      return `${key}=${formatted}`;
+    })
+    .join(", ");
+}
+
+function renderResultMeta(data) {
+  if (!data) {
+    resultMeta.classList.add("hidden");
+    resultMeta.innerHTML = "";
+    return;
+  }
+  const meta = data.result_meta || {};
+  const displayedRows = meta.displayed_rows ?? data.rows?.length ?? 0;
+  const rowLimit = meta.display_row_limit || 100;
+  const rowText = `${displayedRows.toLocaleString("ko-KR")}건 표시 · 최대 ${rowLimit.toLocaleString("ko-KR")}건`;
+  const limitedText = meta.rows_may_be_limited ? "더 많은 결과가 있을 수 있습니다." : "표시 범위 안의 결과입니다.";
+  const dataSources = meta.data_sources?.length ? meta.data_sources.join(", ") : data.selected_tables?.join(", ") || "선택 데이터 없음";
+  const plannedSources = meta.planned_data_sources?.length ? meta.planned_data_sources.join(", ") : "";
+  const sqlSources = meta.sql_data_sources?.length ? meta.sql_data_sources.join(", ") : "";
+  const sourceNote = plannedSources && sqlSources && plannedSources !== sqlSources ? `분석 후보: ${plannedSources}` : "";
+  const path = meta.execution_path || data.source || "처리 경로 없음";
+  const conditions = formatConditions(meta.conditions || {});
+  const operations = Array.isArray(meta.followup_operations) ? meta.followup_operations.join(" → ") : "";
+  resultMeta.innerHTML = `
+    <div class="meta-item"><span>사용 경로</span><strong>${escapeHtml(path)}</strong></div>
+    <div class="meta-item"><span>표시 행</span><strong>${escapeHtml(rowText)}</strong><small>${escapeHtml(limitedText)}</small></div>
+    <div class="meta-item"><span>SQL 사용 데이터</span><strong>${escapeHtml(dataSources)}</strong>${sourceNote ? `<small>${escapeHtml(sourceNote)}</small>` : ""}</div>
+    <div class="meta-item"><span>적용 조건</span><strong>${escapeHtml(conditions)}</strong></div>
+    ${operations ? `<div class="meta-item"><span>후속 로컬 처리</span><strong>${escapeHtml(operations)}</strong><small>직전 결과 안에서 처리했으며 SQL은 다시 실행하지 않았습니다.</small></div>` : ""}
+  `;
+  resultMeta.classList.remove("hidden");
 }
 
 function renderTable(columns, rows) {
   if (!columns?.length || !rows?.length) {
     tableMeta.textContent = "조회 데이터가 없습니다.";
     resultTable.innerHTML = "";
+    resultTable.removeAttribute("aria-label");
+    copyTableBtn.disabled = true;
     return;
   }
-
   tableMeta.textContent = `${rows.length.toLocaleString("ko-KR")}건 표시`;
-  const thead = `<thead><tr>${columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
+  resultTable.setAttribute("aria-label", `조회 결과 ${rows.length.toLocaleString("ko-KR")}건`);
+  const thead = `<thead><tr>${columns.map((c) => `<th scope="col">${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
   const tbody = rows
     .map((row) => {
       const cells = columns
@@ -611,6 +1823,7 @@ function renderTable(columns, rows) {
     })
     .join("");
   resultTable.innerHTML = `${thead}<tbody>${tbody}</tbody>`;
+  copyTableBtn.disabled = false;
 }
 
 function renderCompactSummary(columns, rows) {
@@ -619,10 +1832,9 @@ function renderCompactSummary(columns, rows) {
     compactSummary.innerHTML = "";
     return;
   }
-
   const summaryColumns = columns.slice(0, Math.min(columns.length, 5));
-  const summaryRows = rows.slice(0, Math.min(rows.length, 3));
-  const header = summaryColumns.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+  const summaryRows = rows.slice(0, Math.min(rows.length, 4));
+  const header = summaryColumns.map((c) => `<th scope="col">${escapeHtml(c)}</th>`).join("");
   const body = summaryRows
     .map((row) => {
       const cells = summaryColumns
@@ -635,19 +1847,190 @@ function renderCompactSummary(columns, rows) {
       return `<tr>${cells}</tr>`;
     })
     .join("");
-
   compactSummary.innerHTML = `
-    <div class="compact-summary-title">조회 결과 미리보기 (${rows.length.toLocaleString("ko-KR")}건)</div>
-    <table>
-      <thead><tr>${header}</tr></thead>
-      <tbody>${body}</tbody>
-    </table>
+    <div class="compact-summary-title">미리보기 · ${rows.length.toLocaleString("ko-KR")}건</div>
+    <table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>
   `;
   compactSummary.classList.remove("hidden");
 }
 
+function chartCssColor(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function compactChartNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 }).format(number);
+}
+
+function drawChart(chart) {
+  if (!chart || !resultChart || chartBox.classList.contains("hidden")) return;
+  const labels = Array.isArray(chart.labels) ? chart.labels : [];
+  const datasets = Array.isArray(chart.datasets) ? chart.datasets : [];
+  if (!labels.length || !datasets.length) return;
+
+  const height = 330;
+  const width = Math.max(320, resultChart.parentElement?.clientWidth || 720);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  resultChart.width = Math.round(width * dpr);
+  resultChart.height = Math.round(height * dpr);
+  resultChart.style.width = `${width}px`;
+  resultChart.style.height = `${height}px`;
+  const ctx = resultChart.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const text = chartCssColor("--muted", "#9aa5b2");
+  const grid = chartCssColor("--line-soft", "#242b36");
+  const panel = chartCssColor("--panel", "#151922");
+  const colors = [
+    chartCssColor("--mint", "#58cdbc"),
+    chartCssColor("--blue", "#7fa8ff"),
+    chartCssColor("--accent", "#f4c84a"),
+    chartCssColor("--green", "#5fd68a"),
+    chartCssColor("--red", "#ff7a70"),
+    "#b18cff", "#ff9f67", "#66c7f2", "#d6cf5f", "#ef7fb1", "#70d6a8", "#8b9cff",
+  ];
+  ctx.font = '11px "Pretendard", sans-serif';
+  ctx.fillStyle = text;
+  ctx.strokeStyle = grid;
+  const chartNumber = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+
+  if (chart.type === "pie") {
+    const values = (datasets[0].data || []).map(chartNumber).map((value) => (value !== null && value > 0 ? value : 0));
+    const total = values.reduce((sum, value) => sum + value, 0);
+    if (!total) return;
+    const cx = width / 2;
+    const cy = height / 2;
+    const radius = Math.min(width, height) * 0.34;
+    let angle = -Math.PI / 2;
+    values.forEach((value, index) => {
+      const next = angle + (value / total) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius, angle, next);
+      ctx.closePath();
+      ctx.fillStyle = colors[index % colors.length];
+      ctx.fill();
+      ctx.strokeStyle = panel;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      angle = next;
+    });
+    return;
+  }
+
+  const plot = { left: 68, right: width - 22, top: 20, bottom: height - 65 };
+  const allValues = datasets.flatMap((dataset) => (dataset.data || []).map(chartNumber)).filter((value) => value !== null);
+  if (!allValues.length) return;
+  let minValue = Math.min(0, ...allValues);
+  let maxValue = Math.max(0, ...allValues);
+  if (minValue === maxValue) maxValue = minValue + 1;
+  const range = maxValue - minValue;
+  const y = (value) => plot.top + ((maxValue - value) / range) * (plot.bottom - plot.top);
+  const xStep = (plot.right - plot.left) / Math.max(labels.length, 1);
+  const zeroY = y(0);
+
+  for (let tick = 0; tick <= 5; tick += 1) {
+    const value = maxValue - (range * tick) / 5;
+    const tickY = y(value);
+    ctx.beginPath();
+    ctx.moveTo(plot.left, tickY);
+    ctx.lineTo(plot.right, tickY);
+    ctx.strokeStyle = grid;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = text;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText(compactChartNumber(value), plot.left - 9, tickY);
+  }
+
+  const labelStride = Math.max(1, Math.ceil(labels.length / 10));
+  labels.forEach((label, index) => {
+    if (index % labelStride !== 0) return;
+    const shortLabel = String(label).length > 10 ? `${String(label).slice(0, 9)}…` : String(label);
+    ctx.fillStyle = text;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(shortLabel, plot.left + xStep * (index + 0.5), plot.bottom + 10);
+  });
+
+  if (chart.type === "line") {
+    datasets.forEach((dataset, datasetIndex) => {
+      ctx.strokeStyle = colors[datasetIndex % colors.length];
+      ctx.fillStyle = colors[datasetIndex % colors.length];
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      let started = false;
+      (dataset.data || []).forEach((rawValue, index) => {
+        const value = chartNumber(rawValue);
+        if (value === null) return;
+        const px = plot.left + xStep * (index + 0.5);
+        const py = y(value);
+        if (!started) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+        started = true;
+      });
+      ctx.stroke();
+      (dataset.data || []).forEach((rawValue, index) => {
+        const value = chartNumber(rawValue);
+        if (value === null) return;
+        ctx.beginPath();
+        ctx.arc(plot.left + xStep * (index + 0.5), y(value), 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    });
+  } else {
+    const groupWidth = xStep * 0.72;
+    const barWidth = Math.max(2, groupWidth / Math.max(datasets.length, 1));
+    datasets.forEach((dataset, datasetIndex) => {
+      ctx.fillStyle = colors[datasetIndex % colors.length];
+      (dataset.data || []).forEach((rawValue, index) => {
+        const value = chartNumber(rawValue);
+        if (value === null) return;
+        const px = plot.left + xStep * index + (xStep - groupWidth) / 2 + barWidth * datasetIndex;
+        const valueY = y(value);
+        ctx.fillRect(px, Math.min(valueY, zeroY), Math.max(1, barWidth - 2), Math.max(1, Math.abs(zeroY - valueY)));
+      });
+    });
+  }
+}
+
+function renderChart(chart) {
+  state.lastChart = chart || null;
+  if (!chart?.labels?.length || !chart?.datasets?.length) {
+    chartBox.classList.add("hidden");
+    chartTitle.textContent = "";
+    chartNote.textContent = "";
+    chartLegend.innerHTML = "";
+    resultChart.removeAttribute("aria-label");
+    return;
+  }
+  chartTitle.textContent = chart.title || "조회 결과 차트";
+  chartNote.textContent = chart.note || "";
+  const colors = ["var(--mint)", "var(--blue)", "var(--accent)", "var(--green)", "var(--red)"];
+  chartLegend.innerHTML = chart.datasets
+    .map((dataset, index) => `<span><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(dataset.label || `계열 ${index + 1}`)}</span>`)
+    .join("");
+  resultChart.setAttribute("aria-label", `${chart.title || "조회 결과 차트"}. ${chart.note || ""}`);
+  chartBox.classList.remove("hidden");
+  window.requestAnimationFrame(() => drawChart(chart));
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
 function renderAnswerHtml(text) {
-  const lines = String(text || "").split("\n");
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
   const chunks = [];
   let i = 0;
 
@@ -658,8 +2041,24 @@ function renderAnswerHtml(text) {
       continue;
     }
 
-    if (line.startsWith("### ")) {
-      chunks.push(`<h3>${escapeHtml(line.replace(/^###\s+/, ""))}</h3>`);
+    if (line.startsWith("```")) {
+      const language = line.slice(3).trim();
+      const codeLines = [];
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      const languageLabel = language ? ` aria-label="${escapeHtml(language)} 코드"` : "";
+      chunks.push(`<pre${languageLabel}><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(3, heading[1].length + 1);
+      chunks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
       i += 1;
       continue;
     }
@@ -671,28 +2070,52 @@ function renderAnswerHtml(text) {
         i += 1;
       }
       const cleaned = tableLines.filter((row) => !/^\|[\s:\-|]+\|$/.test(row));
-      const rowsHtml = cleaned
-        .map((row, rowIndex) => {
+      if (cleaned.length) {
+        const renderRow = (row, tag) => {
           const cells = row.slice(1, -1).split("|").map((cell) => cell.trim());
-          const tag = rowIndex === 0 ? "th" : "td";
-          return `<tr>${cells.map((cell) => `<${tag}>${escapeHtml(cell)}</${tag}>`).join("")}</tr>`;
-        })
-        .join("");
-      chunks.push(`<table class="answer-table">${rowsHtml}</table>`);
+          const attributes = tag === "th" ? ' scope="col"' : "";
+          return `<tr>${cells.map((cell) => `<${tag}${attributes}>${renderInlineMarkdown(cell)}</${tag}>`).join("")}</tr>`;
+        };
+        const header = renderRow(cleaned[0], "th");
+        const body = cleaned.slice(1).map((row) => renderRow(row, "td")).join("");
+        chunks.push(
+          `<div class="answer-table-wrap" role="region" aria-label="답변 표" tabindex="0"><table class="answer-table"><thead>${header}</thead><tbody>${body}</tbody></table></div>`,
+        );
+      }
       continue;
     }
 
-    if (line.startsWith("- ")) {
+    if (/^[-*]\s+/.test(line)) {
       const items = [];
-      while (i < lines.length && lines[i].trim().startsWith("- ")) {
-        items.push(`<li>${escapeHtml(lines[i].trim().slice(2))}</li>`);
+      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
+        items.push(`<li>${renderInlineMarkdown(lines[i].trim().replace(/^[-*]\s+/, ""))}</li>`);
         i += 1;
       }
       chunks.push(`<ul>${items.join("")}</ul>`);
       continue;
     }
 
-    chunks.push(`<p>${escapeHtml(line)}</p>`);
+    if (/^\d+[.)]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\d+[.)]\s+/.test(lines[i].trim())) {
+        items.push(`<li>${renderInlineMarkdown(lines[i].trim().replace(/^\d+[.)]\s+/, ""))}</li>`);
+        i += 1;
+      }
+      chunks.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+
+    if (line.startsWith("> ")) {
+      const quotes = [];
+      while (i < lines.length && lines[i].trim().startsWith("> ")) {
+        quotes.push(renderInlineMarkdown(lines[i].trim().slice(2)));
+        i += 1;
+      }
+      chunks.push(`<blockquote>${quotes.join("<br>")}</blockquote>`);
+      continue;
+    }
+
+    chunks.push(`<p>${renderInlineMarkdown(line)}</p>`);
     i += 1;
   }
 
@@ -711,16 +2134,13 @@ function rebuildConversationFromResult(data) {
   }
   const messages = [];
   const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
-  if (originalQuestion) {
-    messages.push({ role: "user", text: originalQuestion });
-  }
-  if (data.original_answer) {
-    messages.push({ role: "assistant", text: data.original_answer });
-  }
+  if (originalQuestion) messages.push({ role: "user", text: originalQuestion });
+  if (data.original_answer) messages.push({ role: "assistant", text: data.original_answer });
   (data.analysis_history || []).forEach((item) => {
     if (item.question) messages.push({ role: "user", text: item.question });
     if (item.answer) messages.push({ role: "assistant", text: item.answer });
   });
+  if (!messages.length && data.answer) messages.push({ role: "assistant", text: data.answer });
   return messages;
 }
 
@@ -730,28 +2150,34 @@ function renderConversation() {
     return;
   }
 
+  let turn = 0;
   answerBox.innerHTML = state.conversation
     .map((message, index) => {
-      const label = message.role === "user" ? "내 질문" : "분석 답변";
+      if (message.role === "user") turn += 1;
+      const turnLabel = turn ? ` ${turn}` : "";
+      const label = message.role === "user" ? `내 질문${turnLabel}` : message.status === "error" ? "오류" : `분석 답변${turnLabel}`;
       const content =
         message.role === "assistant"
           ? `${renderAnswerHtml(message.text || "응답이 없습니다.")}`
           : `<p>${escapeHtml(message.text || "")}</p>`;
       return `
-        <div class="conversation-message ${message.role}">
-          <div class="message-label">${label}</div>
+        <div class="conversation-message ${escapeHtml(message.role)} ${escapeHtml(message.status || "")}">
+          <div class="message-heading">
+            <div class="message-label">${label}</div>
+            <button class="message-copy" type="button" data-copy-message="${index}" aria-label="${label} 복사">복사</button>
+          </div>
           <div class="message-body">${content}</div>
         </div>
       `;
     })
     .join("");
-
+  scrollThreadToBottom();
 }
 
 function renderHistory(data) {
   const entries = [];
   const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
-  if (originalQuestion || data.original_answer) {
+  if (originalQuestion || data.original_answer || data.answer) {
     entries.push({
       mode: "초기 질문",
       question: originalQuestion,
@@ -761,42 +2187,37 @@ function renderHistory(data) {
       source: data.source || "",
     });
   }
-
-  (data.analysis_history || []).forEach((item, index) => {
+  (data.analysis_history || []).forEach((item) => {
     entries.push({
-      mode: ["query", "rewrite_sql", "new_sql"].includes(item.mode) ? "후속 SQL" : "후속 분석",
+      mode: String(item.mode || "").startsWith("rewrite_sql") || String(item.mode || "").startsWith("new_sql") || item.mode === "query"
+        ? "후속 SQL"
+        : String(item.mode || "").includes("visualization")
+          ? "후속 시각화"
+          : item.mode === "transform"
+            ? "후속 재가공"
+            : "후속 분석",
       question: item.question || "",
       answer: item.answer || "",
       sql: item.sql || "",
       row_count: item.row_count ?? "",
       source: item.source || "",
-      index: index + 1,
     });
   });
-
   if (!entries.length) {
     historyBox.innerHTML = `<div class="history-empty">아직 대화 이력이 없습니다.</div>`;
     return;
   }
-
   historyBox.innerHTML = entries
     .map((entry) => {
       const sql = entry.sql ? `<pre>${escapeHtml(entry.sql)}</pre>` : `<span class="muted-text">SQL 없음</span>`;
       return `
         <section class="history-item">
-          <div class="history-head">
-            <strong>${escapeHtml(entry.mode)}</strong>
-            <span>${escapeHtml(entry.source || "")}</span>
-          </div>
+          <div class="history-head"><strong>${escapeHtml(entry.mode)}</strong><span>${escapeHtml(entry.source || "")}</span></div>
           <dl>
-            <dt>질문</dt>
-            <dd>${escapeHtml(entry.question || "")}</dd>
-            <dt>결과</dt>
-            <dd>${escapeHtml(String(entry.row_count || 0))}건</dd>
-            <dt>답변</dt>
-            <dd class="history-answer">${renderAnswerHtml(entry.answer || "응답 없음")}</dd>
-            <dt>SQL</dt>
-            <dd>${sql}</dd>
+            <dt>질문</dt><dd>${escapeHtml(entry.question || "")}</dd>
+            <dt>결과</dt><dd>${escapeHtml(String(entry.row_count || 0))}건</dd>
+            <dt>답변</dt><dd class="history-answer">${renderAnswerHtml(entry.answer || "응답 없음")}</dd>
+            <dt>SQL</dt><dd>${sql}</dd>
           </dl>
         </section>
       `;
@@ -804,27 +2225,86 @@ function renderHistory(data) {
     .join("");
 }
 
+function normalizeFileUrl(url) {
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  return apiUrl(url);
+}
+
+async function copyText(value, successMessage = "클립보드에 복사했습니다.") {
+  const text = String(value || "");
+  if (!text) {
+    showToast("복사할 내용이 없습니다.");
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const fallback = document.createElement("textarea");
+      fallback.value = text;
+      fallback.setAttribute("readonly", "");
+      fallback.style.position = "fixed";
+      fallback.style.opacity = "0";
+      document.body.appendChild(fallback);
+      fallback.select();
+      const copied = document.execCommand("copy");
+      fallback.remove();
+      if (!copied) throw new Error("copy failed");
+    }
+    showToast(successMessage);
+  } catch {
+    showToast("복사하지 못했습니다. 브라우저 권한을 확인해주세요.");
+  }
+}
+
+function resultTableAsTsv() {
+  const data = state.lastResultData;
+  if (!data?.columns?.length || !data?.rows?.length) return "";
+  const clean = (value) => String(value ?? "").replace(/[\t\r\n]+/g, " ");
+  return [data.columns, ...data.rows]
+    .map((row) => row.map(clean).join("\t"))
+    .join("\n");
+}
+
 function renderDownloads(files) {
   if (!files?.length) return;
   const html = files
-    .map(
-      (file) =>
-        `<a class="download-link" href="${file.url}" target="_blank" rel="noopener">${escapeHtml(
-          file.kind ? `${file.kind.toUpperCase()} · ${file.filename}` : file.filename,
-        )}</a>`,
-    )
+    .map((file) => {
+      const label = file.kind === "text" ? "TXT" : file.kind?.toUpperCase();
+      const href = normalizeFileUrl(file.url);
+      return `<a class="download-link" href="${escapeHtml(href)}" download="${escapeHtml(file.filename || "")}">${escapeHtml(
+        label ? `${label} · ${file.filename}` : file.filename,
+      )}</a>`;
+    })
     .join("");
   downloadList.insertAdjacentHTML("afterbegin", html);
 }
 
+function triggerDownloads(files) {
+  if (!files?.length) return;
+  files.forEach((file, index) => {
+    window.setTimeout(() => {
+      const link = document.createElement("a");
+      link.href = normalizeFileUrl(file.url);
+      link.download = file.filename || "";
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }, index * 250);
+  });
+}
+
 function renderSuggestions(suggestions) {
+  state.recommendedQuestions = normalizedQuestions(suggestions);
+  renderPromptSuggestionContent();
   suggestionList.innerHTML = "";
-  if (!suggestions?.length || !state.lastResultId || !state.canFollowup) {
+  if (!state.recommendedQuestions.length || !state.lastResultId || !state.canFollowup) {
     followupBox.classList.add("hidden");
     return;
   }
-
-  suggestions.forEach((item) => {
+  state.recommendedQuestions.forEach((item) => {
     const button = document.createElement("button");
     button.className = "suggestion";
     button.type = "button";
@@ -837,20 +2317,31 @@ function renderSuggestions(suggestions) {
 }
 
 function renderResult(data, context = {}) {
+  state.retryAction = null;
+  state.failedRequest = null;
   state.lastResultId = data.result_id;
   state.canFollowup = Boolean(data.columns?.length && data.rows?.length);
+  state.recommendedQuestions = normalizedQuestions(data.suggestions);
+  resetPromptSuggestionsDismissal();
   if (data.session_id) state.sessionId = data.session_id;
   state.continuation = null;
-  questionInput.placeholder = "질문을 입력하세요";
+  state.queryMode = context.mode === "followup" && state.canFollowup ? "followup" : "new";
   queryPanel.classList.remove("awaiting-param");
-  submitBtn.textContent = "전송";
+  renderPromptSuggestionContent();
+  syncQueryModeUi();
   finishProgress();
   closeParamDialog();
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
-  setExportEnabled(true);
+  setInspectorHasData(true);
+  setExportEnabled(Boolean(data.result_id) && !data.error);
+  if (data.error) {
+    showInlineError(data.error, "조회 중 확인 필요", false);
+  } else {
+    clearInlineError();
+  }
 
-  sourceLabel.textContent = data.source || data.question_type || "";
+  sourceLabel.textContent = data.error ? "오류" : data.source || data.question_type || "분석 완료";
   renderBadges(data);
   if (data.messages?.length) {
     state.conversation = rebuildConversationFromResult(data);
@@ -862,11 +2353,23 @@ function renderResult(data, context = {}) {
   } else {
     state.conversation = rebuildConversationFromResult(data);
   }
+  const latestUserMessage = [...state.conversation].reverse().find((message) => message.role === "user");
+  state.lastResultSummary = {
+    question: latestUserMessage?.text || data.question || context.question || state.pendingQuestion || "직전 조회 결과",
+    rowCount: Array.isArray(data.rows) ? data.rows.length : 0,
+    source: data.source || data.question_type || "",
+  };
+  state.lastResultData = data.columns?.length && data.rows?.length
+    ? { columns: data.columns, rows: data.rows, sql: data.sql || "" }
+    : null;
   renderConversation();
   sqlBox.textContent = data.sql || "실행 SQL이 없습니다.";
+  copySqlBtn.disabled = !data.sql;
   renderHistory(data);
+  renderResultMeta(data);
   renderCompactSummary(data.columns, data.rows);
   renderTable(data.columns, data.rows);
+  renderChart(data.chart);
   renderSuggestions(data.suggestions);
   loadSessions();
 
@@ -874,14 +2377,15 @@ function renderResult(data, context = {}) {
   excelBox.innerHTML = "";
   if (data.excel_file) {
     excelBox.classList.remove("hidden");
-    excelBox.innerHTML = `<a class="download-link" href="${data.excel_file.url}" target="_blank" rel="noopener">${escapeHtml(
+    const href = normalizeFileUrl(data.excel_file.url);
+    excelBox.innerHTML = `<a class="download-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(
       data.excel_file.filename,
     )}</a>`;
     renderDownloads([{ ...data.excel_file, kind: "excel" }]);
   }
 }
 
-async function submitFollowup(question) {
+async function submitFollowup(question, options = {}) {
   const followupQuestion = String(question || followupInput.value || "").trim();
   if (!followupQuestion) {
     showToast("후속 질문을 입력해주세요.");
@@ -892,95 +2396,230 @@ async function submitFollowup(question) {
     showToast("먼저 조회 결과가 있는 질문을 실행해주세요.");
     return;
   }
-
+  if (state.isBusy) return;
+  setBusy(true);
   setFollowupBusy(true);
+  if (state.llmReady === false) {
+    await loadHealth();
+  }
+  if (state.llmReady === false) {
+    const message = llmUnavailableMessage();
+    state.failedRequest = { kind: "followup", question: followupQuestion };
+    state.retryAction = () => submitFollowup(followupQuestion, options);
+    showInlineError(message, "모델 연결 오류");
+    showToast("모델 서버 확인 필요");
+    setBusy(false);
+    setFollowupBusy(false);
+    return;
+  }
+
+  state.pendingQuestion = followupQuestion;
+  state.retryAction = null;
+  clearInlineError();
+  const request = beginActiveRequest("followup", followupQuestion, options.restoreTarget || "followup");
   startProgress([], false, followupProgressLabels);
+  let receivedTerminalEvent = false;
   try {
     await streamApi(
-      "api/followup/stream",
-      {
+      WEBAPP_QUERY_STREAM_PATH,
+      webappQueryPayload({
         result_id: state.lastResultId,
-        question: followupQuestion,
+        query: followupQuestion,
         session_id: state.sessionId,
-      },
+      }),
       (eventName, data) => {
-        if (eventName === "progress") {
-          renderProgressEvent(data);
-        } else if (eventName === "result") {
-          renderResult(data, { mode: "followup", question: followupQuestion });
+        if (isProgressEvent(eventName)) {
+          renderStreamProgress(eventName, data);
+        } else if (eventName === "result" || eventName === "done") {
+          receivedTerminalEvent = true;
+          const resultData = eventName === "done" ? data.data || data : data;
+          renderResult(resultData, { mode: "followup", question: followupQuestion });
         } else if (eventName === "error") {
+          receivedTerminalEvent = true;
           throw new Error(eventErrorMessage(data, "후속 질문 처리 중 오류가 발생했습니다."));
         }
       },
+      { headers: webappHeaders(), signal: request.controller.signal },
     );
+    if (!receivedTerminalEvent) {
+      throw new Error("후속 질문 응답이 완료되지 않았습니다. 서버 로그를 확인한 뒤 다시 시도해주세요.");
+    }
   } catch (error) {
-    stopProgress();
-    showToast(error.message);
+    if (request.cancelled || error?.name === "AbortError") {
+      restoreCancelledDraft(request);
+    } else {
+      stopProgress();
+      const message = friendlyErrorMessage(error, "후속 질문 처리 중 오류가 발생했습니다.");
+      state.failedRequest = { kind: "followup", question: followupQuestion };
+      state.retryAction = () => submitFollowup(followupQuestion, options);
+      showInlineError(message, "후속 질문 처리 오류");
+      showToast(message);
+    }
   } finally {
+    endActiveRequest(request);
+    setBusy(false);
     setFollowupBusy(false);
+    loadSessions();
   }
 }
 
 async function submitQuestion(payload) {
+  if (state.isBusy) return;
   setBusy(true);
-  startProgress();
-  try {
-    await streamApi("api/query/stream", { session_id: state.sessionId, ...payload }, (eventName, data) => {
-      if (eventName === "progress") {
-        renderProgressEvent(data);
-      } else if (eventName === "result") {
-        if (data.status === "requires_params") {
-          renderMissingParams(data);
-        } else {
-          renderResult(data, { mode: "query" });
-        }
-      } else if (eventName === "error") {
-        throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
-      }
-    });
-  } catch (error) {
-    stopProgress();
-    showToast(error.message);
-  } finally {
+  if (state.llmReady === false) {
+    await loadHealth();
+  }
+  if (state.llmReady === false) {
+    const message = llmUnavailableMessage();
+    state.failedRequest = { kind: "query", question: payload.question || state.pendingQuestion || "" };
+    state.retryAction = () => submitQuestion(payload);
+    showInlineError(message, "모델 연결 오류");
+    showToast("모델 서버 확인 필요");
     setBusy(false);
+    return;
+  }
+  state.retryAction = null;
+  clearInlineError();
+  const requestQuestion = payload.question || state.pendingQuestion || "";
+  const request = beginActiveRequest("query", requestQuestion, "composer");
+  startProgress([], !state.lastResultData);
+  let receivedTerminalEvent = false;
+  try {
+    await streamApi(
+      WEBAPP_QUERY_STREAM_PATH,
+      webappQueryPayload({ session_id: state.sessionId, ...payload }),
+      (eventName, data) => {
+        if (isProgressEvent(eventName)) {
+          renderStreamProgress(eventName, data);
+        } else if (eventName === "result" || eventName === "done") {
+          receivedTerminalEvent = true;
+          const resultData = eventName === "done" ? data.data || data : data;
+          if (resultData.status === "requires_params") {
+            renderMissingParams(resultData);
+          } else {
+            renderResult(resultData, { mode: "query" });
+          }
+        } else if (eventName === "parameter_required") {
+          receivedTerminalEvent = true;
+          renderMissingParams(data.data || data);
+        } else if (eventName === "error") {
+          receivedTerminalEvent = true;
+          throw new Error(eventErrorMessage(data, "질문 처리 중 오류가 발생했습니다."));
+        }
+      },
+      { headers: webappHeaders(), signal: request.controller.signal },
+    );
+    if (!receivedTerminalEvent) {
+      throw new Error("질문 응답이 완료되지 않았습니다. 서버 로그를 확인한 뒤 다시 시도해주세요.");
+    }
+  } catch (error) {
+    if (request.cancelled || error?.name === "AbortError") {
+      restoreCancelledDraft(request);
+    } else {
+      stopProgress();
+      const message = friendlyErrorMessage(error, "질문 처리 중 오류가 발생했습니다.");
+      state.failedRequest = { kind: "query", question: requestQuestion };
+      state.retryAction = () => submitQuestion(payload);
+      showInlineError(message, "질문 처리 오류");
+      showToast(message);
+    }
+  } finally {
+    endActiveRequest(request);
+    setBusy(false);
+    loadSessions();
   }
 }
 
-submitBtn.addEventListener("click", () => {
+function handleSubmit() {
   const question = questionInput.value.trim();
   if (!question) {
     showToast(state.continuation ? "추가 정보를 입력해주세요." : "질문을 입력해주세요.");
     questionInput.focus();
+    showPromptSuggestions();
     return;
   }
+  hidePromptSuggestions();
   downloadList.innerHTML = "";
   questionInput.value = "";
+  autoGrowInput();
   if (state.continuation) {
-    const naturalInput = question;
     submitQuestion({
       question: state.continuation.question || state.pendingQuestion || "추가 입력",
       session_id: state.sessionId,
-      params: { _natural_input: naturalInput },
+      params: { _natural_input: question },
       continuation: state.continuation,
     });
-  } else if (state.lastResultId && state.canFollowup) {
+  } else if (state.queryMode === "followup" && state.lastResultId && state.canFollowup) {
     state.pendingQuestion = question;
-    submitFollowup(question);
+    submitFollowup(question, { restoreTarget: "composer" });
   } else {
     state.pendingQuestion = question;
     submitQuestion({ question, session_id: state.sessionId });
   }
+}
+
+submitBtn.addEventListener("click", handleSubmit);
+cancelRequestBtn.addEventListener("click", cancelActiveRequest);
+
+retryBtn.addEventListener("click", () => {
+  const retry = state.retryAction;
+  if (typeof retry !== "function" || state.isBusy) return;
+  state.retryAction = null;
+  clearInlineError();
+  retry();
 });
 
+editQuestionBtn.addEventListener("click", () => {
+  const failedRequest = state.failedRequest;
+  const draft = failedRequest?.question || state.pendingQuestion;
+  if (failedRequest?.kind === "followup" && canUseFollowupMode()) {
+    setQueryMode("followup");
+  }
+  if (draft) {
+    questionInput.value = draft;
+    autoGrowInput();
+    updatePromptCoach();
+  }
+  clearInlineError();
+  state.failedRequest = null;
+  questionInput.focus();
+});
+
+questionInput.addEventListener("input", () => {
+  autoGrowInput();
+  updatePromptCoach();
+});
+questionInput.addEventListener("focus", showPromptSuggestions);
+questionInput.addEventListener("click", showPromptSuggestions);
+
 questionInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    submitBtn.click();
+  if (event.key === "Escape") {
+    hidePromptSuggestions();
     return;
   }
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-    submitBtn.click();
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    handleSubmit();
   }
+});
+
+hideSuggestionsBtn?.addEventListener("click", (event) => {
+  event.preventDefault();
+  hidePromptSuggestions({ dismiss: true });
+  questionInput.focus();
+});
+
+document.addEventListener("click", (event) => {
+  const exampleButton = event.target.closest("[data-example]");
+  if (!exampleButton) return;
+  chooseExample(exampleButton.dataset.example || exampleButton.textContent || "");
+});
+
+answerBox.addEventListener("click", (event) => {
+  const copyButton = event.target.closest("[data-copy-message]");
+  if (!copyButton) return;
+  const message = state.conversation[Number(copyButton.dataset.copyMessage)];
+  copyText(message?.text || "", "메시지를 복사했습니다.");
 });
 
 paramForm.addEventListener("submit", (event) => {
@@ -989,6 +2628,11 @@ paramForm.addEventListener("submit", (event) => {
   new FormData(paramForm).forEach((value, key) => {
     if (String(value).trim()) params[key] = String(value).trim();
   });
+  if (!Object.keys(params).length) {
+    showToast("필요한 값을 입력하거나 질문창에 이어서 적어주세요.");
+    paramForm.querySelector("input")?.focus();
+    return;
+  }
   submitQuestion({
     question: state.pendingQuestion || questionInput.value.trim(),
     session_id: state.sessionId,
@@ -997,8 +2641,18 @@ paramForm.addEventListener("submit", (event) => {
   });
 });
 
+savedQueryForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  runSavedQuery();
+});
+
 cancelParamsBtn.addEventListener("click", () => {
   closeParamDialog();
+  questionInput.focus();
+});
+
+cancelSavedQueryBtn.addEventListener("click", () => {
+  closeSavedQueryDialog();
   questionInput.focus();
 });
 
@@ -1009,10 +2663,45 @@ paramPanel.addEventListener("click", (event) => {
   }
 });
 
+savedQueryPanel.addEventListener("click", (event) => {
+  if (event.target === savedQueryPanel) {
+    closeSavedQueryDialog();
+    questionInput.focus();
+  }
+});
+
 document.addEventListener("keydown", (event) => {
+  const activeModal = !paramPanel.classList.contains("hidden")
+    ? paramPanel
+    : !savedQueryPanel.classList.contains("hidden")
+      ? savedQueryPanel
+      : appEl.classList.contains("inspector-mobile-open")
+        ? inspector
+        : null;
+  if (event.key === "Tab" && activeModal) {
+    const focusable = Array.from(
+      activeModal.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'),
+    ).filter((element) => element.getClientRects().length > 0);
+    if (focusable.length) {
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
   if (event.key === "Escape" && !paramPanel.classList.contains("hidden")) {
     closeParamDialog();
     questionInput.focus();
+  } else if (event.key === "Escape" && !savedQueryPanel.classList.contains("hidden")) {
+    closeSavedQueryDialog();
+    questionInput.focus();
+  } else if (event.key === "Escape" && appEl.classList.contains("inspector-mobile-open")) {
+    closeCompactInspector({ restoreFocus: true });
   }
 });
 
@@ -1025,44 +2714,138 @@ followupInput.addEventListener("keydown", (event) => {
   }
 });
 
+clearContextBtn.addEventListener("click", () => {
+  setQueryMode("new");
+  questionInput.focus();
+  showToast("직전 결과 맥락을 해제했습니다. 새 조회로 실행합니다.");
+});
+
+copyTableBtn.addEventListener("click", () => copyText(resultTableAsTsv(), "표를 복사했습니다."));
+copySqlBtn.addEventListener("click", () => copyText(state.lastResultData?.sql || sqlBox.textContent, "SQL을 복사했습니다."));
+
+mobileMenuBtn.addEventListener("click", () => {
+  const expanded = rail.classList.toggle("menu-open");
+  mobileMenuBtn.setAttribute("aria-expanded", String(expanded));
+  mobileMenuBtn.textContent = expanded ? "세션·보고서 메뉴 닫기" : "세션·보고서 메뉴";
+});
+
 newSessionBtn.addEventListener("click", async () => {
   try {
     await createSession();
     questionInput.value = "";
-    answerBox.textContent = "";
-    sqlBox.textContent = "";
-    historyBox.innerHTML = "";
-    resultTable.innerHTML = "";
-    compactSummary.innerHTML = "";
-    compactSummary.classList.add("hidden");
-    followupInput.value = "";
-    suggestionList.innerHTML = "";
-    followupBox.classList.add("hidden");
+    autoGrowInput();
     stopProgress();
-    paramPanel.classList.add("hidden");
-    questionInput.placeholder = "질문을 입력하세요";
-    queryPanel.classList.remove("awaiting-param");
-    submitBtn.textContent = "전송";
-    resultPanel.classList.add("hidden");
-    emptyState.classList.remove("hidden");
-    setExportEnabled(false);
+    clearInlineError();
+    questionInput.focus();
   } catch (error) {
     showToast(error.message);
   }
+});
+
+saveQueryBtn.addEventListener("click", saveCurrentQuery);
+
+modeButtons.forEach((button) => {
+  button.addEventListener("click", () => setQueryMode(button.dataset.queryMode));
 });
 
 clearBtn.addEventListener("click", () => {
   newSessionBtn.click();
 });
 
+themeToggle?.addEventListener("click", () => {
+  setTheme(getTheme() === "light" ? "dark" : "light");
+});
+
+let chartResizeTimer = null;
+window.addEventListener("resize", () => {
+  window.clearTimeout(chartResizeTimer);
+  chartResizeTimer = window.setTimeout(() => {
+    if (state.lastChart) drawChart(state.lastChart);
+  }, 120);
+});
+
+const compactInspectorMedia = window.matchMedia("(max-width: 1240px)");
+
+function updateInspectorButton(expanded) {
+  inspectorToggle.setAttribute("aria-expanded", String(expanded));
+  inspectorToggle.setAttribute("aria-label", expanded ? "상세 패널 숨기기" : "상세 패널 열기");
+  inspectorToggle.title = expanded ? "상세 패널 숨기기" : "상세 패널 열기";
+}
+
+function closeCompactInspector({ restoreFocus = false } = {}) {
+  appEl.classList.remove("inspector-mobile-open");
+  inspector.removeAttribute("role");
+  inspector.removeAttribute("aria-modal");
+  updateInspectorButton(false);
+  if (restoreFocus) inspectorToggle.focus();
+}
+
+function syncInspectorViewport() {
+  if (compactInspectorMedia.matches) {
+    appEl.classList.remove("inspector-collapsed", "inspector-mobile-open");
+    inspector.removeAttribute("role");
+    inspector.removeAttribute("aria-modal");
+    updateInspectorButton(false);
+  } else {
+    appEl.classList.remove("inspector-mobile-open");
+    inspector.removeAttribute("role");
+    inspector.removeAttribute("aria-modal");
+    updateInspectorButton(!appEl.classList.contains("inspector-collapsed"));
+  }
+}
+
+inspectorToggle.addEventListener("click", () => {
+  if (compactInspectorMedia.matches) {
+    const expanded = appEl.classList.toggle("inspector-mobile-open");
+    if (expanded) {
+      inspector.setAttribute("role", "dialog");
+      inspector.setAttribute("aria-modal", "true");
+      inspector.setAttribute("aria-label", "조회 상세 정보");
+    } else {
+      inspector.removeAttribute("role");
+      inspector.removeAttribute("aria-modal");
+    }
+    updateInspectorButton(expanded);
+    if (expanded) $(".tab.active")?.focus();
+    return;
+  }
+  const collapsed = appEl.classList.toggle("inspector-collapsed");
+  updateInspectorButton(!collapsed);
+});
+
+inspectorClose.addEventListener("click", () => closeCompactInspector({ restoreFocus: true }));
+compactInspectorMedia.addEventListener?.("change", syncInspectorViewport);
+syncInspectorViewport();
+
 $$(".tab").forEach((button) => {
-  button.addEventListener("click", () => {
-    $$(".tab").forEach((tab) => tab.classList.remove("active"));
-    $$(".tab-page").forEach((page) => page.classList.remove("active"));
-    button.classList.add("active");
-    $(`#tab-${button.dataset.tab}`).classList.add("active");
+  button.addEventListener("click", () => activateInspectorTab(button));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = $$(".tab");
+    const current = tabs.indexOf(button);
+    let next = current;
+    if (event.key === "ArrowLeft") next = (current - 1 + tabs.length) % tabs.length;
+    if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = tabs.length - 1;
+    activateInspectorTab(tabs[next], true);
   });
 });
+
+function activateInspectorTab(button, focus = false) {
+  if (!button) return;
+  $$(".tab").forEach((tab) => {
+    const active = tab === button;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  $$(".tab-page").forEach((page) => page.classList.toggle("active", page.id === `tab-${button.dataset.tab}`));
+  if (focus) button.focus();
+}
+
+activateInspectorTab($(".tab.active"));
 
 $$("[data-export]").forEach((button) => {
   button.addEventListener("click", async () => {
@@ -1077,6 +2860,7 @@ $$("[data-export]").forEach((button) => {
         }),
       });
       renderDownloads(data.files);
+      triggerDownloads(data.files);
       showToast("보고서가 생성되었습니다.");
     } catch (error) {
       showToast(error.message);
@@ -1088,6 +2872,7 @@ $$("[data-export]").forEach((button) => {
 
 loadHealth();
 loadExamples();
+loadSavedQueries();
 createSession();
     </script>
   </body>

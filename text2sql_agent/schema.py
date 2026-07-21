@@ -1,5 +1,6 @@
 """Semantic schema loading, prompt context builders, and schema validation."""
 
+import functools
 import json
 import os
 import re
@@ -8,39 +9,162 @@ from decimal import Decimal
 import sqlparse
 import yaml
 
-from .config import SCHEMA_PATH
-from .db import _DANGEROUS_SQL_RE
-from .llm import _call_llm
+from .config import DB_SCHEMA, DB_SCHEMA_PREFIX, SCHEMA_PATH
+from .db import _validate_read_only_sql
+from .llm import _call_llm, _normalize_llm_text
+from .tools.verified_queries import load_external_verified_queries
+
+
+def _memoize_by_schema_identity(func):
+    """Cache a ``schema -> str`` summary builder keyed on the schema object identity.
+
+    The summary builders are pure functions of the (effectively immutable) loaded
+    schema, yet they are called on every graph node. Memoizing avoids rebuilding the
+    same large strings on each request. The cache holds a reference to the schema
+    object so its ``id`` cannot be reused by a different object while cached.
+    """
+    cache: dict[int, tuple[object, str]] = {}
+
+    @functools.wraps(func)
+    def wrapper(schema: dict, *args, **kwargs) -> str:
+        # Question/domain-scoped summaries must not accumulate an unbounded
+        # per-question cache.  Keep the fast identity cache only for the
+        # backwards-compatible, schema-only call form.
+        if args or kwargs:
+            return func(schema, *args, **kwargs)
+        key = id(schema)
+        hit = cache.get(key)
+        if hit is not None and hit[0] is schema:
+            return hit[1]
+        result = func(schema)
+        cache[key] = (schema, result)
+        return result
+
+    return wrapper
 
 # ---------------------------------------------------------------------------
 # 3. Semantic Layer 로더
 # ---------------------------------------------------------------------------
 
+_SENSITIVE_COLUMN_RE = re.compile(
+    r"(?:주민등록번호|고객고유번호|계좌번호|카드번호|이메일|전자주소|"
+    r"전화번호|휴대전화번호|휴대폰번호|상세주소|여권번호|운전면허번호|외국인등록번호)"
+)
+
+
+def _is_semantic_table_visible(table: dict) -> bool:
+    return str(table.get("semantic_visibility") or "default").lower() != "restricted"
+
+
+def _is_restricted_column(table: dict, column_name: object) -> bool:
+    name = str(column_name or "")
+    restricted = {str(value).lower() for value in table.get("restricted_columns", [])}
+    return name.lower() in restricted or bool(_SENSITIVE_COLUMN_RE.search(name))
+
+
+def _visible_columns(table: dict, section: str) -> list[dict]:
+    return [
+        column
+        for column in table.get(section, [])
+        if not _is_restricted_column(table, column.get("name"))
+    ]
+
+
+def _rewrite_schema_prefix(node):
+    """로드된 스키마 트리의 모든 문자열에서 'card_system.' prefix를 설정값으로 치환한다.
+
+    YAML 원본은 card_system. 으로 고정돼 있지만, 실제 실행 대상(PostgreSQL schema 또는
+    Athena Glue database)의 이름이 다를 수 있다. 메모리에 올린 스키마(physical_table,
+    verified query sql, sql_pattern 등)를 일괄 치환해 프롬프트·검증·실행을 일관시킨다.
+    """
+    if isinstance(node, dict):
+        return {key: _rewrite_schema_prefix(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_rewrite_schema_prefix(item) for item in node]
+    if isinstance(node, str) and "card_system." in node:
+        return node.replace("card_system.", DB_SCHEMA_PREFIX)
+    return node
+
+
+def _with_contract_compatibility(schema: dict) -> dict:
+    """Expose legacy contract keys in memory while YAML uses one compact source.
+
+    Older callers and quality checks still read ``llm_semantic_contract`` and
+    ``time_resolution_rules`` directly.  Deriving those aliases at load time
+    preserves that public surface without reintroducing duplicate YAML rules.
+    Prompt builders continue to prefer ``sql_generation_contract``.
+    """
+    contract = schema.get("sql_generation_contract")
+    if not isinstance(contract, dict) or not contract:
+        return schema
+    compatible = dict(schema)
+    compatible.setdefault(
+        "llm_semantic_contract",
+        {
+            "purpose": contract.get("purpose", "Athena SQL 생성 계약"),
+            "sql_output_rules": [
+                *contract.get("athena_rules", []),
+                *contract.get("grain_and_aggregation_rules", []),
+            ],
+            "evidence_priority": contract.get("evidence_order", []),
+            "ambiguity_policy": contract.get("ambiguity_rules", []),
+        },
+    )
+    compatible.setdefault(
+        "time_resolution_rules",
+        [
+            {"phrase": phrase, "resolve_to": resolution}
+            for phrase, resolution in (contract.get("time_resolution") or {}).items()
+        ],
+    )
+    compatible.setdefault("result_shape_defaults", contract.get("result_defaults", {}))
+    return compatible
+
+
 def load_semantic_layer(path: str | None = None) -> dict:
     if path is None:
         path = os.getenv("SEMANTIC_SCHEMA_PATH", str(SCHEMA_PATH))
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        schema = yaml.safe_load(f)
+    # 기본 스키마(card_system)와 다를 때만 치환 비용을 들인다.
+    if DB_SCHEMA != "card_system":
+        schema = _rewrite_schema_prefix(schema)
+    return _with_contract_compatibility(schema)
 
 
+@_memoize_by_schema_identity
 def build_table_summary(schema: dict) -> str:
     lines = []
     for t in schema.get("tables", []):
+        if not _is_semantic_table_visible(t):
+            continue
         name = t["name"]
         desc = t.get("description", "").strip().replace("\n", " ")
+        desc = _SENSITIVE_COLUMN_RE.sub("[민감정보]", desc)
+        for restricted_name in t.get("restricted_columns", []):
+            desc = desc.replace(str(restricted_name), "[제한컬럼]")
         grain = t.get("grain", "")
-        lines.append(f"- **{name}** ({t['physical_table']}): {desc} [grain: {grain}]")
-        dims = t.get("dimensions", [])
+        lines.append(f"- **{name}** ({t.get('physical_table', name)}): {desc} [grain: {grain}]")
+        dims = _visible_columns(t, "dimensions")
         if dims:
             dim_names = [d["name"] for d in dims[:8]]
             lines.append(f"  dimensions: {', '.join(dim_names)}" + (" ..." if len(dims) > 8 else ""))
-        measures = t.get("measures", [])
+        measures = _visible_columns(t, "measures")
         if measures:
             m_names = [m["name"] for m in measures[:6]]
             lines.append(f"  measures: {', '.join(m_names)}" + (" ..." if len(measures) > 6 else ""))
-        tds = t.get("time_dimensions", [])
+        tds = _visible_columns(t, "time_dimensions")
         if tds:
             lines.append(f"  time_dimensions: {', '.join(td['name'] for td in tds)}")
+        partition = t.get("athena_partition")
+        if isinstance(partition, dict) and partition.get("enabled") is not False:
+            keys = partition.get("keys") or []
+            key_names = [key if isinstance(key, str) else key.get("name", "") for key in keys]
+            key_names = [name for name in key_names if name]
+            if key_names:
+                source_time = partition.get("source_time_dimension", "")
+                source_note = f" from {source_time}" if source_time else ""
+                lines.append(f"  athena_partition: {', '.join(key_names)}{source_note}")
         filters = t.get("filters", [])
         if filters:
             f_strs = [fl["name"] + ": " + fl["expr"] for fl in filters]
@@ -49,27 +173,154 @@ def build_table_summary(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def build_metrics_summary(schema: dict) -> str:
+@_memoize_by_schema_identity
+def build_metrics_summary(
+    schema: dict,
+    question: str = "",
+    domain_name: str = "",
+    max_count: int = 8,
+) -> str:
+    """Return a bounded, canonical metric context.
+
+    ``metrics`` was a stale duplicate of ``canonical_metrics`` and sometimes
+    exposed a different formula for the same business term.  Canonical metrics
+    are now the only runtime source; callers may narrow them by question and/or
+    routed domain while the schema-only call remains backwards compatible.
+    """
+    metrics = list(schema.get("canonical_metrics", []))
+    if domain_name:
+        domain = _domain_by_name(schema).get(domain_name, {})
+        preferred = {str(name) for name in domain.get("preferred_metrics", [])}
+        metrics = [
+            metric
+            for metric in metrics
+            if metric.get("domain") == domain_name or str(metric.get("name") or "") in preferred
+        ]
+
+    if question:
+        scored = []
+        q_compact = _compact_text(question)
+        for position, metric in enumerate(metrics):
+            terms = [metric.get("name", ""), *metric.get("synonyms", [])]
+            exact = max(
+                (
+                    len(compact)
+                    for term in terms
+                    if (compact := _compact_text(term)) and len(compact) >= 2 and compact in q_compact
+                ),
+                default=0,
+            )
+            overlap, specific = _retrieval_overlap(
+                question,
+                _join_texts(
+                    metric.get("name"),
+                    metric.get("synonyms", []),
+                    metric.get("description"),
+                    metric.get("business_definition"),
+                    metric.get("source_table"),
+                ),
+            )
+            if exact or overlap >= 2 or specific:
+                scored.append((exact, overlap, -position, metric))
+        scored.sort(reverse=True, key=lambda item: item[:3])
+        metrics = [metric for _, _, _, metric in scored]
+
+    metrics = metrics[: max(0, max_count)]
+    if not metrics:
+        return "(질문과 직접 관련된 canonical metric 없음)"
+
     lines = []
-    for m in schema.get("metrics", []):
-        synonyms = ", ".join(m.get("synonyms", []))
-        lines.append(f"- **{m['name']}**: {m['description'].strip()}")
-        lines.append(f"  SQL: {m['sql'].strip()}")
-        lines.append(f"  source: {m['source_table']}, synonyms: [{synonyms}]")
-        lines.append("")
+    for metric in metrics:
+        name = str(metric.get("name") or "")
+        definition = str(
+            metric.get("business_definition")
+            or metric.get("description")
+            or "공식 지표"
+        ).strip()
+        expression = str(metric.get("expression") or "").strip()
+        source = str(metric.get("source_table") or "")
+        unit = str(metric.get("unit") or "")
+        time_dimension = str(metric.get("default_time_dimension") or "")
+        lines.append(f"- **{name}**: {definition}")
+        if expression:
+            lines.append(f"  expression: {expression}")
+        metadata = [value for value in (f"table={source}" if source else "", f"time={time_dimension}" if time_dimension else "", f"unit={unit}" if unit else "") if value]
+        if metadata:
+            lines.append("  " + ", ".join(metadata))
+        if metric.get("required_filters"):
+            lines.append("  required_filters: " + "; ".join(str(value) for value in metric.get("required_filters", [])))
+        if metric.get("aggregation_behavior"):
+            lines.append(f"  aggregation_behavior: {metric.get('aggregation_behavior')}")
+        if metric.get("synonyms"):
+            lines.append("  synonyms: [" + ", ".join(str(value) for value in metric.get("synonyms", [])) + "]")
+        for key, label in (
+            ("result_grain", "result_grain"),
+            ("window_expression", "window_expression"),
+            ("numerator_expression", "numerator_expression"),
+            ("denominator_expression", "denominator_expression"),
+            ("time_policy", "time_policy"),
+            ("name_filter", "name_filter"),
+            ("semantic_cautions", "semantic_cautions"),
+            ("support_status", "support_status"),
+        ):
+            value = metric.get(key)
+            if value in (None, "", [], {}):
+                continue
+            rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+            lines.append(f"  {label}: {rendered}")
     return "\n".join(lines)
 
 
-def build_glossary_summary(schema: dict) -> str:
+@_memoize_by_schema_identity
+def build_glossary_summary(
+    schema: dict,
+    question: str = "",
+    domain_name: str = "",
+    max_count: int = 6,
+) -> str:
+    entries = []
+    for position, item in enumerate(schema.get("glossary", [])):
+        domains = item.get("domains", item.get("domain", []))
+        if isinstance(domains, str):
+            domains = [domains]
+        if domain_name and domains and domain_name not in domains:
+            continue
+        if not question:
+            entries.append((0, 0, -position, item))
+            continue
+        terms = [item.get("term", ""), *item.get("aliases", [])]
+        q_compact = _compact_text(question)
+        exact = max(
+            (
+                len(compact)
+                for term in terms
+                if (compact := _compact_text(term)) and len(compact) >= 2 and compact in q_compact
+            ),
+            default=0,
+        )
+        overlap, specific = _retrieval_overlap(
+            question,
+            _join_texts(
+                item.get("term"),
+                item.get("aliases", []),
+                item.get("canonical"),
+                item.get("description"),
+                item.get("sql_hint"),
+            ),
+        )
+        if exact or overlap >= 2 or specific:
+            entries.append((exact, overlap, -position, item))
+    entries.sort(reverse=True, key=lambda value: value[:3])
+
     lines = []
-    for g in schema.get("glossary", []):
+    for _, _, _, g in entries[: max(0, max_count)]:
         aliases = ", ".join(g.get("aliases", []))
         lines.append(f"- **{g['term']}** ({g['canonical']}): {g['description']}")
         if aliases:
             lines.append(f"  aliases: [{aliases}]")
         if g.get("sql_hint"):
             lines.append(f"  sql_hint: {g['sql_hint']}")
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "(질문과 직접 관련된 용어 없음)"
 
 
 _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_]+")
@@ -81,6 +332,67 @@ def _tokenize_text(text: str) -> set[str]:
         if len(token) >= 2:
             tokens.add(token)
     return tokens
+
+
+_GENERIC_RETRIEVAL_TOKENS = {
+    "가맹점", "거래", "고객", "기준", "기업", "금액", "기간", "매출", "분석", "보여줘",
+    "사용", "상태", "알려줘", "월별", "이용", "전체", "조회", "특정", "현황", "회원", "카드",
+}
+
+
+def _compact_text(value: object) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣_]", "", str(value or "").lower())
+
+
+def _retrieval_overlap(question: str, evidence: str) -> tuple[int, bool]:
+    """Return semantic token overlap and whether it contains a specific hit.
+
+    One generic token such as ``기업`` or ``카드`` must not retrieve a long,
+    unrelated SQL example.  A single non-generic business term remains useful
+    for concise requests such as ``연체 알려줘``.
+    """
+    evidence_lower = str(evidence or "").lower()
+    question_tokens = _tokenize_text(question)
+    matched = {token for token in question_tokens if token in evidence_lower}
+    specific = any(token not in _GENERIC_RETRIEVAL_TOKENS and len(token) >= 2 for token in matched)
+    return len(matched), specific
+
+
+def _normalized_table_name(value: object) -> str:
+    return str(value or "").strip().rsplit(".", 1)[-1].lower()
+
+
+def _domain_table_names(schema: dict, domain_name: str) -> set[str]:
+    if not domain_name:
+        return set()
+    domains = {str(item.get("name") or ""): item for item in schema.get("canonical_domains", [])}
+    domain = domains.get(domain_name, {})
+    entity_index = {str(item.get("name") or ""): item for item in schema.get("semantic_entities", [])}
+    names = {_normalized_table_name(domain.get("default_fact_table"))}
+    for entity_name in domain.get("primary_entities", []):
+        names.add(_normalized_table_name(entity_index.get(str(entity_name), {}).get("physical_table")))
+    preferred = {str(name) for name in domain.get("preferred_metrics", [])}
+    for metric in schema.get("canonical_metrics", []):
+        if metric.get("domain") == domain_name or str(metric.get("name") or "") in preferred:
+            names.add(_normalized_table_name(metric.get("source_table")))
+    return {name for name in names if name}
+
+
+def _entry_matches_domain(
+    schema: dict,
+    entry: dict,
+    domain_name: str,
+    table_names: set[str],
+) -> bool:
+    if not domain_name:
+        return True
+    domains = entry.get("domains", entry.get("domain", []))
+    if isinstance(domains, str):
+        domains = [domains]
+    if domains:
+        return domain_name in domains
+    domain_tables = _domain_table_names(schema, domain_name)
+    return not table_names or bool(domain_tables.intersection(table_names))
 
 
 def _score_by_question(question: str, *texts: object) -> int:
@@ -97,7 +409,7 @@ def _score_by_question(question: str, *texts: object) -> int:
 
 def _format_query_reference(ref: dict) -> str:
     lines = [f"- **{ref.get('intent', '')}**"]
-    says = ", ".join(ref.get("when_user_says", [])[:4])
+    says = ", ".join(ref.get("when_user_says", [])[:3])
     if says:
         lines.append(f"  user_says: [{says}]")
     if ref.get("primary_table"):
@@ -106,71 +418,227 @@ def _format_query_reference(ref: dict) -> str:
         lines.append(f"  join_tables: {', '.join(ref.get('join_tables', []))}")
     if ref.get("join_rule"):
         lines.append(f"  join_rule: {ref['join_rule']}")
+    if ref.get("verified_query"):
+        lines.append(f"  verified_query: {ref['verified_query']}")
+    if ref.get("source_lineage"):
+        lines.append("  source_lineage: " + json.dumps(ref.get("source_lineage"), ensure_ascii=False))
     cols = ref.get("recommended_columns", {})
     if cols:
         lines.append("  column_hints:")
-        for key, value in cols.items():
+        for key, value in list(cols.items())[:6]:
             lines.append(f"    - {key}: {value}")
+    required_parameters = ref.get("required_parameters", [])
+    if required_parameters:
+        if isinstance(required_parameters, dict):
+            required_parameters = list(required_parameters)
+        lines.append("  required_parameters: " + ", ".join(str(value) for value in required_parameters))
     rules = ref.get("rules", [])
     if rules:
         lines.append("  rules:")
-        for rule in rules[:5]:
+        for rule in rules[:4]:
             lines.append(f"    - {rule}")
     if ref.get("sql_pattern"):
         lines.append(f"  sql_pattern:\n{ref['sql_pattern'].strip()}")
     return "\n".join(lines)
 
 
-def find_relevant_references(schema: dict, question: str, max_count: int = 4) -> str:
+def _semantic_query_contract_score(question: str, contract: dict) -> int:
+    """Score a compositional semantic contract using declarative phrase groups."""
+    compact = _compact_text(question)
+    match = contract.get("match") if isinstance(contract.get("match"), dict) else {}
+
+    def phrase_hit(value: object) -> bool:
+        normalized = _compact_text(value)
+        return bool(normalized and len(normalized) >= 2 and normalized in compact)
+
+    excluded = match.get("excluded", [])
+    if any(phrase_hit(value) for value in excluded):
+        return 0
+
+    required = match.get("required", [])
+    if not required:
+        return 0
+    score = 0
+    for group in required:
+        phrases = group if isinstance(group, list) else [group]
+        hits = [value for value in phrases if phrase_hit(value)]
+        if not hits:
+            return 0
+        score += 12 + max(len(_compact_text(value)) for value in hits)
+
+    for group in match.get("optional", []):
+        phrases = group if isinstance(group, list) else [group]
+        hits = [value for value in phrases if phrase_hit(value)]
+        if hits:
+            score += 3 + max(len(_compact_text(value)) for value in hits)
+
+    for example in contract.get("examples", []):
+        normalized = _compact_text(example)
+        if len(normalized) >= 4 and normalized in compact:
+            score += 30 + len(normalized)
+    return score
+
+
+def semantic_query_contract_candidates(
+    schema: dict,
+    question: str,
+    domain_name: str = "",
+    max_count: int = 2,
+    *,
+    routing_only: bool = False,
+) -> list[dict]:
+    """Return matched reusable query contracts, strongest first."""
+    scored: list[tuple[int, int, dict]] = []
+    for position, contract in enumerate(schema.get("semantic_query_contracts", [])):
+        domain = str(contract.get("domain") or "")
+        if domain_name and domain and domain != domain_name:
+            continue
+        if routing_only and str(contract.get("routing_strength") or "medium").lower() != "high":
+            continue
+        score = _semantic_query_contract_score(question, contract)
+        if score > 0:
+            scored.append((score, -position, contract))
+    scored.sort(key=lambda item: item[:2], reverse=True)
+    return [contract for _, _, contract in scored[: max(0, max_count)]]
+
+
+def _format_semantic_query_contract(contract: dict) -> str:
+    lines = [f"- **{contract.get('name', '')}** (domain={contract.get('domain', '')})"]
+    if contract.get("description"):
+        lines.append(f"  definition: {contract.get('description')}")
+    if contract.get("support_status"):
+        lines.append(f"  support_status: {contract.get('support_status')}")
+    fields = (
+        ("source_tables", "source_tables"),
+        ("metric_names", "canonical_metrics"),
+        ("result_grain", "result_grain"),
+        ("dimensions", "dimensions"),
+        ("entity_binding", "entity_binding"),
+        ("name_filter", "name_filter"),
+        ("time_policy", "time_policy"),
+        ("deduplication", "deduplication"),
+        ("filters", "filters"),
+        ("calculation", "calculation"),
+        ("result_fields", "result_fields"),
+        ("ambiguity_policy", "ambiguity_policy"),
+    )
+    for key, label in fields:
+        value = contract.get(key)
+        if value in (None, "", [], {}):
+            continue
+        rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+        lines.append(f"  {label}: {rendered}")
+    return "\n".join(lines)
+
+
+def find_relevant_semantic_query_contracts(
+    schema: dict,
+    question: str,
+    domain_name: str = "",
+    max_count: int = 2,
+) -> str:
+    contracts = semantic_query_contract_candidates(
+        schema,
+        question,
+        domain_name=domain_name,
+        max_count=max_count,
+    )
+    if not contracts:
+        return "(질문과 직접 관련된 semantic query contract 없음)"
+    return "\n\n".join(_format_semantic_query_contract(contract) for contract in contracts)
+
+
+def find_relevant_references(
+    schema: dict,
+    question: str,
+    max_count: int = 2,
+    domain_name: str = "",
+) -> str:
     refs = schema.get("query_references", [])
     if not refs:
         return "(관련 reference 없음)"
     scored = []
-    q_lower = question.lower()
-    for ref in refs:
-        score = _score_by_question(
-            question,
-            ref.get("intent", ""),
-            " ".join(ref.get("when_user_says", [])),
-            ref.get("primary_table", ""),
-            " ".join(ref.get("join_tables", [])),
-            json.dumps(ref.get("recommended_columns", {}), ensure_ascii=False),
-            " ".join(ref.get("rules", [])),
-        )
+    q_compact = _compact_text(question)
+    for position, ref in enumerate(refs):
+        ref_tables = {
+            _normalized_table_name(ref.get("primary_table")),
+            *(_normalized_table_name(value) for value in ref.get("join_tables", [])),
+        }
+        ref_tables.discard("")
+        if not _entry_matches_domain(schema, ref, domain_name, ref_tables):
+            continue
+        exact_length = 0
         for phrase in ref.get("when_user_says", []):
-            phrase_lower = str(phrase).lower().strip()
-            if phrase_lower and phrase_lower in q_lower:
-                score += 4
-        if ref.get("primary_table") and ref["primary_table"].lower() in q_lower:
-            score += 3
-        scored.append((score, ref))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    top = [ref for score, ref in scored[:max_count] if score > 0]
+            phrase_compact = _compact_text(phrase)
+            if len(phrase_compact) >= 4 and phrase_compact in q_compact:
+                exact_length = max(exact_length, len(phrase_compact))
+        evidence = _join_texts(
+            ref.get("intent"),
+            ref.get("when_user_says", []),
+            ref.get("recommended_columns", {}),
+            ref.get("rules", []),
+            ref.get("join_rule"),
+        )
+        overlap, specific = _retrieval_overlap(question, evidence)
+        if exact_length or overlap >= 2 or specific:
+            scored.append((exact_length, overlap, -position, ref))
+    scored.sort(key=lambda item: item[:3], reverse=True)
+    # A curated normalized phrase is authoritative and should not be diluted by
+    # generic references sharing words such as "기업", "회원", or "카드".
+    exact = [ref for exact_length, _, _, ref in scored if exact_length > 0]
+    top = exact[:max_count] if exact else [ref for _, _, _, ref in scored[:max_count]]
     if not top:
-        top = [ref for _, ref in scored[: min(2, len(scored))]]
+        return "(질문과 직접 관련된 reference 없음)"
     return "\n\n".join(_format_query_reference(ref) for ref in top)
 
 
-def find_relevant_queries(schema: dict, question: str, max_count: int = 3) -> str:
+def _sql_table_names(sql: str) -> set[str]:
+    return {
+        _normalized_table_name(match.group(1))
+        for match in re.finditer(
+            r'\b(?:FROM|JOIN)\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+")\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?',
+            str(sql or ""),
+            flags=re.IGNORECASE,
+        )
+    }
+
+
+def find_relevant_queries(
+    schema: dict,
+    question: str,
+    max_count: int = 1,
+    domain_name: str = "",
+) -> str:
     vqs = schema.get("verified_queries", [])
     scored = []
-    q_lower = question.lower()
-    for vq in vqs:
-        score = _score_by_question(
-            question,
-            vq.get("question", ""),
-            vq.get("description", ""),
-            " ".join(vq.get("tags", [])),
-            json.dumps(vq.get("parameters", {}), ensure_ascii=False),
+    q_compact = _compact_text(question)
+    for position, vq in enumerate(vqs):
+        if not _entry_matches_domain(schema, vq, domain_name, _sql_table_names(vq.get("sql", ""))):
+            continue
+        vq_compact = _compact_text(vq.get("question"))
+        exact_length = len(vq_compact) if len(vq_compact) >= 4 and vq_compact in q_compact else 0
+        evidence = _join_texts(
+            vq.get("name"),
+            vq.get("question"),
+            vq.get("description"),
+            vq.get("tags", []),
+            vq.get("parameters", {}),
         )
-        for tag in (t.lower() for t in vq.get("tags", [])):
-            if tag in q_lower:
-                score += 3
-        scored.append((score, vq))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top = [vq for s, vq in scored[:max_count] if s > 0]
+        overlap, specific = _retrieval_overlap(question, evidence)
+        # Tags are curated intent labels; matching several is stronger than a
+        # shared generic word inside a long SQL example.
+        tag_hits = sum(
+            1
+            for tag in vq.get("tags", [])
+            if len(_compact_text(tag)) >= 2 and _compact_text(tag) in q_compact
+        )
+        if exact_length or overlap >= 2 or tag_hits >= 2 or (specific and tag_hits >= 1):
+            scored.append((exact_length, tag_hits, overlap, -position, vq))
+    scored.sort(key=lambda item: item[:4], reverse=True)
+    exact = [vq for exact_length, _, _, _, vq in scored if exact_length > 0]
+    top = exact[:max_count] if exact else [vq for _, _, _, _, vq in scored[:max_count]]
     if not top:
-        top = [vq for _, vq in scored[:2]]
+        return "(질문과 직접 관련된 verified query 없음)"
     lines = []
     for vq in top:
         lines.append(f"Q: {vq['question']}")
@@ -209,7 +677,34 @@ def _canonical_metrics_by_domain(schema: dict) -> dict[str, list[dict]]:
     return grouped
 
 
+@_memoize_by_schema_identity
 def build_semantic_contract_summary(schema: dict) -> str:
+    preferred_contract = schema.get("sql_generation_contract")
+    if isinstance(preferred_contract, dict) and preferred_contract:
+        lines: list[str] = []
+
+        def append_value(label: str, value: object, indent: int = 0) -> None:
+            prefix = "  " * indent
+            readable_label = str(label).replace("_", " ")
+            if isinstance(value, dict):
+                lines.append(f"{prefix}{readable_label}:")
+                for key, nested in value.items():
+                    append_value(str(key), nested, indent + 1)
+                return
+            if isinstance(value, list):
+                lines.append(f"{prefix}{readable_label}:")
+                for item in value[:12]:
+                    if isinstance(item, dict):
+                        lines.append(f"{prefix}  - {json.dumps(item, ensure_ascii=False)}")
+                    else:
+                        lines.append(f"{prefix}  - {item}")
+                return
+            lines.append(f"{prefix}{readable_label}: {value}")
+
+        for key, value in preferred_contract.items():
+            append_value(str(key), value)
+        return "\n".join(lines)
+
     contract = schema.get("llm_semantic_contract", {})
     lines = []
     if contract.get("purpose"):
@@ -241,21 +736,67 @@ def build_semantic_contract_summary(schema: dict) -> str:
     return "\n".join(lines) if lines else "(llm_semantic_contract 없음)"
 
 
+def semantic_join_paths_for_tables(
+    schema: dict,
+    table_names: list[str] | set[str] | tuple[str, ...] | None = None,
+    *,
+    require_both: bool = True,
+) -> list[dict]:
+    """Return canonical safe paths enriched with physical table endpoints.
+
+    Newer paths may declare ``from_table``/``to_table`` directly.  Existing
+    paths continue to resolve those values through their semantic entities.
+    When table names are supplied, callers can request paths whose endpoints
+    are both selected (SQL detail) or either selected (catalog neighbour
+    expansion) without consulting the legacy ``relationships`` section.
+    """
+    entity_index = _entity_by_name(schema)
+    selected = {_normalized_table_name(name) for name in (table_names or []) if name}
+    results = []
+    for raw_path in schema.get("semantic_join_graph", {}).get("safe_paths", []):
+        path = dict(raw_path)
+        from_table = path.get("from_table") or entity_index.get(path.get("from_entity", ""), {}).get("physical_table", "")
+        to_table = path.get("to_table") or entity_index.get(path.get("to_entity", ""), {}).get("physical_table", "")
+        from_table = _normalized_table_name(from_table)
+        to_table = _normalized_table_name(to_table)
+        if not from_table or not to_table:
+            continue
+        path["from_table"] = from_table
+        path["to_table"] = to_table
+        if selected:
+            endpoints = {from_table, to_table}
+            matches = selected.intersection(endpoints)
+            if require_both and not endpoints.issubset(selected):
+                continue
+            if not require_both and not matches:
+                continue
+        results.append(path)
+    return results
+
+
 def _semantic_join_paths_for_domain(schema: dict, domain_name: str, question: str = "", max_paths: int = 8) -> list[dict]:
     domain = _domain_by_name(schema).get(domain_name, {})
     primary_entities = set(domain.get("primary_entities", []))
-    if not primary_entities:
+    domain_tables = _domain_table_names(schema, domain_name)
+    if not primary_entities and not domain_tables:
         return []
     q_tokens = _tokenize_text(question)
     scored = []
-    for path in schema.get("semantic_join_graph", {}).get("safe_paths", []):
+    for path in semantic_join_paths_for_tables(schema):
         from_entity = path.get("from_entity")
         to_entity = path.get("to_entity")
-        touches_domain = from_entity in primary_entities or to_entity in primary_entities
+        endpoints = {path.get("from_table"), path.get("to_table")}
+        touches_domain = (
+            from_entity in primary_entities
+            or to_entity in primary_entities
+            or bool(domain_tables.intersection(endpoints))
+        )
         if not touches_domain:
             continue
         score = 2.0
-        if from_entity in primary_entities and to_entity in primary_entities:
+        if (
+            from_entity in primary_entities and to_entity in primary_entities
+        ) or endpoints.issubset(domain_tables):
             score += 3.0
         use_when_text = _join_texts(path.get("use_when", []), path.get("name", ""), path.get("caution", ""))
         overlap = q_tokens.intersection(_tokenize_text(use_when_text))
@@ -265,19 +806,32 @@ def _semantic_join_paths_for_domain(schema: dict, domain_name: str, question: st
     return [path for _, path in scored[:max_paths]]
 
 
-def build_semantic_join_context(schema: dict, domain_name: str, question: str = "", max_paths: int = 8) -> str:
+def build_semantic_join_context(
+    schema: dict,
+    domain_name: str,
+    question: str = "",
+    max_paths: int = 8,
+    table_names: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> str:
     paths = _semantic_join_paths_for_domain(schema, domain_name, question, max_paths=max_paths)
+    if table_names:
+        allowed = {
+            (path.get("from_table"), path.get("to_table"))
+            for path in semantic_join_paths_for_tables(schema, table_names, require_both=True)
+        }
+        paths = [path for path in paths if (path.get("from_table"), path.get("to_table")) in allowed]
     if not paths:
         return "(선택 도메인에 연결된 semantic_join_graph.safe_paths 없음)"
-    entity_index = _entity_by_name(schema)
     lines = ["Use only these safe semantic join paths when they fit the question:"]
     for path in paths:
         from_entity = path.get("from_entity", "")
         to_entity = path.get("to_entity", "")
-        from_table = entity_index.get(from_entity, {}).get("physical_table", "")
-        to_table = entity_index.get(to_entity, {}).get("physical_table", "")
+        from_table = path.get("from_table", "")
+        to_table = path.get("to_table", "")
+        from_label = from_entity or from_table
+        to_label = to_entity or to_table
         lines.append(
-            f"- {path.get('name')}: {from_entity}({from_table}) -> {to_entity}({to_table}), "
+            f"- {path.get('name')}: {from_label}({from_table}) -> {to_label}({to_table}), "
             f"type={path.get('join_type')}, join={path.get('sql')}"
         )
         if path.get("use_when"):
@@ -295,7 +849,15 @@ def build_domain_context(schema: dict, domain_name: str, max_metrics: int = 8) -
         return f"(선택된 도메인 '{domain_name}'이 canonical_domains에 없습니다.)"
 
     entity_index = _entity_by_name(schema)
-    metrics = _canonical_metrics_by_domain(schema).get(domain_name, [])[:max_metrics]
+    metrics = list(_canonical_metrics_by_domain(schema).get(domain_name, []))
+    preferred_names = {str(name) for name in domain.get("preferred_metrics", [])}
+    known_metric_names = {str(metric.get("name") or "") for metric in metrics}
+    for metric in schema.get("canonical_metrics", []):
+        metric_name = str(metric.get("name") or "")
+        if metric_name in preferred_names and metric_name not in known_metric_names:
+            metrics.append(metric)
+            known_metric_names.add(metric_name)
+    metrics = metrics[:max_metrics]
     lines = [
         f"- selected_domain: {domain_name}",
         f"- business_scope: {domain.get('business_scope', '')}",
@@ -323,10 +885,6 @@ def build_domain_context(schema: dict, domain_name: str, max_metrics: int = 8) -
                 lines.append(f"    required_filters: {'; '.join(metric.get('required_filters', []))}")
             if metric.get("synonyms"):
                 lines.append(f"    synonyms: {', '.join(metric.get('synonyms', []))}")
-    join_context = build_semantic_join_context(schema, domain_name)
-    if join_context:
-        lines.append("- semantic_join_graph:")
-        lines.append(join_context)
     return "\n".join(lines)
 
 
@@ -357,6 +915,21 @@ def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
                 entity.get("use_when", []),
             )
         )
+    contract_texts = []
+    for contract in schema.get("semantic_query_contracts", []):
+        if str(contract.get("domain") or "") != str(domain_name):
+            continue
+        contract_texts.append(
+            _join_texts(
+                contract.get("name"),
+                contract.get("description"),
+                contract.get("match", {}),
+                contract.get("metric_names", []),
+                contract.get("source_tables", []),
+                contract.get("entity_binding", {}),
+                contract.get("time_policy", {}),
+            )
+        )
     return _join_texts(
         domain.get("name"),
         domain.get("business_scope"),
@@ -365,6 +938,7 @@ def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
         domain.get("preferred_metrics", []),
         metric_texts,
         entity_texts,
+        contract_texts,
     )
 
 
@@ -508,7 +1082,7 @@ def _adjudicate_domain_with_llm(question: str, candidates: list[dict], schema: d
 
 도메인명:"""
     try:
-        raw = _call_llm(prompt).strip()
+        raw = _normalize_llm_text(_call_llm(prompt, max_tokens=128))
     except Exception:
         return top_candidates[0]["domain"]
     for candidate in top_candidates:
@@ -540,8 +1114,123 @@ def _schema_table_index(schema: dict) -> tuple[dict[str, dict], dict[str, set[st
     return tables, columns
 
 
+_SQL_ALIAS_STOP_WORDS = {
+    "where", "join", "left", "right", "full", "inner", "outer", "cross",
+    "on", "group", "order", "having", "limit", "union", "except", "intersect",
+}
+
+
+def _validate_qualified_columns(sql: str) -> list[str]:
+    """Validate quoted ``alias.\"column\"`` references for physical tables.
+
+    Full SQL parsing is intentionally left to Athena, but verified/generated SQL
+    overwhelmingly qualifies source columns.  Tracking every physical table that
+    an alias can denote catches document/schema drift without mistaking CTE output
+    columns for source columns.  Multiple scopes may reuse the same alias, so a
+    column is accepted when it exists on at least one physical table bound to it.
+    """
+    known_tables, known_columns = _schema_table_index(SCHEMA)
+    cte_names = _extract_cte_names(sql)
+    alias_tables: dict[str, set[str]] = {}
+    cte_aliases: set[str] = set()
+    table_pattern = re.compile(
+        r'\b(?:FROM|JOIN)\s+'
+        r'(?:(?:"?[A-Za-z_][A-Za-z0-9_]*"?)\.)?'
+        r'"?([A-Za-z_][A-Za-z0-9_]*)"?'
+        r'(?:\s+(?:AS\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?)?',
+        re.IGNORECASE,
+    )
+    for match in table_pattern.finditer(sql):
+        table_name = match.group(1).lower()
+        alias = (match.group(2) or table_name).lower()
+        if alias in _SQL_ALIAS_STOP_WORDS:
+            alias = table_name
+        if table_name in cte_names:
+            # A CTE output may intentionally reuse an alias that a physical
+            # table used in another SQL scope. Its derived columns cannot be
+            # checked against the physical schema without a full scope parser.
+            cte_aliases.add(alias)
+            continue
+        if table_name not in known_tables:
+            continue
+        alias_tables.setdefault(alias, set()).add(table_name)
+        alias_tables.setdefault(table_name, set()).add(table_name)
+
+    issues = []
+    seen: set[tuple[str, str]] = set()
+    for alias, column_name in re.findall(
+        r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*"([^"]+)"',
+        sql,
+    ):
+        if alias.lower() in cte_aliases:
+            continue
+        candidate_tables = alias_tables.get(alias.lower(), set())
+        if not candidate_tables:
+            continue
+        column_lower = column_name.lower()
+        key = (alias.lower(), column_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        table_labels = ", ".join(sorted(candidate_tables))
+        if _SENSITIVE_COLUMN_RE.search(column_name) or any(
+            _is_restricted_column(known_tables.get(table_name, {}), column_name)
+            for table_name in candidate_tables
+        ):
+            issues.append(
+                f"제한된 민감 컬럼 {alias}.\"{column_name}\" 은 조회할 수 없습니다. "
+                f"(테이블: {table_labels})"
+            )
+            continue
+        if any(column_lower in known_columns.get(table_name, set()) for table_name in candidate_tables):
+            continue
+        issues.append(f"스키마에 없는 컬럼 {alias}.\"{column_name}\" 이 사용되었습니다. (테이블: {table_labels})")
+    return issues
+
+
+# 설정된 스키마 prefix 기준으로 테이블을 추출/검증한다 (예: "card_system." 또는 "").
+# prefix가 비어 있으면(스키마 미사용) FROM/JOIN의 테이블명을 직접 본다.
+_SCHEMA_TABLE_RE = (
+    re.compile(rf"\b{re.escape(DB_SCHEMA)}\.([a-zA-Z0-9_]+)\b") if DB_SCHEMA else None
+)
+
+
+def _extract_cte_names(sql: str) -> set[str]:
+    """Return names introduced by a WITH clause so they are not treated as tables."""
+    cte_names = {
+        (match.group(1) or match.group(2)).lower()
+        for match in re.finditer(
+            r'(?:\bWITH|,)\s+(?:"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*(?:\([^)]*\))?\s+AS\s*\(',
+            sql,
+            re.IGNORECASE,
+        )
+        if match.group(1) or match.group(2)
+    }
+    # Some SQL formatters/model outputs can insert unusual spacing around WITH
+    # items. Keep a conservative fallback for any identifier directly followed
+    # by AS ( ... ), which is the CTE shape that can later appear in JOIN.
+    cte_names.update(
+        (match.group(1) or match.group(2)).lower()
+        for match in re.finditer(
+            r'(?:"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*(?:\([^)]*\))?\s+AS\s*\(',
+            sql,
+            re.IGNORECASE,
+        )
+        if match.group(1) or match.group(2)
+    )
+    return cte_names
+
+
 def _extract_schema_tables(sql: str) -> set[str]:
-    return {match.group(1).lower() for match in re.finditer(r"\bcard_system\.([a-zA-Z0-9_]+)\b", sql)}
+    cte_names = _extract_cte_names(sql)
+    if _SCHEMA_TABLE_RE is not None:
+        return {match.group(1).lower() for match in _SCHEMA_TABLE_RE.finditer(sql) if match.group(1).lower() not in cte_names}
+    # prefix가 없을 때는 FROM/JOIN 뒤의 식별자를 테이블 후보로 본다.
+    return {
+        match.group(2).lower()
+        for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", sql, re.IGNORECASE)
+        if match.group(2).lower() not in {"select", *cte_names}
+    }
 
 
 def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[str]:
@@ -549,30 +1238,41 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
     stripped = sqlparse.format(sql or "", strip_comments=True).strip()
     if not stripped:
         return ["SQL 파싱 실패: 빈 쿼리입니다."]
-    first_token = stripped.split(None, 1)[0].upper() if stripped.split() else ""
-    if first_token not in {"SELECT", "WITH"}:
-        issues.append("읽기 전용 SELECT/WITH 쿼리만 실행할 수 있습니다.")
-    if _DANGEROUS_SQL_RE.search(stripped):
-        issues.append("INSERT/UPDATE/DELETE/DDL 계열 명령은 사용할 수 없습니다.")
+    safety_error = _validate_read_only_sql(stripped)
+    if safety_error:
+        issues.append(safety_error)
 
     known_tables, _ = _schema_table_index(SCHEMA)
     used_tables = _extract_schema_tables(stripped)
     unknown_tables = sorted(table for table in used_tables if table not in known_tables)
     for table in unknown_tables:
-        issues.append(f"스키마에 없는 테이블 card_system.{table} 이 사용되었습니다.")
+        issues.append(f"스키마에 없는 테이블 {DB_SCHEMA_PREFIX}{table} 이 사용되었습니다.")
+    restricted_tables = sorted(
+        table
+        for table in used_tables
+        if table in known_tables and not _is_semantic_table_visible(known_tables[table])
+    )
+    for table in restricted_tables:
+        issues.append(f"접근이 제한된 테이블 {DB_SCHEMA_PREFIX}{table} 은 조회할 수 없습니다.")
+    issues.extend(_validate_qualified_columns(stripped))
 
-    for table in selected_tables:
-        table_lower = str(table).lower()
-        if len(table_lower) < 4:
-            continue
-        if table_lower in stripped.lower() and f"card_system.{table_lower}" not in stripped.lower():
-            issues.append(f"테이블 '{table}'에 card_system. prefix가 없습니다.")
+    # 스키마 prefix가 설정된 경우에만 prefix 누락을 검증한다.
+    if DB_SCHEMA_PREFIX:
+        prefix_lower = DB_SCHEMA_PREFIX.lower()
+        for table in selected_tables:
+            table_lower = str(table).lower()
+            if table_lower.startswith(prefix_lower):
+                table_lower = table_lower[len(prefix_lower):]
+            if len(table_lower) < 4:
+                continue
+            if table_lower in stripped.lower() and f"{prefix_lower}{table_lower}" not in stripped.lower():
+                issues.append(f"테이블 '{table}'에 {DB_SCHEMA_PREFIX} prefix가 없습니다.")
 
-    for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", stripped, re.IGNORECASE):
-        table = match.group(2)
-        if table.lower() != "select" and f"card_system.{table.lower()}" not in stripped.lower():
-            if table.lower() in known_tables:
-                issues.append(f"테이블 '{table}'은 card_system.{table} 형태로 사용해야 합니다.")
+        for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", stripped, re.IGNORECASE):
+            table = match.group(2)
+            if table.lower() != "select" and f"{prefix_lower}{table.lower()}" not in stripped.lower():
+                if table.lower() in known_tables:
+                    issues.append(f"테이블 '{table}'은 {DB_SCHEMA_PREFIX}{table} 형태로 사용해야 합니다.")
 
     if re.search(r"\bSELECT\s+\*", stripped, re.IGNORECASE):
         issues.append("SELECT * 대신 필요한 컬럼만 명시하세요.")
@@ -602,5 +1302,53 @@ def _result_summary(columns: list, rows: list[tuple], max_top_values: int = 5) -
 
 
 
-SCHEMA = load_semantic_layer()
+def _merge_external_verified_queries(schema: dict) -> dict:
+    extra_queries = load_external_verified_queries()
+    if not extra_queries:
+        return schema
+    known_tables = {
+        str(name).lower()
+        for table in schema.get("tables", [])
+        for name in (
+            table.get("name", ""),
+            str(table.get("physical_table", "")).rsplit(".", 1)[-1],
+        )
+        if name
+    }
+    enabled_queries = []
+    disabled_queries = []
+    table_pattern = re.compile(
+        r'\b(?:FROM|JOIN)\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+")\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?',
+        re.IGNORECASE,
+    )
+    for query in extra_queries:
+        sql = str(query.get("sql") or "")
+        cte_names = _extract_cte_names(sql)
+        used_tables = {
+            match.group(1).lower()
+            for match in table_pattern.finditer(sql)
+            if match.group(1).lower() not in cte_names
+            and match.group(1).lower() not in {"select", "unnest", "values"}
+        }
+        unknown_tables = sorted(used_tables - known_tables)
+        if unknown_tables:
+            disabled_queries.append(
+                {
+                    "name": query.get("name", ""),
+                    "reason": "semantic schema에 없는 테이블 참조",
+                    "unknown_tables": unknown_tables,
+                }
+            )
+            continue
+        enabled_queries.append(query)
+    merged = dict(schema)
+    # Keep verified query definitions in one authoritative file. The semantic
+    # schema may still contain legacy copies, but runtime matching uses the
+    # external file whenever it is present.
+    merged["verified_queries"] = enabled_queries
+    merged["disabled_verified_queries"] = disabled_queries
+    return merged
+
+
+SCHEMA = _merge_external_verified_queries(load_semantic_layer())
 VERIFIED_QUERIES = SCHEMA.get("verified_queries", [])

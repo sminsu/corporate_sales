@@ -1,0 +1,189 @@
+{
+  "json_parsing": [
+    {
+      "name": "plain_object",
+      "input": "{\"tool\": \"NONE\"}",
+      "expected": {"tool": "NONE"}
+    },
+    {
+      "name": "fenced_object",
+      "input": "```json\n{\"tool\": \"대손비용률_분석\", \"params\": {\"기준년월\": \"202512\"}}\n```",
+      "expected": {
+        "tool": "대손비용률_분석",
+        "params": {"기준년월": "202512"}
+      }
+    },
+    {
+      "name": "reasoning_and_trailing_text",
+      "input": "<reasoning>후보를 검토한다.</reasoning>\n```json\n{\"tool\": \"NONE\"}\n```\n이상이 최종 결과입니다.",
+      "expected": {"tool": "NONE"}
+    },
+    {
+      "name": "preamble_and_nested_object",
+      "input": "요청한 JSON입니다.\n{\"tool\": \"대손비용률_분석\", \"params\": {\"기업명\": \"한빛테크\", \"옵션\": {\"등급별\": true}}}\n참고하세요.",
+      "expected": {
+        "tool": "대손비용률_분석",
+        "params": {
+          "기업명": "한빛테크",
+          "옵션": {"등급별": true}
+        }
+      }
+    }
+  ],
+  "sql_extraction": [
+    {
+      "name": "plain_sql",
+      "input": "SELECT 기준년월 FROM tmdaa3e16 LIMIT 10",
+      "expected": "SELECT 기준년월 FROM tmdaa3e16 LIMIT 10"
+    },
+    {
+      "name": "fenced_sql",
+      "input": "```sql\nSELECT 기준년월 FROM tmdaa3e16 LIMIT 10;\n```",
+      "expected": "SELECT 기준년월 FROM tmdaa3e16 LIMIT 10;"
+    },
+    {
+      "name": "preamble_fenced_sql",
+      "input": "아래 SQL을 사용하세요.\n```sql\nSELECT 기준년월 FROM tmdaa3e16 LIMIT 10;\n```\n설명은 생략합니다.",
+      "expected": "SELECT 기준년월 FROM tmdaa3e16 LIMIT 10;"
+    },
+    {
+      "name": "think_then_plain_sql",
+      "input": "<think>테이블과 컬럼을 확인한다.</think>\nSELECT 기준년월 FROM tmdaa3e16 LIMIT 10;",
+      "expected": "SELECT 기준년월 FROM tmdaa3e16 LIMIT 10;"
+    },
+    {
+      "name": "preamble_then_plain_sql",
+      "input": "요청을 반영한 SQL입니다.\nSELECT 기준년월 FROM tmdaa3e16 LIMIT 10;",
+      "expected": "SELECT 기준년월 FROM tmdaa3e16 LIMIT 10;"
+    }
+  ],
+  "followup_intent": [
+    {
+      "name": "sort_current_result",
+      "input": "그 중 상위 5개만 보여줘",
+      "expected": "transform"
+    },
+    {
+      "name": "previous_month_deictic",
+      "input": "그럼 전월은?",
+      "expected": "rewrite_sql"
+    },
+    {
+      "name": "same_month_last_year",
+      "input": "작년 같은 달과 비교해줘",
+      "expected": "rewrite_sql"
+    },
+    {
+      "name": "analysis_on_current_result",
+      "input": "이 결과를 3줄로 요약해줘",
+      "expected": "analysis"
+    },
+    {
+      "name": "visualize_current_result",
+      "input": "위 결과를 막대 차트로 보여줘",
+      "expected": "visualization"
+    },
+    {
+      "name": "new_metric_query",
+      "input": "그 회사의 연체 현황도 같이 보여줘",
+      "expected": "new_sql"
+    }
+  ],
+  "continuation_params": [
+    {
+      "name": "single_month",
+      "input": "2025년 12월",
+      "missing_params": [
+        {"name": "기간_시작"},
+        {"name": "기간_종료"}
+      ],
+      "expected": {
+        "기간_시작": "202512",
+        "기간_종료": "202512"
+      }
+    },
+    {
+      "name": "whole_year",
+      "input": "2025년",
+      "missing_params": [
+        {"name": "기간_시작"},
+        {"name": "기간_종료"}
+      ],
+      "expected": {
+        "기간_시작": "202501",
+        "기간_종료": "202512"
+      }
+    },
+    {
+      "name": "relative_previous_month",
+      "input": "지난달",
+      "missing_params": [
+        {"name": "기준년월"}
+      ],
+      "expected": {
+        "기준년월": "$PREVIOUS_YM"
+      }
+    },
+    {
+      "name": "date_and_entity_together",
+      "input": "2025년 12월 도미노피자",
+      "missing_params": [
+        {"name": "기준년월"},
+        {"name": "가맹점명"}
+      ],
+      "expected": {
+        "기준년월": "202512",
+        "가맹점명": "도미노피자"
+      }
+    },
+    {
+      "name": "named_numeric_values",
+      "input": "LS는 0.8, IS는 1.2",
+      "missing_params": [
+        {"name": "LS"},
+        {"name": "IS"}
+      ],
+      "expected": {
+        "LS": "0.8",
+        "IS": "1.2"
+      }
+    }
+  ],
+  "sql_safety": [
+    {
+      "name": "safe_select",
+      "sql": "SELECT 1 AS value",
+      "allowed": true
+    },
+    {
+      "name": "keyword_in_string_literal",
+      "sql": "SELECT 'DROP is text, not a command' AS note",
+      "allowed": true
+    },
+    {
+      "name": "keyword_inside_identifier",
+      "sql": "SELECT created_at FROM audit_log",
+      "allowed": true
+    },
+    {
+      "name": "stacked_drop_after_select",
+      "sql": "SELECT 1 AS harmless_column; DROP TABLE card_system.customer",
+      "allowed": false
+    },
+    {
+      "name": "second_select_statement",
+      "sql": "SELECT 1; SELECT 2",
+      "allowed": false
+    },
+    {
+      "name": "data_modifying_cte",
+      "sql": "WITH changed AS (DELETE FROM card_system.customer RETURNING id) SELECT id FROM changed",
+      "allowed": false
+    },
+    {
+      "name": "select_into",
+      "sql": "SELECT customer_id INTO TEMP copied_customer FROM card_system.customer",
+      "allowed": false
+    }
+  ]
+}

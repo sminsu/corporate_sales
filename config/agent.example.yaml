@@ -1,0 +1,28 @@
+agent:
+  name: corporate_sales
+  environment: local
+  service_name: corporate-sales-text2sql
+
+llm:
+  model_registry_path: models.example.yaml
+  default_model: gpt-oss:120b
+  temperature: 0
+  max_tokens: 4096
+  timeout: 120
+
+embedding:
+  provider: tei
+  base_url: http://127.0.0.1:8081
+  model: bge-m3
+  timeout: 60
+
+retrieval:
+  store:
+    provider: postgres
+    dsn_env: KBCARD_POSTGRES_DSN
+    pool_max_size: 10
+
+logger:
+  level: INFO
+  formatter: pretty
+  output: stdout

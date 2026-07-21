@@ -3,8 +3,15 @@
 import json
 from decimal import Decimal
 
-from .config import BAD_DEBT_OUTPUT_DIR, VLLM_BASE_URL, VLLM_MODEL
-from .exports import export_all, export_to_csv, export_to_text, export_to_word, format_number_for_report as format_number
+from .config import BAD_DEBT_OUTPUT_DIR, LLM_BASE_URL, LLM_MODEL
+from .exports import (
+    export_all,
+    export_to_csv,
+    export_to_excel,
+    export_to_text,
+    export_to_word,
+    format_number_for_report as format_number,
+)
 from .tools.registry import TOOLS
 from .workflow import EMBEDDINGS_AVAILABLE, run_agent_with_prompts
 
@@ -34,13 +41,15 @@ def print_result_table(columns: list[str], rows: list[tuple], max_rows: int = 20
         print(f"\n  ... 외 {len(rows) - max_rows}건")
 
 
-EXPORT_COMMANDS = {"저장", "export", "보고서", "word", "docx", "text", "txt", "csv", "내보내기", "파일"}
+EXPORT_COMMANDS = {"저장", "export", "보고서", "word", "docx", "excel", "xlsx", "text", "txt", "csv", "내보내기", "파일"}
 
 
 def _parse_export_format(cmd: str) -> str | None:
     cmd_lower = cmd.lower().strip()
     if cmd_lower in ("word", "docx"):
         return "word"
+    elif cmd_lower in ("excel", "xlsx"):
+        return "excel"
     elif cmd_lower in ("text", "txt"):
         return "text"
     elif cmd_lower == "csv":
@@ -55,9 +64,9 @@ def main():
     print(" KB카드 법인영업 Text2SQL Agent (vLLM) v10")
     print(" - Tool 기반 확정 SQL + Verified Query + SQL 자동생성")
     print(" - 모든 경로에서 파라미터 부족 시 사용자 입력 요청")
-    print(" - 보고서 내보내기 (Word/Text/CSV)")
+    print(" - 보고서 내보내기 (Word/Excel/Text)")
     print("=" * 60)
-    print(f" LLM: {VLLM_MODEL} @ {VLLM_BASE_URL}")
+    print(f" LLM: {LLM_MODEL} @ {LLM_BASE_URL}")
     embed_status = "ON" if EMBEDDINGS_AVAILABLE else "OFF (LLM 폴백)"
     print(f" Embedding: {embed_status}")
     print(f" 등록된 Tool: {len(TOOLS)}개")
@@ -65,7 +74,7 @@ def main():
         req_count = sum(1 for p in t["parameters"] if p.get("required"))
         print(f"   - {t['name']}: {t['description'][:45]}... (필수 {req_count}개)")
     print(f" 엑셀 출력: {BAD_DEBT_OUTPUT_DIR}")
-    print(" 내보내기: 조회 후 '저장' | 'word' | 'text' | 'csv' 입력")
+    print(" 내보내기: 조회 후 '저장' | 'word' | 'excel' | 'text' 입력")
     print(" 종료: quit | exit | q")
     print("=" * 60)
 
@@ -96,6 +105,9 @@ def main():
                 elif fmt == "word":
                     path = export_to_word(last_result)
                     print(f"\n[Word 저장 완료] {path}")
+                elif fmt == "excel":
+                    path = export_to_excel(last_result)
+                    print(f"\n[Excel 저장 완료] {path}")
                 elif fmt == "text":
                     path = export_to_text(last_result)
                     print(f"\n[Text 저장 완료] {path}")
@@ -169,7 +181,7 @@ def main():
 
         has_data = bool(result.get("query_columns")) and bool(result.get("query_rows"))
         if has_data:
-            print(f"\n  * 결과를 파일로 저장하려면: '저장' | 'word' | 'text' | 'csv' 입력")
+            print(f"\n  * 결과를 파일로 저장하려면: '저장' | 'word' | 'excel' | 'text' 입력")
 
         print("\n" + "-" * 60)
 

@@ -1,0 +1,2549 @@
+verified_queries:
+- name: corporate_card_active_no_usage_members
+  question: KB국민 기업카드 보유회원 중 현재 시점 기준 6개월 무실적인 기업회원 명단을 알려줘
+  description: 문서화된 기업고객 일별 스냅샷(tbdaa1d12)에서 기준년월일로 월을 파생하고 고객별 월 최신행만 사용해, 기준월 현재 유효 기업카드를 보유하면서 최근 N개월 신용·체크 이용금액이 모두 0인 기업을 조회합니다.
+  sql: |
+    WITH params AS (
+      SELECT
+        '{기준년월}' AS "기준년월",
+        DATE_FORMAT(
+          DATE_ADD(
+            'month',
+            -({조회개월수} - 1),
+            DATE_PARSE(CONCAT('{기준년월}', '01'), '%Y%m%d')
+          ),
+          '%Y%m'
+        ) AS "시작년월"
+    ),
+    daily AS (
+      SELECT
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액"
+      FROM card_system.tbdaa1d12 a
+      CROSS JOIN params p
+      WHERE a."기준년월일" BETWEEN CONCAT(p."시작년월", '01') AND CONCAT(p."기준년월", '31')
+    ),
+    ranked AS (
+      SELECT
+        d."기준년월일",
+        d."기준년월",
+        d."고객식별자",
+        d."사업자등록번호",
+        d."기업명",
+        d."유효기업신용카드수",
+        d."유효기업체크카드수",
+        d."금월신용카드이용금액",
+        d."금월체크카드이용금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY d."고객식별자", d."기준년월"
+          ORDER BY d."기준년월일" DESC
+        ) AS rn
+      FROM daily d
+    ),
+    monthly AS (
+      SELECT
+        r."기준년월",
+        r."고객식별자",
+        r."사업자등록번호",
+        r."기업명",
+        r."유효기업신용카드수",
+        r."유효기업체크카드수",
+        r."금월신용카드이용금액",
+        r."금월체크카드이용금액"
+      FROM ranked r
+      WHERE r.rn = 1
+    ),
+    current_snapshot AS (
+      SELECT
+        m."고객식별자",
+        m."사업자등록번호",
+        m."기업명",
+        m."유효기업신용카드수",
+        m."유효기업체크카드수"
+      FROM monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" = p."기준년월"
+    )
+    SELECT
+      c."고객식별자",
+      c."사업자등록번호",
+      c."기업명"
+    FROM current_snapshot c
+    WHERE (COALESCE(c."유효기업신용카드수", 0) + COALESCE(c."유효기업체크카드수", 0)) > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM monthly h
+        WHERE h."고객식별자" = c."고객식별자"
+          AND (COALESCE(h."금월신용카드이용금액", 0) + COALESCE(h."금월체크카드이용금액", 0)) > 0
+      )
+    ORDER BY c."기업명", c."사업자등록번호"
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 현재 카드 보유 여부를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    조회개월수:
+      type: integer
+      description: 기준월을 포함한 무실적 판정 개월 수
+      default: '6'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 기업카드
+  - 보유
+  - 미이용
+  - 이용없음
+  - 명단
+  - 추출
+  - tbdaa1d12
+  - Athena
+  - SAS참조
+- name: corporate_card_churned_after_usage_members
+  question: KB국민 기업카드를 과거 이용했지만 현재 탈퇴 또는 해지한 기업회원 명단을 알려줘
+  description: tbdaa1d12의 고객별 월 최신행을 기준으로 최근 N개월 이용 이력이 있으나 기준월 유효 기업 신용·체크카드 수가 0인 기업을 조회합니다. 유효카드 수 0은 탈퇴·해지의 분석용 대리조건입니다.
+  sql: |
+    WITH params AS (
+      SELECT
+        '{기준년월}' AS "기준년월",
+        DATE_FORMAT(
+          DATE_ADD(
+            'month',
+            -({조회개월수} - 1),
+            DATE_PARSE(CONCAT('{기준년월}', '01'), '%Y%m%d')
+          ),
+          '%Y%m'
+        ) AS "시작년월"
+    ),
+    daily AS (
+      SELECT
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액"
+      FROM card_system.tbdaa1d12 a
+      CROSS JOIN params p
+      WHERE a."기준년월일" BETWEEN CONCAT(p."시작년월", '01') AND CONCAT(p."기준년월", '31')
+    ),
+    ranked AS (
+      SELECT
+        d."기준년월일",
+        d."기준년월",
+        d."고객식별자",
+        d."사업자등록번호",
+        d."기업명",
+        d."유효기업신용카드수",
+        d."유효기업체크카드수",
+        d."금월신용카드이용금액",
+        d."금월체크카드이용금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY d."고객식별자", d."기준년월"
+          ORDER BY d."기준년월일" DESC
+        ) AS rn
+      FROM daily d
+    ),
+    monthly AS (
+      SELECT
+        r."기준년월",
+        r."고객식별자",
+        r."사업자등록번호",
+        r."기업명",
+        r."유효기업신용카드수",
+        r."유효기업체크카드수",
+        r."금월신용카드이용금액",
+        r."금월체크카드이용금액"
+      FROM ranked r
+      WHERE r.rn = 1
+    ),
+    history AS (
+      SELECT
+        m."고객식별자",
+        MAX(
+          CASE
+            WHEN COALESCE(m."금월신용카드이용금액", 0) + COALESCE(m."금월체크카드이용금액", 0) > 0
+            THEN m."기준년월"
+          END
+        ) AS "마지막이용월",
+        SUM(COALESCE(m."금월신용카드이용금액", 0) + COALESCE(m."금월체크카드이용금액", 0)) AS "최근기간총이용금액",
+        MAX(
+          CASE
+            WHEN COALESCE(m."금월신용카드이용금액", 0) + COALESCE(m."금월체크카드이용금액", 0) > 0
+            THEN 1 ELSE 0
+          END
+        ) AS "이용이력존재"
+      FROM monthly m
+      GROUP BY m."고객식별자"
+    ),
+    current_snapshot AS (
+      SELECT
+        m."고객식별자",
+        m."사업자등록번호",
+        m."기업명",
+        m."유효기업신용카드수",
+        m."유효기업체크카드수"
+      FROM monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" = p."기준년월"
+    )
+    SELECT
+      c."고객식별자",
+      c."사업자등록번호",
+      c."기업명",
+      h."마지막이용월",
+      h."최근기간총이용금액"
+    FROM current_snapshot c
+    JOIN history h
+      ON c."고객식별자" = h."고객식별자"
+    WHERE (COALESCE(c."유효기업신용카드수", 0) + COALESCE(c."유효기업체크카드수", 0)) = 0
+      AND h."이용이력존재" = 1
+    ORDER BY h."마지막이용월" DESC, h."최근기간총이용금액" DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 현재 탈퇴/해지 여부를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    조회개월수:
+      type: integer
+      description: 기준월을 포함한 과거 이용 이력 조회 개월 수
+      default: '6'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 기업카드
+  - 과거이용
+  - 탈퇴
+  - 해지
+  - 카드수0
+  - 명단
+  - tbdaa1d12
+  - Athena
+  - SAS참조
+- name: corporate_check_card_only_high_monthly_avg
+  question: KB국민 기업 체크카드만 보유하고 이용하는 기업회원 중 월 평균 5천만원 이상 이용 기업 명단을 알려줘
+  description: tbdaa1d12의 고객별 월 최신행을 기준으로 연초부터 기준월까지 신용카드 보유·이용은 없고 체크카드를 보유·이용한 기업의 달력 월수 기준 월평균 체크 이용금액을 계산합니다.
+  sql: |
+    WITH params AS (
+      SELECT
+        '{기준년월}' AS "기준년월",
+        CONCAT(SUBSTR('{기준년월}', 1, 4), '01') AS "연초년월",
+        CAST(SUBSTR('{기준년월}', 5, 2) AS INTEGER) AS "평균산정월수"
+    ),
+    daily AS (
+      SELECT
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액"
+      FROM card_system.tbdaa1d12 a
+      CROSS JOIN params p
+      WHERE a."기준년월일" BETWEEN CONCAT(p."연초년월", '01') AND CONCAT(p."기준년월", '31')
+    ),
+    ranked AS (
+      SELECT
+        d."기준년월일",
+        d."기준년월",
+        d."고객식별자",
+        d."사업자등록번호",
+        d."기업명",
+        d."유효기업신용카드수",
+        d."유효기업체크카드수",
+        d."금월신용카드이용금액",
+        d."금월체크카드이용금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY d."고객식별자", d."기준년월"
+          ORDER BY d."기준년월일" DESC
+        ) AS rn
+      FROM daily d
+    ),
+    monthly AS (
+      SELECT
+        r."기준년월",
+        r."고객식별자",
+        r."사업자등록번호",
+        r."기업명",
+        r."유효기업신용카드수",
+        r."유효기업체크카드수",
+        r."금월신용카드이용금액",
+        r."금월체크카드이용금액"
+      FROM ranked r
+      WHERE r.rn = 1
+    ),
+    agg AS (
+      SELECT
+        m."고객식별자",
+        MAX(m."사업자등록번호") AS "사업자등록번호",
+        MAX(m."기업명") AS "기업명",
+        SUM(COALESCE(m."금월체크카드이용금액", 0)) AS "기간총체크이용금액",
+        COUNT(DISTINCT m."기준년월") AS "데이터보유월수",
+        MAX(p."평균산정월수") AS "평균산정월수",
+        SUM(COALESCE(m."금월체크카드이용금액", 0))
+          / NULLIF(CAST(MAX(p."평균산정월수") AS DOUBLE), 0.0) AS "월평균체크이용금액"
+      FROM monthly m
+      CROSS JOIN params p
+      GROUP BY m."고객식별자"
+      HAVING MAX(COALESCE(m."유효기업신용카드수", 0)) = 0
+        AND MAX(COALESCE(m."유효기업체크카드수", 0)) > 0
+        AND SUM(COALESCE(m."금월신용카드이용금액", 0)) = 0
+        AND SUM(COALESCE(m."금월체크카드이용금액", 0)) > 0
+    )
+    SELECT
+      a."고객식별자",
+      a."사업자등록번호",
+      a."기업명",
+      a."기간총체크이용금액",
+      a."데이터보유월수",
+      a."평균산정월수",
+      a."월평균체크이용금액"
+    FROM agg a
+    WHERE a."월평균체크이용금액" >= {월평균금액}
+    ORDER BY a."월평균체크이용금액" DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 보유·이용과 월평균을 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    월평균금액:
+      type: integer
+      description: 월평균 체크카드 이용금액 기준
+      default: '50000000'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 체크카드
+  - 체크카드만
+  - 신용카드미보유
+  - 월평균
+  - 5천만원
+  - 이용금액
+  - 명단
+  - tbdaa1d12
+  - Athena
+  - SAS참조
+- name: merchant_corporate_sales_target_no_corporate_card
+  question: 당사 가맹점 중 월 매출액 1억원 이상이고 법인사업자이며 KB국민 기업카드를 보유하지 않은 기업회원 명단을 알려줘
+  description: 가맹점 월말 풍성화(tmdaaus01)를 월·가맹점별 최신행으로 축소하고 월가맹점실적(tmdaa5e11)의 일시불·할부 매출금액과 결합해, 월 매출 기준을 충족하는 법인사업자 중 유효 기업카드가 없는 영업대상을 조회합니다.
+  sql: |
+    WITH merchant_ranked AS (
+      SELECT
+        a."기준년월",
+        a."기준년월일",
+        a."가맹점번호",
+        a."기업고객식별자",
+        a."사업자등록번호",
+        a."가맹점명",
+        a."한글시도명",
+        a."한글시군구명",
+        a."가맹점업종코드",
+        a."MCC업종코드",
+        a."가맹점사업주체구분코드",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        a."휴폐업여부",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."기준년월", a."가맹점번호"
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tmdaaus01 a
+      WHERE a."기준년월" = '{기준년월}'
+    ),
+    merchant_month AS (
+      SELECT
+        r."가맹점번호",
+        r."기업고객식별자",
+        r."사업자등록번호",
+        r."가맹점명",
+        r."한글시도명",
+        r."한글시군구명",
+        r."가맹점업종코드",
+        r."MCC업종코드",
+        r."가맹점사업주체구분코드",
+        r."유효기업신용카드수",
+        r."유효기업체크카드수",
+        r."휴폐업여부"
+      FROM merchant_ranked r
+      WHERE r.rn = 1
+    ),
+    merchant_sales AS (
+      SELECT
+        s."가맹점번호",
+        SUM(
+          COALESCE(s."가맹점일시불매출금액", 0)
+          + COALESCE(s."가맹점할부매출금액", 0)
+        ) AS "월매출액"
+      FROM card_system.tmdaa5e11 s
+      WHERE s."기준년월" = '{기준년월}'
+      GROUP BY s."가맹점번호"
+    )
+    SELECT
+      m."기업고객식별자" AS "고객식별자",
+      m."사업자등록번호",
+      m."가맹점번호",
+      m."가맹점명",
+      m."한글시도명",
+      m."한글시군구명",
+      m."가맹점업종코드",
+      m."MCC업종코드",
+      s."월매출액",
+      COALESCE(m."유효기업신용카드수", 0) AS "유효기업신용카드수",
+      COALESCE(m."유효기업체크카드수", 0) AS "유효기업체크카드수"
+    FROM merchant_month m
+    JOIN merchant_sales s
+      ON m."가맹점번호" = s."가맹점번호"
+    WHERE s."월매출액" >= {월매출금액}
+      AND m."가맹점사업주체구분코드" = '2'
+      AND COALESCE(m."유효기업신용카드수", 0) = 0
+      AND COALESCE(m."유효기업체크카드수", 0) = 0
+      AND COALESCE(m."휴폐업여부", '0') = '0'
+      AND m."기업고객식별자" IS NOT NULL
+    ORDER BY s."월매출액" DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 가맹점 월 매출 판단 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    월매출금액:
+      type: integer
+      description: 월 매출액 하한 기준
+      default: '100000000'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 가맹점
+  - 월매출
+  - 1억원
+  - 법인사업자
+  - 기업카드미보유
+  - 영업대상
+  - tmdaaus01
+  - tmdaa5e11
+  - Athena
+  - SAS참조
+- name: corporate_limit_low_utilization_members
+  question: KB국민 기업카드 보유회원 중 한도 2천만원 이상이고 한도 소진율 50% 미만인 기업회원 명단을 알려줘
+  description: tbdaa1d12에서 기준월 고객별 최신 일별 스냅샷을 선택한 뒤 유효 기업신용카드 보유, 총한도 하한, 한도소진율 상한 조건을 적용합니다. 한도소진율은 1 - 잔여한도/총한도입니다.
+  sql: |
+    WITH ranked AS (
+      SELECT
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."유효기업신용카드수",
+        a."기업총한도금액",
+        a."기업총잔여한도금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."고객식별자", SUBSTR(a."기준년월일", 1, 6)
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaa1d12 a
+      WHERE a."기준년월일" BETWEEN CONCAT('{기준년월}', '01') AND CONCAT('{기준년월}', '31')
+    ),
+    current_snapshot AS (
+      SELECT
+        r."기준년월",
+        r."고객식별자",
+        r."사업자등록번호",
+        r."기업명",
+        r."유효기업신용카드수",
+        r."기업총한도금액",
+        r."기업총잔여한도금액"
+      FROM ranked r
+      WHERE r.rn = 1
+    ),
+    limit_calc AS (
+      SELECT
+        c."기준년월",
+        c."고객식별자",
+        c."사업자등록번호",
+        c."기업명",
+        COALESCE(c."기업총한도금액", 0) AS "기업총한도금액",
+        COALESCE(c."기업총잔여한도금액", 0) AS "기업총잔여한도금액",
+        CASE
+          WHEN COALESCE(c."기업총한도금액", 0) = 0 THEN 0.0
+          ELSE 1.0
+            - CAST(COALESCE(c."기업총잔여한도금액", 0) AS DOUBLE)
+              / NULLIF(CAST(c."기업총한도금액" AS DOUBLE), 0.0)
+        END AS "한도소진율"
+      FROM current_snapshot c
+      WHERE COALESCE(c."유효기업신용카드수", 0) > 0
+        AND COALESCE(c."기업총한도금액", 0) >= {한도금액}
+    )
+    SELECT
+      l."고객식별자",
+      l."사업자등록번호",
+      l."기업명",
+      l."기준년월",
+      l."기업총한도금액",
+      l."기업총잔여한도금액",
+      l."한도소진율"
+    FROM limit_calc l
+    WHERE l."한도소진율" < {한도소진율}
+    ORDER BY l."한도소진율" ASC, l."기업총한도금액" DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 한도와 카드 보유 여부를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    한도금액:
+      type: integer
+      description: 기업 총한도 하한 기준
+      default: '20000000'
+    한도소진율:
+      type: number
+      description: 한도소진율 상한 기준. 50%는 0.5
+      default: '0.5'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업회원
+  - 기업카드
+  - 한도
+  - 한도소진율
+  - 잔여한도
+  - 2천만원
+  - 50%미만
+  - 명단
+  - tbdaa1d12
+  - Athena
+  - SAS참조
+- name: corporate_target_industry_usage
+  question: 1~5 질문 대상 기업회원의 업종별 이용금액을 알려줘
+  description: 1~5 영업대상 조건을 문서 테이블로 재현한 뒤, 기업고객식별자로 카드전표입력내역(tbdaabt30)에 연결해 결제처 가맹점업종별 실제 매출금액을 집계합니다. 대상군 간 중복은 구분별 분석을 위해 유지합니다.
+  sql: |
+    WITH params AS (
+      SELECT
+        '{기준년월}' AS "기준년월",
+        DATE_FORMAT(
+          DATE_ADD(
+            'month',
+            -({조회개월수} - 1),
+            DATE_PARSE(CONCAT('{기준년월}', '01'), '%Y%m%d')
+          ),
+          '%Y%m'
+        ) AS "시작6개월",
+        CONCAT(SUBSTR('{기준년월}', 1, 4), '01') AS "연초년월",
+        CAST(SUBSTR('{기준년월}', 5, 2) AS INTEGER) AS "평균산정월수"
+    ),
+    customer_daily AS (
+      SELECT
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액",
+        a."기업총한도금액",
+        a."기업총잔여한도금액"
+      FROM card_system.tbdaa1d12 a
+      CROSS JOIN params p
+      WHERE a."기준년월일" BETWEEN CONCAT(LEAST(p."시작6개월", p."연초년월"), '01')
+        AND CONCAT(p."기준년월", '31')
+    ),
+    customer_ranked AS (
+      SELECT
+        d."기준년월일",
+        d."기준년월",
+        d."고객식별자",
+        d."유효기업신용카드수",
+        d."유효기업체크카드수",
+        d."금월신용카드이용금액",
+        d."금월체크카드이용금액",
+        d."기업총한도금액",
+        d."기업총잔여한도금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY d."고객식별자", d."기준년월"
+          ORDER BY d."기준년월일" DESC
+        ) AS rn
+      FROM customer_daily d
+    ),
+    customer_monthly AS (
+      SELECT
+        r."기준년월",
+        r."고객식별자",
+        r."유효기업신용카드수",
+        r."유효기업체크카드수",
+        r."금월신용카드이용금액",
+        r."금월체크카드이용금액",
+        r."기업총한도금액",
+        r."기업총잔여한도금액"
+      FROM customer_ranked r
+      WHERE r.rn = 1
+    ),
+    current_customers AS (
+      SELECT
+        m."고객식별자",
+        m."유효기업신용카드수",
+        m."유효기업체크카드수",
+        m."기업총한도금액",
+        m."기업총잔여한도금액"
+      FROM customer_monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" = p."기준년월"
+    ),
+    merchant_ranked AS (
+      SELECT
+        a."기준년월",
+        a."기준년월일",
+        a."가맹점번호",
+        a."기업고객식별자",
+        a."가맹점사업주체구분코드",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        a."휴폐업여부",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."기준년월", a."가맹점번호"
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tmdaaus01 a
+      CROSS JOIN params p
+      WHERE a."기준년월" = p."기준년월"
+    ),
+    merchant_current AS (
+      SELECT
+        r."가맹점번호",
+        r."기업고객식별자",
+        r."가맹점사업주체구분코드",
+        r."유효기업신용카드수",
+        r."유효기업체크카드수",
+        r."휴폐업여부"
+      FROM merchant_ranked r
+      WHERE r.rn = 1
+    ),
+    merchant_sales AS (
+      SELECT
+        s."가맹점번호",
+        SUM(
+          COALESCE(s."가맹점일시불매출금액", 0)
+          + COALESCE(s."가맹점할부매출금액", 0)
+        ) AS "월매출액"
+      FROM card_system.tmdaa5e11 s
+      CROSS JOIN params p
+      WHERE s."기준년월" = p."기준년월"
+      GROUP BY s."가맹점번호"
+    ),
+    target AS (
+      SELECT DISTINCT
+        c."고객식별자",
+        '1_6개월무실적' AS "대상구분"
+      FROM current_customers c
+      CROSS JOIN params p
+      WHERE COALESCE(c."유효기업신용카드수", 0) + COALESCE(c."유효기업체크카드수", 0) > 0
+        AND NOT EXISTS (
+          SELECT 1
+          FROM customer_monthly h
+          WHERE h."고객식별자" = c."고객식별자"
+            AND h."기준년월" BETWEEN p."시작6개월" AND p."기준년월"
+            AND COALESCE(h."금월신용카드이용금액", 0) + COALESCE(h."금월체크카드이용금액", 0) > 0
+        )
+
+      UNION ALL
+
+      SELECT DISTINCT
+        c."고객식별자",
+        '2_이탈회원' AS "대상구분"
+      FROM current_customers c
+      CROSS JOIN params p
+      WHERE COALESCE(c."유효기업신용카드수", 0) + COALESCE(c."유효기업체크카드수", 0) = 0
+        AND EXISTS (
+          SELECT 1
+          FROM customer_monthly h
+          WHERE h."고객식별자" = c."고객식별자"
+            AND h."기준년월" BETWEEN p."시작6개월" AND p."기준년월"
+            AND COALESCE(h."금월신용카드이용금액", 0) + COALESCE(h."금월체크카드이용금액", 0) > 0
+        )
+
+      UNION ALL
+
+      SELECT
+        m."고객식별자",
+        '3_체크카드교차영업' AS "대상구분"
+      FROM customer_monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" BETWEEN p."연초년월" AND p."기준년월"
+      GROUP BY m."고객식별자"
+      HAVING MAX(COALESCE(m."유효기업신용카드수", 0)) = 0
+        AND MAX(COALESCE(m."유효기업체크카드수", 0)) > 0
+        AND SUM(COALESCE(m."금월신용카드이용금액", 0)) = 0
+        AND SUM(COALESCE(m."금월체크카드이용금액", 0))
+          / NULLIF(CAST(MAX(p."평균산정월수") AS DOUBLE), 0.0) >= {월평균금액}
+
+      UNION ALL
+
+      SELECT DISTINCT
+        m."기업고객식별자" AS "고객식별자",
+        '4_가맹점신규영업' AS "대상구분"
+      FROM merchant_current m
+      JOIN merchant_sales s
+        ON m."가맹점번호" = s."가맹점번호"
+      WHERE s."월매출액" >= {월매출금액}
+        AND m."가맹점사업주체구분코드" = '2'
+        AND COALESCE(m."유효기업신용카드수", 0) = 0
+        AND COALESCE(m."유효기업체크카드수", 0) = 0
+        AND COALESCE(m."휴폐업여부", '0') = '0'
+        AND m."기업고객식별자" IS NOT NULL
+
+      UNION ALL
+
+      SELECT DISTINCT
+        c."고객식별자",
+        '5_한도활용영업' AS "대상구분"
+      FROM current_customers c
+      WHERE COALESCE(c."유효기업신용카드수", 0) > 0
+        AND COALESCE(c."기업총한도금액", 0) >= {한도금액}
+        AND 1.0
+          - CAST(COALESCE(c."기업총잔여한도금액", 0) AS DOUBLE)
+            / NULLIF(CAST(c."기업총한도금액" AS DOUBLE), 0.0) < {한도소진율}
+    ),
+    industry AS (
+      SELECT
+        i."가맹점업종코드",
+        MAX(i."가맹점업종명") AS "가맹점업종명"
+      FROM card_system.tbdaadb17 i
+      GROUP BY i."가맹점업종코드"
+    )
+    SELECT
+      t."대상구분",
+      s."가맹점업종코드",
+      COALESCE(i."가맹점업종명", '미분류') AS "가맹점업종명",
+      COUNT(DISTINCT t."고객식별자") AS "대상기업수",
+      SUM(COALESCE(s."매출금액", 0)) AS "이용금액"
+    FROM target t
+    JOIN card_system.tbdaabt30 s
+      ON t."고객식별자" = s."기업고객식별자"
+    LEFT JOIN industry i
+      ON s."가맹점업종코드" = i."가맹점업종코드"
+    WHERE SUBSTR(s."전표매출년월일", 1, 6) BETWEEN '{이용기간_시작}' AND '{이용기간_종료}'
+    GROUP BY t."대상구분", s."가맹점업종코드", i."가맹점업종명"
+    ORDER BY t."대상구분", "이용금액" DESC
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 1~5 영업대상을 판정할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    조회개월수:
+      type: integer
+      description: 무실적·이탈 이력 판정 개월 수
+      default: '6'
+    월평균금액:
+      type: integer
+      description: 체크카드 월평균 이용금액 하한
+      default: '50000000'
+    월매출금액:
+      type: integer
+      description: 가맹점 월 매출액 하한
+      default: '100000000'
+    한도금액:
+      type: integer
+      description: 기업 총한도 하한
+      default: '20000000'
+    한도소진율:
+      type: number
+      description: 한도소진율 상한
+      default: '0.5'
+    이용기간_시작:
+      type: string
+      description: 업종별 이용금액 집계 시작년월(YYYYMM)
+      required: true
+      default: '202601'
+      sample_values:
+      - '202601'
+    이용기간_종료:
+      type: string
+      description: 업종별 이용금액 집계 종료년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    limit:
+      type: integer
+      description: 대상구분×업종 결과 제한 건수
+      default: '500'
+  tags:
+  - 기업회원
+  - 영업대상
+  - 1~5질문
+  - 업종별
+  - 이용금액
+  - tbdaa1d12
+  - tmdaaus01
+  - tmdaa5e11
+  - tbdaabt30
+  - tbdaadb17
+  - Athena
+- name: managed_company_usage_anomalies
+  question: 내가 관리하는 기업회원의 최근 6개월 이용금액 추이와 특이사항을 알려줘
+  description: 파라미터로 입력받은 요청별 관리기업 사업자등록번호 목록을 Athena VALUES CTE로 적용하고, tbdaa1d12의 고객별 월 최신행에서 최근 6개월 이용 추이를 만든 뒤 무실적·급감·급증·3개월 연속 감소를 판정합니다.
+  sql: |
+    WITH params0 AS (
+      SELECT
+        '{기준년월}' AS "기준년월",
+        DATE_PARSE(CONCAT('{기준년월}', '01'), '%Y%m%d') AS "기준월일자"
+    ),
+    params AS (
+      SELECT
+        p."기준년월" AS m_0,
+        DATE_FORMAT(DATE_ADD('month', -1, p."기준월일자"), '%Y%m') AS m_1,
+        DATE_FORMAT(DATE_ADD('month', -2, p."기준월일자"), '%Y%m') AS m_2,
+        DATE_FORMAT(DATE_ADD('month', -3, p."기준월일자"), '%Y%m') AS m_3,
+        DATE_FORMAT(DATE_ADD('month', -4, p."기준월일자"), '%Y%m') AS m_4,
+        DATE_FORMAT(DATE_ADD('month', -5, p."기준월일자"), '%Y%m') AS m_5
+      FROM params0 p
+    ),
+    managed_scope ("사업자등록번호") AS (
+      VALUES {관리기업목록}
+    ),
+    daily AS (
+      SELECT
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액"
+      FROM card_system.tbdaa1d12 a
+      JOIN managed_scope l
+        ON a."사업자등록번호" = l."사업자등록번호"
+      CROSS JOIN params p
+      WHERE a."기준년월일" BETWEEN CONCAT(p.m_5, '01') AND CONCAT(p.m_0, '31')
+    ),
+    ranked AS (
+      SELECT
+        d."기준년월일",
+        d."기준년월",
+        d."고객식별자",
+        d."사업자등록번호",
+        d."기업명",
+        d."금월신용카드이용금액",
+        d."금월체크카드이용금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY d."고객식별자", d."기준년월"
+          ORDER BY d."기준년월일" DESC
+        ) AS rn
+      FROM daily d
+    ),
+    monthly AS (
+      SELECT
+        r."기준년월",
+        r."고객식별자",
+        r."사업자등록번호",
+        r."기업명",
+        COALESCE(r."금월신용카드이용금액", 0)
+          + COALESCE(r."금월체크카드이용금액", 0) AS "금월총이용금액"
+      FROM ranked r
+      WHERE r.rn = 1
+    ),
+    pivoted AS (
+      SELECT
+        m."고객식별자",
+        MAX(m."사업자등록번호") AS "사업자등록번호",
+        MAX(m."기업명") AS "기업명",
+        SUM(CASE WHEN m."기준년월" = p.m_5 THEN m."금월총이용금액" ELSE 0 END) AS amt_m_5,
+        SUM(CASE WHEN m."기준년월" = p.m_4 THEN m."금월총이용금액" ELSE 0 END) AS amt_m_4,
+        SUM(CASE WHEN m."기준년월" = p.m_3 THEN m."금월총이용금액" ELSE 0 END) AS amt_m_3,
+        SUM(CASE WHEN m."기준년월" = p.m_2 THEN m."금월총이용금액" ELSE 0 END) AS amt_m_2,
+        SUM(CASE WHEN m."기준년월" = p.m_1 THEN m."금월총이용금액" ELSE 0 END) AS amt_m_1,
+        SUM(CASE WHEN m."기준년월" = p.m_0 THEN m."금월총이용금액" ELSE 0 END) AS amt_m_0
+      FROM monthly m
+      CROSS JOIN params p
+      GROUP BY m."고객식별자"
+    ),
+    metrics AS (
+      SELECT
+        v."고객식별자",
+        v."사업자등록번호",
+        v."기업명",
+        v.amt_m_5,
+        v.amt_m_4,
+        v.amt_m_3,
+        v.amt_m_2,
+        v.amt_m_1,
+        v.amt_m_0,
+        v.amt_m_5 + v.amt_m_4 + v.amt_m_3 + v.amt_m_2 + v.amt_m_1 + v.amt_m_0 AS "최근6개월총이용금액",
+        (v.amt_m_3 + v.amt_m_2 + v.amt_m_1) / 3.0 AS "직전3개월평균"
+      FROM pivoted v
+    ),
+    scored AS (
+      SELECT
+        m."고객식별자",
+        m."사업자등록번호",
+        m."기업명",
+        m.amt_m_5,
+        m.amt_m_4,
+        m.amt_m_3,
+        m.amt_m_2,
+        m.amt_m_1,
+        m.amt_m_0,
+        m."최근6개월총이용금액",
+        m."직전3개월평균",
+        CASE
+          WHEN m.amt_m_0 = 0 THEN '최근월 무실적'
+          WHEN m."직전3개월평균" > 0 AND m.amt_m_0 < m."직전3개월평균" * {급감배수} THEN '급감'
+          WHEN m."직전3개월평균" > 0 AND m.amt_m_0 >= m."직전3개월평균" * {급증배수} THEN '급증'
+          WHEN m.amt_m_2 > m.amt_m_1 AND m.amt_m_1 > m.amt_m_0 THEN '3개월 연속 감소'
+          ELSE '정상'
+        END AS "특이사항"
+      FROM metrics m
+    )
+    SELECT
+      s."고객식별자",
+      s."사업자등록번호",
+      s."기업명",
+      p.m_5 AS "m_5_년월",
+      s.amt_m_5 AS "m_5_이용금액",
+      p.m_4 AS "m_4_년월",
+      s.amt_m_4 AS "m_4_이용금액",
+      p.m_3 AS "m_3_년월",
+      s.amt_m_3 AS "m_3_이용금액",
+      p.m_2 AS "m_2_년월",
+      s.amt_m_2 AS "m_2_이용금액",
+      p.m_1 AS "m_1_년월",
+      s.amt_m_1 AS "m_1_이용금액",
+      p.m_0 AS "기준년월",
+      s.amt_m_0 AS "기준월이용금액",
+      s."최근6개월총이용금액",
+      s."직전3개월평균",
+      s."특이사항"
+    FROM scored s
+    CROSS JOIN params p
+    WHERE s."특이사항" <> '정상'
+    ORDER BY s."특이사항", s."최근6개월총이용금액" DESC
+    LIMIT {limit}
+  parameters:
+    관리기업목록:
+      type: business_number_list
+      description: 파라미터로 직접 입력하고 정규화한 요청별 10자리 사업자등록번호 목록. 쉼표 또는 줄바꿈으로 구분하며 SQL에는 Athena VALUES 행 튜플로만 확장됩니다.
+      required: true
+      sample_values:
+      - ['1234567890', '2345678901']
+    기준년월:
+      type: string
+      description: 최근 6개월 추이의 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    급감배수:
+      type: number
+      description: 기준월 이용액이 직전 3개월 평균의 이 배수 미만이면 급감
+      default: '0.5'
+    급증배수:
+      type: number
+      description: 기준월 이용액이 직전 3개월 평균의 이 배수 이상이면 급증
+      default: '2.0'
+    limit:
+      type: integer
+      description: 특이사항 기업 목록 제한 건수
+      default: '100'
+  tags:
+  - 관리기업
+  - 담당기업
+  - 최근6개월
+  - 이용추이
+  - 특이사항
+  - 요청별관리기업목록
+  - VALUES_CTE
+  - tbdaa1d12
+  - Athena
+- name: managed_company_delinquency
+  question: 내가 관리하고 있는 기업회원 중 연체가 발생한 기업회원을 알려줘
+  description: 관리기업 범위를 사업자등록번호로 제한하고, 기준월 중 카드연체여부·여신연체여부 또는 해당 연체원금이 양수였던 tbdaa1d12 행 가운데 고객별 가장 최근 연체 스냅샷을 반환합니다. tbdaa1d12에 없는 연체일수는 생성하지 않습니다.
+  sql: |
+    WITH managed_scope ("사업자등록번호") AS (
+      VALUES {관리기업목록}
+    ),
+    overdue_ranked AS (
+      SELECT
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."카드연체여부",
+        a."카드연체원금",
+        a."여신연체여부",
+        a."여신연체원금",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."고객식별자"
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaa1d12 a
+      JOIN managed_scope l
+        ON a."사업자등록번호" = l."사업자등록번호"
+      WHERE a."기준년월일" BETWEEN CONCAT('{기준년월}', '01') AND CONCAT('{기준년월}', '31')
+        AND (
+          COALESCE(a."카드연체여부", '0') = '1'
+          OR COALESCE(a."여신연체여부", '0') = '1'
+          OR COALESCE(a."카드연체원금", 0) > 0
+          OR COALESCE(a."여신연체원금", 0) > 0
+        )
+    )
+    SELECT
+      r."고객식별자",
+      r."사업자등록번호",
+      r."기업명",
+      r."기준년월",
+      r."기준년월일",
+      r."카드연체여부",
+      COALESCE(r."카드연체원금", 0) AS "카드연체원금",
+      r."여신연체여부",
+      COALESCE(r."여신연체원금", 0) AS "여신연체원금",
+      COALESCE(r."카드연체원금", 0) + COALESCE(r."여신연체원금", 0) AS "총연체원금"
+    FROM overdue_ranked r
+    WHERE r.rn = 1
+    ORDER BY "총연체원금" DESC, r."기업명"
+    LIMIT {limit}
+  parameters:
+    관리기업목록:
+      type: business_number_list
+      description: 파라미터로 직접 입력하고 정규화한 요청별 10자리 사업자등록번호 목록. 쉼표 또는 줄바꿈으로 구분하며 SQL에는 Athena VALUES 행 튜플로만 확장됩니다.
+      required: true
+      sample_values:
+      - ['1234567890', '2345678901']
+    기준년월:
+      type: string
+      description: 연체 발생 여부를 조회할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    limit:
+      type: integer
+      description: 연체 기업 목록 제한 건수
+      default: '100'
+  tags:
+  - 관리기업
+  - 담당기업
+  - 연체
+  - 카드연체
+  - 여신연체
+  - 요청별관리기업목록
+  - VALUES_CTE
+  - tbdaa1d12
+  - Athena
+- name: managed_company_limit_reduction
+  question: 내가 관리하고 있는 기업회원 중 한도 감액이 발생한 기업회원을 알려줘
+  description: 관리기업에 대해 tbdaa1d12의 전월·기준월 고객별 최신 스냅샷을 비교하여 기업총한도금액이 순감소한 기업과 감액금액·감액률을 조회합니다. 월 누락을 0원으로 간주하지 않습니다.
+  sql: |
+    WITH params AS (
+      SELECT
+        '{기준년월}' AS "기준년월",
+        DATE_FORMAT(
+          DATE_ADD('month', -1, DATE_PARSE(CONCAT('{기준년월}', '01'), '%Y%m%d')),
+          '%Y%m'
+        ) AS "전월"
+    ),
+    managed_scope ("사업자등록번호") AS (
+      VALUES {관리기업목록}
+    ),
+    ranked AS (
+      SELECT
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        a."기준년월일",
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        COALESCE(a."기업총한도금액", 0) AS "기업총한도금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."고객식별자", SUBSTR(a."기준년월일", 1, 6)
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaa1d12 a
+      CROSS JOIN params p
+      WHERE a."기준년월일" BETWEEN CONCAT(p."전월", '01') AND CONCAT(p."기준년월", '31')
+    ),
+    monthly AS (
+      SELECT
+        r."고객식별자",
+        r."사업자등록번호",
+        r."기업명",
+        r."기준년월",
+        r."기업총한도금액"
+      FROM ranked r
+      WHERE r.rn = 1
+    ),
+    current_snapshot AS (
+      SELECT
+        m."고객식별자",
+        m."사업자등록번호",
+        m."기업명",
+        m."기업총한도금액"
+      FROM monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" = p."기준년월"
+    ),
+    previous_snapshot AS (
+      SELECT
+        m."고객식별자",
+        m."기업총한도금액"
+      FROM monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" = p."전월"
+    )
+    SELECT
+      c."고객식별자",
+      c."사업자등록번호",
+      c."기업명",
+      p."기업총한도금액" AS "전월기업총한도금액",
+      c."기업총한도금액" AS "기준월기업총한도금액",
+      p."기업총한도금액" - c."기업총한도금액" AS "감액금액",
+      CAST(p."기업총한도금액" - c."기업총한도금액" AS DOUBLE)
+        / NULLIF(CAST(p."기업총한도금액" AS DOUBLE), 0.0) AS "감액률"
+    FROM current_snapshot c
+    JOIN previous_snapshot p
+      ON c."고객식별자" = p."고객식별자"
+    JOIN managed_scope l
+      ON c."사업자등록번호" = l."사업자등록번호"
+    WHERE c."기업총한도금액" < p."기업총한도금액"
+    ORDER BY "감액금액" DESC
+    LIMIT {limit}
+  parameters:
+    관리기업목록:
+      type: business_number_list
+      description: 파라미터로 직접 입력하고 정규화한 요청별 10자리 사업자등록번호 목록. 쉼표 또는 줄바꿈으로 구분하며 SQL에는 Athena VALUES 행 튜플로만 확장됩니다.
+      required: true
+      sample_values:
+      - ['1234567890', '2345678901']
+    기준년월:
+      type: string
+      description: 전월 대비 한도 감액을 판정할 기준년월(YYYYMM)
+      required: true
+      default: '202604'
+      sample_values:
+      - '202604'
+    limit:
+      type: integer
+      description: 한도 감액 기업 목록 제한 건수
+      default: '100'
+  tags:
+  - 관리기업
+  - 담당기업
+  - 한도감액
+  - 한도감소
+  - 요청별관리기업목록
+  - VALUES_CTE
+  - tbdaa1d12
+  - Athena
+- name: brand_active_merchant_count
+  question: 도미노 브랜드 가맹점 수 몇 개야
+  description: 가맹점 기본(tbdaadt01)의 가맹점명에서 브랜드 검색어를 찾아 지정된 정상 가맹점상태코드의 고유 가맹점 수를 계산합니다. 브랜드명 전용 컬럼이 필요한 월 시점 분석은 tmdaaus01을 사용합니다.
+  sql: |
+    SELECT
+      COUNT(DISTINCT m."가맹점번호") AS "가맹점수"
+    FROM card_system.tbdaadt01 m
+    WHERE LOWER(COALESCE(m."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+      AND m."가맹점상태구분코드" = '{정상가맹점상태코드}'
+  parameters:
+    가맹점명:
+      type: like_string
+      description: 가맹점명에서 찾을 브랜드명
+      required: true
+      default: 도미노
+      sample_values:
+      - 도미노
+    정상가맹점상태코드:
+      type: string
+      description: 참고질의가 가정한 정상 가맹점 상태 코드. 운영 코드북 확인 후 재설정 가능
+      required: false
+      default: '1'
+      sample_values:
+      - '1'
+  tags:
+  - 브랜드
+  - 도미노
+  - 가맹점수
+  - 정상가맹점
+  - tbdaadt01
+  - Athena
+- name: recent_closed_brand_merchant_count
+  question: 최근 일년 이내 폐업한 교촌 치킨 가맹점 수 알려줘
+  description: 가맹점 일별 풍성화(tbdaaus01)의 국세청 휴폐업여부가 정상(0)이 아닌 상태로 처음 관측된 기준년월일을 폐업 관측일로 사용해, 최근 1년 내 지정 브랜드의 고유 가맹점 수를 계산합니다. 실제 국세청 폐업 신고일 컬럼이 없으므로 결과는 최초 폐업 상태 관측일 기준입니다.
+  sql: |
+    WITH first_closed_observation AS (
+      SELECT
+        a."가맹점번호",
+        MIN(a."기준년월일") AS "최초폐업관측일"
+      FROM card_system.tbdaaus01 a
+      WHERE COALESCE(a."휴폐업여부", '0') <> '0'
+        AND a."기준년월일" <= DATE_FORMAT(CURRENT_DATE, '%Y%m%d')
+        AND a."가맹점번호" IS NOT NULL
+        AND (
+          LOWER(COALESCE(a."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+          OR LOWER(COALESCE(a."외부가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+          OR LOWER(COALESCE(a."브랜드명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+          OR REGEXP_REPLACE(LOWER(COALESCE(a."가맹점명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{가맹점명}', '%')), '\s+', '') ESCAPE '\'
+          OR REGEXP_REPLACE(LOWER(COALESCE(a."외부가맹점명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{가맹점명}', '%')), '\s+', '') ESCAPE '\'
+          OR REGEXP_REPLACE(LOWER(COALESCE(a."브랜드명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{가맹점명}', '%')), '\s+', '') ESCAPE '\'
+        )
+      GROUP BY a."가맹점번호"
+    )
+    SELECT
+      DATE_FORMAT(DATE_ADD('year', -1, CURRENT_DATE), '%Y%m%d') AS "조회시작일",
+      DATE_FORMAT(CURRENT_DATE, '%Y%m%d') AS "조회종료일",
+      COUNT(DISTINCT f."가맹점번호") AS "최근1년폐업가맹점수"
+    FROM first_closed_observation f
+    WHERE f."최초폐업관측일" BETWEEN
+      DATE_FORMAT(DATE_ADD('year', -1, CURRENT_DATE), '%Y%m%d')
+      AND DATE_FORMAT(CURRENT_DATE, '%Y%m%d')
+  parameters:
+    가맹점명:
+      type: like_string
+      description: 가맹점명·외부가맹점명·브랜드명에서 부분일치로 찾을 이름. 공백을 제외한 표기도 함께 비교합니다.
+      required: true
+      sample_values:
+      - 교촌 치킨
+  tags:
+  - 최근1년
+  - 폐업
+  - 휴폐업
+  - 브랜드
+  - 가맹점수
+  - 교촌치킨
+  - tbdaaus01
+  - Athena
+- name: brand_merchants_with_corporate_card
+  question: 꾸석지 가맹점 중에 기업카드 소지하고 있는 사람 기업고객식별자 리스트 알려줘
+  description: 가맹점 일별 풍성화(tbdaaus01)에서 기준월의 가맹점별 최신일 스냅샷을 선택하고 가맹점명 또는 브랜드명으로 검색한 뒤 유효 기업카드 수가 양수인 기업고객식별자를 중복 제거해 반환합니다.
+  sql: |
+    WITH ranked AS (
+      SELECT
+        a."기준년월일",
+        a."가맹점번호",
+        a."기업고객식별자",
+        a."가맹점명",
+        a."브랜드명",
+        a."유효기업신용카드수",
+        a."유효기업체크카드수",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."가맹점번호", SUBSTR(a."기준년월일", 1, 6)
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaaus01 a
+      WHERE a."기준년월일" BETWEEN CONCAT('{기준년월}', '01') AND CONCAT('{기준년월}', '31')
+    )
+    SELECT DISTINCT
+      r."기업고객식별자"
+    FROM ranked r
+    WHERE r.rn = 1
+      AND (
+        LOWER(COALESCE(r."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+        OR LOWER(COALESCE(r."브랜드명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+      )
+      AND (
+        COALESCE(r."유효기업신용카드수", 0)
+        + COALESCE(r."유효기업체크카드수", 0)
+      ) > 0
+      AND r."기업고객식별자" IS NOT NULL
+    ORDER BY r."기업고객식별자"
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 기업카드 보유와 가맹점 정보를 판단할 기준년월(YYYYMM)
+      required: true
+      default: '202605'
+      sample_values:
+      - '202605'
+    가맹점명:
+      type: like_string
+      description: 가맹점명 또는 브랜드명에서 찾을 검색어
+      required: true
+      default: 꾸석지
+      sample_values:
+      - 꾸석지
+    limit:
+      type: integer
+      description: 기업고객식별자 목록 제한 건수
+      default: '100'
+  tags:
+  - 브랜드
+  - 꾸석지
+  - 기업카드보유
+  - 기업고객식별자
+  - tbdaaus01
+  - Athena
+- name: brand_merchant_owner_corporate_card_count
+  question: 특정 브랜드 가맹점주 중 KB국민카드 기업카드 소지자는 몇 명이야
+  description: 최신 가맹점 일별 스냅샷에서 가맹점명 또는 브랜드명으로 검색하고, 유효 기업 신용·체크카드가 있는 고유 가맹점주 수를 집계합니다. 같은 대표자가 여러 가맹점을 운영해도 한 명으로 계산합니다.
+  sql: |
+    WITH latest_snapshot AS (
+      SELECT MAX(a."기준년월일") AS "기준년월일"
+      FROM card_system.tbdaaus01 a
+    )
+    SELECT
+      (SELECT l."기준년월일" FROM latest_snapshot l) AS "조회기준일",
+      COUNT(DISTINCT a."대표고객식별자") AS "기업카드소지가맹점주수"
+    FROM card_system.tbdaaus01 a
+    WHERE a."기준년월일" = (SELECT l."기준년월일" FROM latest_snapshot l)
+      AND (
+        LOWER(COALESCE(a."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+        OR LOWER(COALESCE(a."브랜드명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+      )
+      AND (
+        COALESCE(a."유효기업신용카드수", 0)
+        + COALESCE(a."유효기업체크카드수", 0)
+      ) > 0
+      AND a."대표고객식별자" IS NOT NULL
+  parameters:
+    가맹점명:
+      type: like_string
+      description: 가맹점명 또는 브랜드명에서 찾을 검색어
+      required: true
+      sample_values:
+      - 파파존스
+      - 도미노피자
+  tags:
+  - 브랜드
+  - 가맹점주
+  - 대표자
+  - 기업카드보유
+  - 인원수
+  - 파파존스
+  - tbdaaus01
+  - Athena
+- name: merchant_detail_by_name
+  question: 마초스테이크하우스 가맹점 기본 정보를 알려줘
+  description: 가맹점 기본(tbdaadt01)에서 가맹점명을 검색해 식별자·사업자 정보·업종·사업주체·결제기관·수수료율·등록일을 반환합니다. 원문의 잘못된 가맹점번호식별자는 문서 컬럼 가맹점번호로 교정했습니다.
+  sql: |
+    SELECT
+      m."가맹점번호",
+      m."기업고객식별자",
+      m."대표고객식별자",
+      m."사업자등록번호",
+      m."법인등록번호",
+      m."가맹점명",
+      m."가맹점업종코드",
+      m."가맹점사업주체구분코드",
+      m."현금카드결제기관구분코드",
+      m."신용카드가맹점수수료율",
+      m."체크카드가맹점수수료율",
+      m."등록년월일"
+    FROM card_system.tbdaadt01 m
+    WHERE LOWER(COALESCE(m."가맹점명", ''))
+      LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+      AND m."가맹점상태구분코드" = '{정상가맹점상태코드}'
+    ORDER BY m."가맹점명", m."가맹점번호"
+    LIMIT {limit}
+  parameters:
+    가맹점명:
+      type: like_string
+      description: 가맹점명에서 찾을 검색어
+      required: true
+      default: 마초스테이크하우스
+      sample_values:
+      - 마초스테이크하우스
+    정상가맹점상태코드:
+      type: string
+      description: 참고질의가 가정한 정상 가맹점 상태 코드. 운영 코드북 확인 후 재설정 가능
+      required: false
+      default: '1'
+      sample_values:
+      - '1'
+    limit:
+      type: integer
+      description: 가맹점 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 가맹점기본
+  - 마초스테이크하우스
+  - 가맹점상세
+  - tbdaadt01
+  - Athena
+- name: active_merchant_industry_codes
+  question: 사용 중인 가맹점 업종 코드명 알려줘
+  description: |
+    활성 상태의 가맹점 업종코드와 업종명을 조회합니다. SAS 원문의 가맹점업종코트 오타는 가맹점업종코드로 보정합니다.
+  sql: |
+    SELECT
+      가맹점업종코드,
+      가맹점업종명,
+      업종대분류코드명
+    FROM card_system.tbdaadb17
+    WHERE 사용여부 = '1'
+    ORDER BY 가맹점업종코드
+  parameters: {}
+  tags:
+  - 가맹점
+  - 업종
+  - 업종코드
+  - 업종명
+  - tbdaadb17
+  - SAS참조
+- name: new_customers_by_month
+  question: 12월 신규 고객 알려줘
+  description: |
+    고객 마스터의 최초등록년월일 기준 특정 월 신규 등록 고객 수를 조회합니다. 모집고객 실테이블이 별도로 확정되지 않은 경우 "모집고객"으로 임의 해석하지 않습니다.
+  sql: |
+    SELECT
+      SUBSTRING(최초등록년월일, 1, 6) AS 기준년월,
+      COUNT(DISTINCT 고객식별자) AS 신규고객수
+    FROM card_system.tbdaaat01
+    WHERE SUBSTRING(최초등록년월일, 1, 6) = '{기준년월}'
+    GROUP BY SUBSTRING(최초등록년월일, 1, 6)
+  parameters:
+    기준년월:
+      type: string
+      description: 신규 등록 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+  tags:
+  - 신규고객
+  - 가입고객
+  - 등록고객
+  - 고객
+  - 월별
+  - tbdaaat01
+  - 파라미터
+- name: new_female_customers_by_month
+  question: 12월 신규 고객 중에서 여성 고객을 뽑아줘
+  description: |
+    고객 마스터에서 특정 월 신규 등록 고객 중 여성 고객 목록을 조회합니다. 여성 조건은 성별구분코드='2'를 기본으로 사용합니다.
+  sql: |
+    SELECT
+      고객식별자,
+      고객관리번호,
+      성별구분코드,
+      개인기업구분코드,
+      고객상태구분코드,
+      최초등록년월일
+    FROM card_system.tbdaaat01
+    WHERE SUBSTRING(최초등록년월일, 1, 6) = '{기준년월}'
+      AND 성별구분코드 = '2'
+    ORDER BY 최초등록년월일 DESC, 고객식별자
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 신규 등록 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 신규고객
+  - 여성
+  - 성별
+  - 상세목록
+  - tbdaaat01
+  - 파라미터
+- name: new_customers_gender_distribution
+  question: 12월 신규 고객을 성별로 나눠서 보여줘
+  description: |
+    특정 월 신규 등록 고객을 성별구분코드별로 집계합니다. 성별 조건을 WHERE로 제한하지 않고 GROUP BY에 포함합니다.
+  sql: |
+    SELECT
+      SUBSTRING(최초등록년월일, 1, 6) AS 기준년월,
+      성별구분코드,
+      COUNT(DISTINCT 고객식별자) AS 고객수
+    FROM card_system.tbdaaat01
+    WHERE SUBSTRING(최초등록년월일, 1, 6) = '{기준년월}'
+    GROUP BY SUBSTRING(최초등록년월일, 1, 6), 성별구분코드
+    ORDER BY 성별구분코드
+  parameters:
+    기준년월:
+      type: string
+      description: 신규 등록 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+  tags:
+  - 신규고객
+  - 성별
+  - 분포
+  - 집계
+  - tbdaaat01
+  - 파라미터
+- name: new_corporate_customers_female_representative
+  question: 12월 신규 기업고객 중 대표자가 여성인 고객을 보여줘
+  description: |
+    기업고객 마스터의 최초등록년월일 기준 신규 기업고객을 잡고, 기업대표자고객식별자로 고객 마스터를 조인해 대표자 성별을 필터링합니다.
+  sql: |
+    SELECT
+      a.고객식별자 AS 기업고객식별자,
+      a.가맹점명 AS 기업명,
+      a.본사사업자등록번호,
+      a.최초등록년월일,
+      b.고객식별자 AS 대표자고객식별자,
+      b.성별구분코드 AS 대표자성별구분코드
+    FROM card_system.tbdaaat14 a
+    JOIN card_system.tbdaaat01 b
+      ON a.기업대표자고객식별자 = b.고객식별자
+    WHERE SUBSTRING(a.최초등록년월일, 1, 6) = '{기준년월}'
+      AND b.성별구분코드 = '2'
+    ORDER BY a.최초등록년월일 DESC, a.고객식별자
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 기업고객 신규 등록 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+    limit:
+      type: integer
+      description: 상세 목록 제한 건수
+      default: '100'
+  tags:
+  - 기업고객
+  - 신규등록
+  - 대표자
+  - 여성
+  - 성별
+  - JOIN
+  - tbdaaat14
+  - tbdaaat01
+  - 파라미터
+- name: corporate_customer_usage_by_registration_month
+  question: 신규 기업고객의 이후 월별 카드 이용금액을 보여줘
+  description: |
+    기업고객 등록월과 월별 이용월을 분리해서 분석합니다. 기업고객 조건은 tbdaaat14, 이용금액은 tmdaa2e17을 사용합니다.
+  sql: |
+    SELECT
+      SUBSTRING(a.최초등록년월일, 1, 6) AS 등록기준년월,
+      b.기준년월 AS 이용기준년월,
+      COUNT(DISTINCT a.고객식별자) AS 기업고객수,
+      SUM(b.금월일시불이용금액 + b.금월할부이용금액 + b.금월ca이용금액) AS 총이용금액
+    FROM card_system.tbdaaat14 a
+    JOIN card_system.tmdaa2e17 b
+      ON a.고객식별자 = b.고객식별자
+    WHERE SUBSTRING(a.최초등록년월일, 1, 6) = '{등록기준년월}'
+      AND b.기준년월 BETWEEN '{이용기간_시작}' AND '{이용기간_종료}'
+    GROUP BY SUBSTRING(a.최초등록년월일, 1, 6), b.기준년월
+    ORDER BY b.기준년월
+  parameters:
+    등록기준년월:
+      type: string
+      description: 기업고객 등록 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+    이용기간_시작:
+      type: string
+      description: 이용 기준 시작월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+    이용기간_종료:
+      type: string
+      description: 이용 기준 종료월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202601'
+  tags:
+  - 기업고객
+  - 신규등록
+  - 이용금액
+  - 월별
+  - 복합질의
+  - JOIN
+  - tbdaaat14
+  - tmdaa2e17
+  - 파라미터
+- name: daily_sales_amount
+  question: 일별 매출금액을 알려줘
+  sql: |
+    SELECT
+      전표매출년월일,
+      COUNT(DISTINCT 매출전표번호) AS 매출건수,
+      SUM(매출금액) AS 총매출금액
+    FROM card_system.tbdaabt30
+    WHERE 개인기업구분코드 = '2'
+      AND (전표취소구분코드 IS NULL OR 전표취소구분코드 = '0')
+    GROUP BY 전표매출년월일
+    ORDER BY 전표매출년월일
+  tags:
+  - 매출
+  - 일별
+  - 시계열
+- name: merchant_monthly_trend
+  question: 가맹점 월별 매출 추이를 보여줘
+  sql: |
+    SELECT
+      기준년월,
+      SUM(가맹점일시불매출금액 + 가맹점할부매출금액) AS 총매출금액,
+      SUM(가맹점일시불매출건수 + 가맹점할부매출건수) AS 총매출건수,
+      SUM(가맹점수입수수료) AS 수수료수입
+    FROM card_system.tmdaa5e11
+    GROUP BY 기준년월
+    ORDER BY 기준년월
+  tags:
+  - 가맹점
+  - 월별
+  - 시계열
+- name: merchant_yoy_growth
+  question: 가맹점 전년대비 매출 성장률은?
+  sql: |
+    SELECT
+      가맹점번호,
+      가맹점명,
+      SUM(금년가맹점신용판매매출금액) AS 금년매출,
+      SUM(전년가맹점신용판매매출금액) AS 전년매출,
+      CASE
+        WHEN SUM(전년가맹점신용판매매출금액) > 0
+        THEN (SUM(금년가맹점신용판매매출금액) - SUM(전년가맹점신용판매매출금액))::FLOAT
+             / SUM(전년가맹점신용판매매출금액)
+        ELSE NULL
+      END AS 전년대비성장률
+    FROM card_system.tmdaa5e11
+    GROUP BY 가맹점번호, 가맹점명
+    HAVING SUM(전년가맹점신용판매매출금액) > 0
+    ORDER BY 전년대비성장률 DESC
+  tags:
+  - 가맹점
+  - 성장률
+  - YoY
+- name: review_by_credit_grade
+  question: 신용등급별 심사 현황을 보여줘
+  sql: |
+    SELECT
+      신용평가등급코드 AS 신용등급,
+      COUNT(DISTINCT 신청서접수번호) AS 심사건수,
+      COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS 승인건수,
+      AVG(최종부여한도금액) AS 평균부여한도,
+      AVG(자산총계금액) AS 평균자산총계,
+      AVG(매출금액) AS 평균매출
+    FROM card_system.tbdaaaf23
+    WHERE 신용평가등급코드 IS NOT NULL
+    GROUP BY 신용평가등급코드
+    ORDER BY 신용평가등급코드
+  tags:
+  - 심사
+  - 신용등급
+  - 집계
+- name: fee_rate_by_industry
+  question: 업종별 평균 수수료율은?
+  sql: |
+    SELECT
+      b.업종대분류코드명,
+      b.가맹점업종명,
+      AVG(a.신용카드가맹점수수료율) AS 평균신용수수료율,
+      AVG(a.체크카드수수료율) AS 평균체크수수료율,
+      SUM(a.가맹점수입수수료) AS 수수료수입합계
+    FROM card_system.tmdaa5e11 a
+    JOIN card_system.tbdaadb17 b
+      ON a.가맹점업종코드 = b.가맹점업종코드
+    GROUP BY b.업종대분류코드명, b.가맹점업종명
+    ORDER BY 수수료수입합계 DESC
+  tags:
+  - 수수료
+  - 업종
+  - 분석
+- name: corporate_customer_card_holdings
+  question: 기업고객별 카드 보유 현황을 보여줘
+  sql: |
+    SELECT
+      고객식별자,
+      기업검색명 AS 기업명,
+      SUM(유효신용카드수) AS 유효신용카드,
+      SUM(유효체크카드수) AS 유효체크카드,
+      SUM(기업보유실물카드수) AS 실물카드수,
+      SUM(금월일시불이용금액 + 금월할부이용금액 + 금월ca이용금액) AS 당월총이용금액
+    FROM card_system.tmdaa2e17
+    GROUP BY 고객식별자, 기업검색명
+    ORDER BY 당월총이용금액 DESC
+  tags:
+  - 고객
+  - 카드보유
+  - 이용금액
+- name: sales_target_individual_merchant_no_personal_card
+  question: 개인사업자 가맹점주 영업추진 대상(개인카드 미보유) 추출해줘
+  description: |
+    특정 업종의 개인사업자 가맹점 중 대표자가 유효 개인카드(신용/체크)를 보유하지 않은 영업추진 대상을 추출합니다. 월 가맹점 매출금액도 함께 조회합니다.
+  sql: |
+    SELECT
+        a.기준년월,
+        a.가맹점번호,
+        a.가맹점명,
+        a.사업자등록번호,
+        a.대표고객식별자,
+        a.가맹점업종코드,
+        a.가맹점관리부점코드,
+        a.가맹점거래정지상태구분코드,
+        COALESCE(c.가맹점일시불매출금액, 0) + COALESCE(c.가맹점할부매출금액, 0) AS 월가맹점매출금액
+    FROM card_system.tmdaa5d01 a
+    LEFT JOIN card_system.tmdaa3e16 b
+        ON  a.대표고객식별자 = b.고객식별자
+        AND a.기준년월      = b.기준년월
+        AND b.개인기업구분코드       = '1'
+        AND b.상품중분류구분코드     IN ('CP01', 'CP04')
+        AND (b.유효신용카드여부 = '1' OR b.유효체크카드여부 = '1')
+    LEFT JOIN card_system.tmdaa5e11 c
+        ON  a.가맹점번호 = c.가맹점번호
+        AND a.기준년월   = c.기준년월
+    WHERE
+        a.가맹점업종코드 IN ({업종코드목록})
+        AND a.가맹점거래정지상태구분코드 IN ('1', '2')
+        AND a.가맹점사업주체구분코드 = '1'
+        AND b.고객식별자 IS NULL
+    ORDER BY
+        a.기준년월 DESC,
+        월가맹점매출금액 DESC
+  parameters:
+    업종코드목록:
+      type: list
+      description: 대상 가맹점 업종코드 목록 (쉼표 구분)
+      default: '''7005'',''5605'',''7002'',''7003'',''7007'''
+      sample_values:
+      - '''7005'',''5605'',''7002'',''7003'',''7007'''
+      - '''7005'',''7002'''
+    기준년월:
+      type: string
+      description: 조회 기준년월 (YYYYMM). 미지정 시 전체 기간.
+      required: false
+  tags:
+  - 영업추진
+  - 개인사업자
+  - 가맹점
+  - 개인카드미보유
+  - 영업대상
+  - 추출
+- name: sales_by_industry_period
+  question: 특정 기간 업종별 법인카드 매출을 분석해줘
+  description: |
+    기간과 업종 필터를 지정하여 업종별 매출금액/건수를 분석합니다. 법인카드(개인기업구분코드='2') 정상거래만 대상입니다.
+  sql: |
+    SELECT
+      b.업종대분류코드명,
+      b.가맹점업종명,
+      SUM(a.매출금액) AS 총매출금액,
+      COUNT(DISTINCT a.매출전표번호) AS 매출건수,
+      AVG(a.매출금액) AS 건당평균금액
+    FROM card_system.tbdaabt30 a
+    JOIN card_system.tbdaadb17 b
+      ON a.가맹점업종코드 = b.가맹점업종코드
+    WHERE a.개인기업구분코드 = '2'
+      AND (a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')
+      AND a.전표매출년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY b.업종대분류코드명, b.가맹점업종명
+    ORDER BY 총매출금액 DESC
+    LIMIT {limit}
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 기준년월일 (YYYYMMDD). YYYYMM 입력 시 뒤에 '01' 자동 추가.
+      required: true
+      sample_values:
+      - '20250301'
+      - '20260101'
+    기간_종료:
+      type: string
+      description: 종료 기준년월일 (YYYYMMDD). YYYYMM 입력 시 뒤에 '31' 자동 추가.
+      required: true
+      sample_values:
+      - '20250331'
+      - '20260430'
+    limit:
+      type: integer
+      description: 결과 행수 제한
+      default: '20'
+  tags:
+  - 업종
+  - 매출
+  - 기간필터
+  - 법인카드
+  - 파라미터
+- name: top_merchants_by_revenue_period
+  question: 특정 기간 매출 상위 가맹점을 조회해줘
+  description: |
+    기간/업종/가맹점명 필터를 지정하여 매출 상위 가맹점 순위를 조회합니다.
+  sql: |
+    SELECT
+      a.가맹점번호,
+      a.가맹점명,
+      b.가맹점업종명,
+      b.업종대분류코드명,
+      SUM(a.가맹점일시불매출금액 + a.가맹점할부매출금액) AS 총매출금액,
+      SUM(a.가맹점일시불매출건수 + a.가맹점할부매출건수) AS 총매출건수,
+      AVG(a.신용카드가맹점수수료율) AS 평균수수료율
+    FROM card_system.tmdaa5e11 a
+    JOIN card_system.tbdaadb17 b
+      ON a.가맹점업종코드 = b.가맹점업종코드
+    WHERE a.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY a.가맹점번호, a.가맹점명, b.가맹점업종명, b.업종대분류코드명
+    ORDER BY 총매출금액 DESC
+    LIMIT {limit}
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202501'
+      - '202601'
+    기간_종료:
+      type: string
+      description: 종료 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202503'
+      - '202604'
+    limit:
+      type: integer
+      description: 상위 N개 결과
+      default: '10'
+  tags:
+  - 가맹점
+  - 랭킹
+  - 매출
+  - 기간필터
+  - TOP-N
+  - 파라미터
+- name: corporate_delinquency_detail
+  question: 특정 기업의 연체 상세 현황을 보여줘
+  description: |
+    기업명/기간으로 필터링하여 월별 연체 상세 현황(한도, 이용금액, 연체금액, 연체율)을 조회합니다.
+  sql: |
+    SELECT
+      작업기준년월,
+      상호명,
+      사업자등록번호,
+      기업계열명,
+      SUM(총한도금액) AS 총한도,
+      SUM(카드이용합계금액) AS 총이용금액,
+      SUM(신용판매이용금액) AS 신용판매이용,
+      SUM(할부이용금액) AS 할부이용,
+      SUM(ca이용금액) AS CA이용,
+      SUM(연체금액) AS 연체금액,
+      CASE
+        WHEN SUM(카드이용합계금액) > 0
+        THEN ROUND((SUM(연체금액)::FLOAT / SUM(카드이용합계금액)) * 100, 2)
+        ELSE 0
+      END AS 연체율_퍼센트
+    FROM card_system.tbdaaha97
+    WHERE 상호명 LIKE '%{기업명}%'
+    GROUP BY 작업기준년월, 상호명, 사업자등록번호, 기업계열명
+    ORDER BY 작업기준년월 DESC
+  parameters:
+    기업명:
+      type: string
+      description: 기업 상호명 (부분일치 검색)
+      required: true
+      sample_values:
+      - 삼성
+      - 현대
+      - LG
+    기간_시작:
+      type: string
+      description: 시작 작업기준년월 (YYYYMM)
+      required: false
+    기간_종료:
+      type: string
+      description: 종료 작업기준년월 (YYYYMM)
+      required: false
+  tags:
+  - 연체
+  - 기업
+  - 상세
+  - 월별
+  - 여신
+  - 파라미터
+- name: review_approval_by_period
+  question: 특정 기간의 기업카드 심사 승인율을 분석해줘
+  description: |
+    기간/신용등급/기업규모 필터를 지정하여 심사 승인 현황을 분석합니다.
+  sql: |
+    SELECT
+      신용평가등급코드 AS 신용등급,
+      고객군형태구분코드 AS 고객유형,
+      COUNT(DISTINCT 신청서접수번호) AS 총심사건수,
+      COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END) AS 승인건수,
+      COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '02' THEN 신청서접수번호 END) AS 거절건수,
+      ROUND(COUNT(DISTINCT CASE WHEN 카드처리결과구분코드 = '01' THEN 신청서접수번호 END)::FLOAT
+            / NULLIF(COUNT(DISTINCT 신청서접수번호), 0) * 100, 2) AS 승인율_퍼센트,
+      AVG(최종부여한도금액) AS 평균부여한도,
+      AVG(자산총계금액) AS 평균자산총계
+    FROM card_system.tbdaaaf23
+    WHERE 최종심사년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY 신용평가등급코드, 고객군형태구분코드
+    ORDER BY 신용평가등급코드, 고객군형태구분코드
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 심사년월일 (YYYYMMDD). YYYYMM 입력 시 '01' 자동 추가.
+      required: true
+      sample_values:
+      - '20250101'
+      - '20260101'
+    기간_종료:
+      type: string
+      description: 종료 심사년월일 (YYYYMMDD). YYYYMM 입력 시 '31' 자동 추가.
+      required: true
+      sample_values:
+      - '20251231'
+      - '20260430'
+    신용등급:
+      type: string
+      description: 특정 신용평가등급코드 필터
+      required: false
+  tags:
+  - 심사
+  - 승인율
+  - 기간필터
+  - 신용등급
+  - 고객유형
+  - 파라미터
+- name: card_brand_usage_analysis
+  question: 카드 브랜드별 법인카드 이용 현황을 분석해줘
+  description: |
+    카드 브랜드(VISA, Master, 국내 등)별로 법인카드 이용금액/건수를 분석합니다.
+  sql: |
+    SELECT
+      카드브랜드구분코드 AS 카드브랜드,
+      COUNT(DISTINCT 카드구분키번호) AS 카드수,
+      SUM(금월이용합계건수) AS 총이용건수,
+      SUM(금월이용합계금액) AS 총이용금액,
+      SUM(금월일시불이용금액) AS 일시불이용,
+      SUM(금월할부이용금액) AS 할부이용,
+      SUM(금월ca이용금액) AS CA이용,
+      ROUND(SUM(금월이용합계금액)::FLOAT / NULLIF(SUM(금월이용합계건수), 0), 0) AS 건당평균금액
+    FROM card_system.tmdaa3e16
+    WHERE 개인기업구분코드 = '2'
+      AND 기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY 카드브랜드구분코드
+    ORDER BY 총이용금액 DESC
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202501'
+      - '202601'
+    기간_종료:
+      type: string
+      description: 종료 기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+      - '202604'
+  tags:
+  - 카드브랜드
+  - VISA
+  - Master
+  - 이용금액
+  - 법인카드
+  - 파라미터
+- name: merchant_sales_comparison
+  question: 특정 가맹점의 매출 추이를 보여줘
+  description: |
+    가맹점명·브랜드 검색어에 부분일치하는 모든 가맹점의 일시불/할부 매출을 합산하여 월별 전체 매출 추이를 조회합니다.
+    가맹점별 상세가 필요한 질문은 이 템플릿이 아니라 자동 SQL 생성 경로를 사용합니다.
+  sql: |
+    SELECT
+      a.기준년월,
+      SUM(COALESCE(a.가맹점일시불매출금액, 0)) AS 일시불매출,
+      SUM(COALESCE(a.가맹점할부매출금액, 0)) AS 할부매출,
+      SUM(COALESCE(a.가맹점일시불매출금액, 0) + COALESCE(a.가맹점할부매출금액, 0)) AS 총매출금액,
+      SUM(COALESCE(a.가맹점일시불매출건수, 0) + COALESCE(a.가맹점할부매출건수, 0)) AS 총매출건수,
+      SUM(COALESCE(a.가맹점수입수수료, 0)) AS 수수료수입,
+      AVG(a.신용카드가맹점수수료율) AS 평균수수료율
+    FROM card_system.tmdaa5e11 a
+    WHERE a.가맹점명 LIKE '%{가맹점명}%'
+      AND a.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY a.기준년월
+    ORDER BY a.기준년월
+  parameters:
+    가맹점명:
+      type: string
+      description: 가맹점명 (부분일치 검색)
+      required: true
+      sample_values:
+      - 스타벅스
+      - CU
+      - GS25
+    기간_시작:
+      type: string
+      description: 시작 기준년월 (YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 종료 기준년월 (YYYYMM)
+      required: true
+  tags:
+  - 가맹점
+  - 매출추이
+  - 월별
+  - 시계열
+  - 검색
+  - 파라미터
+- name: corporate_credit_risk_summary
+  question: 기업 계열별 여신 리스크 현황을 보여줘
+  description: |
+    기업계열별로 총한도, 이용금액, 연체금액, 한도사용률, 연체율을 종합 분석합니다.
+  sql: |
+    SELECT
+      기업계열명,
+      COUNT(DISTINCT 사업자등록번호) AS 기업수,
+      SUM(총한도금액) AS 총한도,
+      SUM(카드이용합계금액) AS 총이용금액,
+      SUM(연체금액) AS 총연체금액,
+      CASE
+        WHEN SUM(총한도금액) > 0
+        THEN ROUND((SUM(카드이용합계금액)::FLOAT / SUM(총한도금액)) * 100, 2)
+        ELSE 0
+      END AS 한도사용률_퍼센트,
+      CASE
+        WHEN SUM(카드이용합계금액) > 0
+        THEN ROUND((SUM(연체금액)::FLOAT / SUM(카드이용합계금액)) * 100, 2)
+        ELSE 0
+      END AS 연체율_퍼센트
+    FROM card_system.tbdaaha97
+    WHERE 기업계열명 IS NOT NULL
+      AND 작업기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY 기업계열명
+    ORDER BY 총이용금액 DESC
+    LIMIT {limit}
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 작업기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202501'
+      - '202601'
+    기간_종료:
+      type: string
+      description: 종료 작업기준년월 (YYYYMM)
+      required: true
+      sample_values:
+      - '202512'
+      - '202604'
+    limit:
+      type: integer
+      description: 결과 행수 제한
+      default: '20'
+  tags:
+  - 계열사
+  - 여신
+  - 리스크
+  - 한도사용률
+  - 연체율
+  - 파라미터
+- name: online_offline_sales_ratio
+  question: 온라인/오프라인 매출 비율을 분석해줘
+  description: |
+    특정 기간의 법인카드 온라인/오프라인 거래 비율을 업종별로 분석합니다.
+  sql: |
+    SELECT
+      b.업종대분류코드명,
+      a.온라인거래여부,
+      COUNT(DISTINCT a.매출전표번호) AS 거래건수,
+      SUM(a.매출금액) AS 총매출금액,
+      ROUND(AVG(a.매출금액), 0) AS 건당평균금액
+    FROM card_system.tbdaabt30 a
+    JOIN card_system.tbdaadb17 b
+      ON a.가맹점업종코드 = b.가맹점업종코드
+    WHERE a.개인기업구분코드 = '2'
+      AND (a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')
+      AND a.전표매출년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY b.업종대분류코드명, a.온라인거래여부
+    ORDER BY b.업종대분류코드명, a.온라인거래여부
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 기준년월일 (YYYYMMDD). YYYYMM 입력 시 '01' 자동 추가.
+      required: true
+      sample_values:
+      - '20250301'
+      - '20260101'
+    기간_종료:
+      type: string
+      description: 종료 기준년월일 (YYYYMMDD). YYYYMM 입력 시 '31' 자동 추가.
+      required: true
+      sample_values:
+      - '20250331'
+      - '20260430'
+  tags:
+  - 온라인
+  - 오프라인
+  - 매출비율
+  - 업종별
+  - 법인카드
+  - 파라미터
+- name: installment_analysis
+  question: 할부 거래 현황을 분석해줘
+  description: |
+    특정 기간의 법인카드 할부 거래를 할부개월 구간별로 분석합니다.
+  sql: |
+    SELECT
+      CASE
+        WHEN 할부기간개월수 = 0 THEN '일시불'
+        WHEN 할부기간개월수 BETWEEN 1 AND 3 THEN '1~3개월'
+        WHEN 할부기간개월수 BETWEEN 4 AND 6 THEN '4~6개월'
+        WHEN 할부기간개월수 BETWEEN 7 AND 12 THEN '7~12개월'
+        ELSE '12개월 초과'
+      END AS 할부구간,
+      COUNT(DISTINCT 매출전표번호) AS 거래건수,
+      SUM(매출금액) AS 총매출금액,
+      ROUND(AVG(매출금액), 0) AS 건당평균금액,
+      ROUND(AVG(할부기간개월수), 1) AS 평균할부개월
+    FROM card_system.tbdaabt30
+    WHERE 개인기업구분코드 = '2'
+      AND (전표취소구분코드 IS NULL OR 전표취소구분코드 = '0')
+      AND 전표매출년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY
+      CASE
+        WHEN 할부기간개월수 = 0 THEN '일시불'
+        WHEN 할부기간개월수 BETWEEN 1 AND 3 THEN '1~3개월'
+        WHEN 할부기간개월수 BETWEEN 4 AND 6 THEN '4~6개월'
+        WHEN 할부기간개월수 BETWEEN 7 AND 12 THEN '7~12개월'
+        ELSE '12개월 초과'
+      END
+    ORDER BY 총매출금액 DESC
+  parameters:
+    기간_시작:
+      type: string
+      description: 시작 기준년월일 (YYYYMMDD). YYYYMM 입력 시 '01' 자동 추가.
+      required: true
+      sample_values:
+      - '20250101'
+      - '20260101'
+    기간_종료:
+      type: string
+      description: 종료 기준년월일 (YYYYMMDD). YYYYMM 입력 시 '31' 자동 추가.
+      required: true
+      sample_values:
+      - '20251231'
+      - '20260430'
+  tags:
+  - 할부
+  - 할부개월
+  - 거래분석
+  - 법인카드
+  - 파라미터
+- name: corporate_customer_monthly_usage
+  question: 특정 기업의 월별 카드 이용 내역을 보여줘
+  description: |
+    기업검색명으로 검색하여 해당 기업의 월별 카드 이용 상세(일시불/할부/CA/주유/국세 등)를 조회합니다.
+  sql: |
+    SELECT
+      기준년월,
+      고객식별자,
+      기업검색명,
+      SUM(유효신용카드수) AS 유효신용카드,
+      SUM(유효체크카드수) AS 유효체크카드,
+      SUM(금월일시불이용금액) AS 일시불이용,
+      SUM(금월할부이용금액) AS 할부이용,
+      SUM(금월ca이용금액) AS CA이용,
+      SUM(금월일시불이용금액 + 금월할부이용금액 + 금월ca이용금액) AS 총이용금액,
+      SUM(금월주유이용금액) AS 주유이용,
+      SUM(금월국세이용금액 + 금월지방세이용금액) AS 세금납부,
+      SUM(금월4대보험이용금액) AS 보험납부
+    FROM card_system.tmdaa2e17
+    WHERE 기업검색명 LIKE '%{기업명}%'
+    GROUP BY 기준년월, 고객식별자, 기업검색명
+    ORDER BY 기준년월 DESC
+  parameters:
+    기업명:
+      type: string
+      description: 기업검색명 (부분일치 검색)
+      required: true
+      sample_values:
+      - 삼성
+      - 현대
+      - KB
+    기간_시작:
+      type: string
+      description: 시작 기준년월 (YYYYMM)
+      required: false
+    기간_종료:
+      type: string
+      description: 종료 기준년월 (YYYYMM)
+      required: false
+  tags:
+  - 기업고객
+  - 월별
+  - 이용내역
+  - 상세
+  - 검색
+  - 파라미터
+- name: region_top_enterprise_merchants
+  question: 최근 기준일 기준 지역별 기업영업 가맹점 전월 매입 상위 지역은?
+  sql: |
+    SELECT
+      한글시도명,
+      한글시군구명,
+      COUNT(DISTINCT 가맹점번호) AS 가맹점수,
+      SUM(COALESCE(전월일시불매입금액, 0) + COALESCE(전월할부매입금액, 0)) AS 전월매입금액,
+      SUM(COALESCE(전월일시불매입건수, 0) + COALESCE(전월할부매입건수, 0)) AS 전월매입건수,
+      AVG(신용카드가맹점수수료율) AS 평균수수료율
+    FROM card_system.tbdaaus01
+    WHERE 기준년월일 = (SELECT MAX(기준년월일) FROM card_system.tbdaaus01)
+      AND COALESCE(가맹점거래정지여부, 'N') <> 'Y'
+      AND COALESCE(휴폐업여부, 'N') <> 'Y'
+    GROUP BY 한글시도명, 한글시군구명
+    ORDER BY 전월매입금액 DESC
+    LIMIT 20
+  tags:
+  - 기업영업
+  - 가맹점
+  - 지역
+  - 전월매입
+  - 랭킹
+- name: marketing_industry_card_portfolio
+  question: 마케팅 업종 대분류별 유효 기업카드 수와 전월 매입금액을 보여줘
+  sql: |
+    SELECT
+      마케팅업종대분류구분명,
+      COUNT(DISTINCT 가맹점번호) AS 가맹점수,
+      SUM(COALESCE(유효기업신용카드수, 0)) AS 유효기업신용카드수,
+      SUM(COALESCE(유효기업체크카드수, 0)) AS 유효기업체크카드수,
+      SUM(COALESCE(전월일시불매입금액, 0) + COALESCE(전월할부매입금액, 0)) AS 전월매입금액
+    FROM card_system.tbdaaus01
+    WHERE 기준년월일 = (SELECT MAX(기준년월일) FROM card_system.tbdaaus01)
+    GROUP BY 마케팅업종대분류구분명
+    ORDER BY 전월매입금액 DESC
+  tags:
+  - 기업영업
+  - 업종
+  - 카드수
+  - 전월매입
+- name: special_debt_by_asset_quality
+  question: 기업 특수채권을 자산건전성별로 요약해줘
+  sql: |
+    SELECT
+      기준년,
+      자산건전성분류구분코드,
+      COUNT(DISTINCT 특수채권관리번호) AS 특수채권건수,
+      SUM(특수채권편입원금) AS 편입원금,
+      SUM(COALESCE(특수채권편입원금, 0) + COALESCE(특수채권편입수수료, 0) + COALESCE(특수채권편입이자, 0) + COALESCE(특수채권편입연체료, 0) + COALESCE(특수채권편입가지급금, 0)) AS 편입잔액,
+      AVG(연체회차) AS 평균연체회차
+    FROM card_system.tmdaaus01
+    WHERE 개인기업구분코드 = '2'
+    GROUP BY 기준년, 자산건전성분류구분코드
+    ORDER BY 기준년, 편입잔액 DESC
+  tags:
+  - 기업영업
+  - 특수채권
+  - 자산건전성
+  - 연체
+- name: allowance_monthly_cost_rate
+  question: 월별 기업 대손충당금률과 평균 PD/LGD를 계산해줘
+  sql: |
+    SELECT
+      기준년월,
+      SUM(원화대출잔액) AS 원화대출잔액,
+      SUM(기대대손충당금) AS 기대대손충당금,
+      AVG(기대1년PD율) AS 평균PD율,
+      AVG(충당금기대LGD율) AS 평균LGD율,
+      SUM(기대대손충당금)::FLOAT / NULLIF(SUM(원화대출잔액), 0) AS 대손충당금률
+    FROM card_system.tbmewcm94
+    WHERE 개인기업구분코드 = '2'
+    GROUP BY 기준년월
+    ORDER BY 기준년월
+  tags:
+  - 기업영업
+  - 대손충당금
+  - PD
+  - LGD
+  - 리스크비용률
+- name: merchant_risk_combined_customer_month
+  question: 월별 가맹점 포트폴리오와 대손충당금을 고객 기준으로 같이 봐줘
+  sql: |
+    WITH merchant_customer_month AS (
+      SELECT
+        기준년월,
+        기업고객식별자 AS 고객식별자,
+        COUNT(DISTINCT 가맹점번호) AS 가맹점수,
+        SUM(COALESCE(전월일시불매입금액, 0) + COALESCE(전월할부매입금액, 0)) AS 전월매입금액
+      FROM card_system.tbmaisd06
+      GROUP BY 기준년월, 기업고객식별자
+    ), allowance_customer_month AS (
+      SELECT
+        기준년월,
+        고객식별자,
+        SUM(원화대출잔액) AS 원화대출잔액,
+        SUM(기대대손충당금) AS 기대대손충당금
+      FROM card_system.tbmewcm94
+      WHERE 개인기업구분코드 = '2'
+      GROUP BY 기준년월, 고객식별자
+    )
+    SELECT
+      m.기준년월,
+      COUNT(DISTINCT m.고객식별자) AS 기업고객수,
+      SUM(m.가맹점수) AS 가맹점수,
+      SUM(m.전월매입금액) AS 전월매입금액,
+      SUM(a.원화대출잔액) AS 원화대출잔액,
+      SUM(a.기대대손충당금) AS 기대대손충당금,
+      SUM(a.기대대손충당금)::FLOAT / NULLIF(SUM(a.원화대출잔액), 0) AS 대손충당금률
+    FROM merchant_customer_month m
+    LEFT JOIN allowance_customer_month a
+      ON m.기준년월 = a.기준년월
+     AND m.고객식별자 = a.고객식별자
+    GROUP BY m.기준년월
+    ORDER BY m.기준년월
+  tags:
+  - 기업영업
+  - 가맹점
+  - 충당금
+  - 고객월
+  - 조인
+- name: review_approval_rate
+  question: 기업카드 심사 승인율은 얼마야?
+  description: 기업카드 심사 승인율을 조회합니다. 승인율 = 승인건수 / 전체심사건수 x 100. 신용등급별 조회는 별도 verified query(review_by_credit_grade)를 우선 사용합니다.
+  sql_builder: review_approval_rate
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM) 또는 기준년월일(YYYYMMDD)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM) 또는 기준년월일(YYYYMMDD)
+      required: true
+    신용등급:
+      type: string
+      description: 특정 신용평가등급코드
+  tags:
+  - 심사
+  - 승인율
+  - 승인
+  - 거절
+  - 심사현황
+  - 기업카드
+- name: monthly_corporate_card_usage
+  question: 월별 법인카드 이용금액 추이와 전월 대비 증감률을 보여줘
+  description: 월별 법인카드 이용금액 추이와 전월 대비 증감률을 조회합니다. 일시불/할부/CA 세부 항목을 포함합니다.
+  sql_builder: monthly_corporate_card_usage
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 이용금액
+  - 월별
+  - 법인카드
+  - 추이
+  - 전월 대비
+  - 증감률
+  - 일시불
+  - 할부
+  - CA
+- name: top_merchants_by_revenue
+  question: 매출 상위 10개 가맹점은?
+  description: 기간/업종/가맹점명 필터를 지정하여 매출 상위 가맹점 순위를 조회합니다.
+  sql_builder: top_merchants_by_revenue
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM)
+      required: true
+    업종:
+      type: string
+      description: 업종명 필터(부분일치)
+    가맹점명:
+      type: string
+      description: 가맹점명 필터(부분일치)
+    limit:
+      type: integer
+      description: 상위 N개 결과
+      default: '10'
+  tags:
+  - 가맹점
+  - 매출
+  - 순위
+  - 랭킹
+  - TOP
+  - 상위
+- name: merchant_card_possession_performance
+  question: 202512 기준 개인카드 미보유 가맹점의 업종명과 실적을 보여줘
+  description: 가맹점 기본정보, 업종명, 기준년월 실적을 결합하고 대표자 개인카드 및 기업고객 기업카드 소지 여부를 함께 조회합니다.
+  sql_builder: merchant_card_possession_performance
+  parameters:
+    기준년월:
+      type: string
+      description: 가맹점 실적 기준년월(YYYYMM)
+      required: true
+    카드만료기준일:
+      type: string
+      description: 유효 카드 판단 기준일(YYYYMMDD). 미입력 시 기준년월의 월말일
+    가맹점명:
+      type: string
+      description: 가맹점명 필터(부분일치)
+    업종:
+      type: string
+      description: 가맹점업종명 또는 업종대분류코드명 필터
+    보유구분:
+      type: string
+      description: 전체, 개인카드보유, 개인카드미보유, 기업카드보유, 기업카드미보유, 둘다보유, 둘다미보유
+    limit:
+      type: integer
+      description: 결과 행수 제한
+      default: '100'
+  tags:
+  - 가맹점
+  - 업종
+  - 실적
+  - 당월매출
+  - 개인카드
+  - 기업카드
+  - 카드소지
+  - 미보유
+  - 영업대상
+  - 대표자
+- name: credit_utilization
+  question: 기업별 한도 사용률은?
+  description: 기업별 한도 사용률을 조회합니다. 한도사용률 = 카드이용합계금액 / 총한도금액 x 100.
+  sql_builder: credit_utilization
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 작업기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 작업기준년월(YYYYMM)
+      required: true
+    기업명:
+      type: string
+      description: 특정 기업 상호명
+    limit:
+      type: integer
+      description: 결과 행수 제한
+      default: '20'
+  tags:
+  - 한도
+  - 사용률
+  - 여신
+  - 한도소진율
+  - 기업별
+- name: sales_by_industry
+  question: 업종별 매출금액을 보여줘
+  description: 업종별 매출금액과 건수를 조회합니다. 법인카드 기업 거래 기준입니다.
+  sql_builder: sales_by_industry
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM) 또는 기준년월일(YYYYMMDD)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM) 또는 기준년월일(YYYYMMDD)
+      required: true
+    업종:
+      type: string
+      description: 업종 대분류명 필터
+    limit:
+      type: integer
+      description: 결과 행수 제한
+  tags:
+  - 업종
+  - 매출
+  - 업종별
+  - 법인카드
+- name: delinquency_status
+  question: 기업별 연체 현황을 보여줘
+  description: 연체가 발생한 기업들의 연체 현황을 조회합니다. 연체금액과 연체율을 포함합니다.
+  sql_builder: delinquency_status
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 작업기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 작업기준년월(YYYYMM)
+      required: true
+    기업명:
+      type: string
+      description: 특정 기업 상호명
+    limit:
+      type: integer
+      description: 결과 행수 제한
+      default: '20'
+  tags:
+  - 연체
+  - 연체현황
+  - 기업별
+  - 리스크
+  - 여신
+- name: card_delinquency_by_grade
+  question: 카드등급별 연체 현황은?
+  description: 카드등급별 연체 현황을 조회합니다. 등급별 카드수, 이용금액, 연체원금, 연체율을 포함합니다.
+  sql_builder: card_delinquency_by_grade
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 카드등급
+  - 연체
+  - 등급별
+  - 연체율
