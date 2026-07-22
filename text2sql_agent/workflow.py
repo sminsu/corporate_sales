@@ -540,7 +540,7 @@ _TIME_EXPRESSION_RE = re.compile(
     r"("
     r"20\d{2}\s*년|20\d{2}(?:0[1-9]|1[0-2])(?:[0-3]\d)?|"
     r"\d{1,2}\s*월|\d{4}-\d{1,2}|\d{4}\.\d{1,2}|"
-    r"(?:최근|지난)\s*(?:\d{1,3}\s*개월|(?:\d{1,2}|일)\s*년)|"
+    r"(?:최근|지난)\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)|"
     r"오늘|어제|내일|현재|최근|이번\s*(?:달|월|년)|저번\s*달|지난\s*(?:달|월|해|년)|전월|전년|작년|올해|"
     r"기준(?:일|월|년월|시점)?|기간|월별|일별|연도별|분기|상반기|하반기"
     r")"
@@ -700,7 +700,7 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
 
     now = datetime.now()
     current = f"{now.year}{now.month:02d}"
-    recent = re.search(r"(?:최근|지난)\s*(\d+)\s*개월", text)
+    recent = re.search(r"(?:최근|지난)\s*(\d+)\s*(?:개월|달)", text)
     if recent:
         span = max(1, min(int(recent.group(1)), 120))
         return _months_back_ym(current, span - 1), current, explicit_day
@@ -763,26 +763,48 @@ def _find_amount_near(question: str, labels: tuple[str, ...]) -> int | float | N
     return None
 
 
-_RECENT_ONE_YEAR_PATTERN = (
+_RECENT_CLOSURE_PERIOD_PATTERN = (
     r"(?:최근|지난)\s*"
-    r"(?:(?:1|일)\s*년\s*(?:이내|내|간|동안)?|12\s*개월\s*(?:이내|내|간|동안)?)"
+    r"(?:(?:\d{1,3}\s*(?:개월|달))|(?:(?:\d{1,2}|일)\s*년)|반\s*년)"
+    r"\s*(?:이내|내|간|동안)?"
 )
 
 
+def _extract_recent_period_months_by_rule(question: str) -> int | None:
+    """Return the explicit relative period as months for closure queries."""
+    text = question or ""
+    month_match = re.search(
+        r"(?:최근|지난)\s*(\d{1,3})\s*(?:개월|달)\s*(?:이내|내|간|동안)?",
+        text,
+    )
+    if month_match:
+        return max(1, min(int(month_match.group(1)), 120))
+    if re.search(r"(?:최근|지난)\s*반\s*년\s*(?:이내|내|간|동안)?", text):
+        return 6
+    year_match = re.search(
+        r"(?:최근|지난)\s*(\d{1,2}|일)\s*년\s*(?:이내|내|간|동안)?",
+        text,
+    )
+    if year_match:
+        years = 1 if year_match.group(1) == "일" else int(year_match.group(1))
+        return max(1, min(years * 12, 120))
+    return None
+
+
 def _extract_recent_closed_merchant_name_by_rule(question: str) -> str:
-    """Extract the named merchant from a recent-one-year closure question."""
+    """Extract the named merchant from a recent-period closure question."""
     text = question or ""
     token = r"[0-9A-Za-z가-힣&()._-]+"
     closure = r"(?:(?:폐업|휴폐업|해지)(?:한|된)?|문\s*닫(?:은|았던|힌)?)"
     merchant_subject = r"(?:가맹점|점포|매장)"
     patterns = [
         (
-            rf"{_RECENT_ONE_YEAR_PATTERN}\s*(?:에\s*)?{closure}\s+"
+            rf"{_RECENT_CLOSURE_PERIOD_PATTERN}\s*(?:에\s*)?{closure}\s+"
             rf"(?P<name>{token}(?:\s+{token}){{0,4}})\s+{merchant_subject}"
         ),
         (
             rf"(?P<name>{token}(?:\s+{token}){{0,4}})\s+{merchant_subject}(?:\s*중)?"
-            rf"[^?!.]{{0,40}}?{_RECENT_ONE_YEAR_PATTERN}[^?!.]{{0,20}}?{closure}"
+            rf"[^?!.]{{0,40}}?{_RECENT_CLOSURE_PERIOD_PATTERN}[^?!.]{{0,20}}?{closure}"
         ),
     ]
     generic = {
@@ -825,7 +847,7 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     }
     invalid_candidate_context = re.compile(
         r"최근|지난|이번|저번|전월|매출|업종별|가맹점별|법인카드|기업카드|"
-        r"폐업|휴폐업|해지|일년|1년|12개월"
+        r"폐업|휴폐업|해지|일년|\d+\s*년|\d+\s*(?:개월|달)|반년"
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -890,11 +912,11 @@ def _is_named_merchant_sales_question(question: str) -> bool:
 
 
 def _is_recent_closed_named_merchant_count_question(question: str) -> bool:
-    """Detect a named merchant count whose closure was observed in the last year."""
+    """Detect a named merchant count whose closure was observed in a recent period."""
     text = question or ""
     return bool(
         _extract_recent_closed_merchant_name_by_rule(text)
-        and re.search(_RECENT_ONE_YEAR_PATTERN, text, re.IGNORECASE)
+        and _extract_recent_period_months_by_rule(text) is not None
         and re.search(r"폐업|휴폐업|해지|문\s*닫", text)
         and re.search(
             r"가맹점\s*(?:수|개수)|몇\s*(?:개|곳)|곳\s*수|점포\s*수",
@@ -922,6 +944,10 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
     """
     names = {str(spec.get("name") or "") for spec in param_specs if spec.get("name")}
     params: dict = {}
+    recent_period_months = _extract_recent_period_months_by_rule(question)
+    for name in {"조회기간개월수", "기간개월수"} & names:
+        if recent_period_months is not None:
+            params[name] = recent_period_months
     business_number_params = {
         str(spec.get("name") or "")
         for spec in param_specs
@@ -1794,7 +1820,7 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_current_ym()}"
 4. "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 지난달 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_previous_ym()}"
    단, "전월 대비", "전월비", "전월과 비교"의 전월은 비교 기준이므로 조회기간 파라미터로 추출하지 마세요.
-5. "최근 N개월"은 기준년월을 종료월로 보고 N개월 구간으로 해석합니다.
+5. "최근 N개월/N달"은 기준년월을 종료월로 보고 N개월 구간으로 해석합니다.
 6. "상위 N개" → limit: N
 7. "개인카드 미보유" → 보유구분:"개인카드미보유", "기업카드 미보유/법인카드 미보유" → 보유구분:"기업카드미보유"
 8. 이름 검색은 기본 부분일치입니다. "이름 고정", "이름만으로", "정확 일치"를 명시한 경우에만 이름정확일치:true로 추출하세요.
@@ -1828,8 +1854,9 @@ JSON:"""
         ym = _extract_ym_from_question(question) or extracted.get("기간_종료")
         if ym:
             extracted["기준년월"] = ym
-    recent_months = re.search(r"최근\s*(\d+)\s*개월", question)
-    if recent_months:
+    recent_months = re.search(r"최근\s*(\d+)\s*(?:개월|달)", question)
+    period_param_names = {str(spec.get("name") or "") for spec in param_specs}
+    if recent_months and period_param_names.intersection({"기간_시작", "기간_종료", "기준년월"}):
         end_ym = extracted.get("기간_종료") or extracted.get("기준년월") or _current_ym()
         if re.fullmatch(r"20\d{4}", str(end_ym)):
             span = max(int(recent_months.group(1)), 1)

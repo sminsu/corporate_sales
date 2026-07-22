@@ -221,6 +221,7 @@ VQ_PARAM_SPECS: dict[str, list[dict]] = {
     ],
     "recent_closed_brand_merchant_count": [
         {"name": "가맹점명", "type": "like_string", "description": "가맹점명·외부가맹점명·브랜드명 부분일치 검색어"},
+        {"name": "조회기간개월수", "type": "integer", "description": "CURRENT_DATE에서 과거로 조회할 개월 수"},
     ],
 }
 

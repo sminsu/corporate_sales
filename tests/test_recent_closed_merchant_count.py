@@ -11,6 +11,9 @@ from text2sql_agent.schema import _validate_sql_against_schema
 @pytest.mark.parametrize(
     ("question", "expected_name"),
     [
+        ("최근 6달 이내에 폐업한 교촌치킨 가맹점 수 알려줘", "교촌치킨"),
+        ("최근 6개월 이내 폐업한 교촌 치킨 가맹점 개수", "교촌 치킨"),
+        ("지난 반년 동안 문 닫은 KFC 점포는 몇 곳이야", "KFC"),
         ("최근 일년 이내 폐업한 교촌 치킨 가맹점 수 알려줘", "교촌 치킨"),
         ("최근 1년 이내 폐업한 교촌치킨 가맹점 개수", "교촌치킨"),
         ("최근 12개월 동안 폐업한 KFC 가맹점은 몇 개야", "KFC"),
@@ -58,14 +61,40 @@ def test_recent_closed_merchant_sql_uses_first_closed_observation_without_llm() 
 
     sql = result["final_sql"]
     assert result["param_stage"] == "done"
-    assert result["extracted_params"] == {"가맹점명": "교촌 치킨"}
+    assert result["extracted_params"] == {
+        "가맹점명": "교촌 치킨",
+        "조회기간개월수": 12,
+    }
     assert 'MIN(a."기준년월일") AS "최초폐업관측일"' in sql
     assert 'COALESCE(a."휴폐업여부", \'0\') <> \'0\'' in sql
-    assert "DATE_ADD('YEAR', -1, CURRENT_DATE)" in sql.upper()
+    assert "DATE_ADD('MONTH', -12, CURRENT_DATE)" in sql.upper()
     assert 'COUNT(DISTINCT f."가맹점번호")' in sql
     assert "CONCAT('%', '교촌 치킨', '%')" in sql
     assert "REGEXP_REPLACE" in sql
     assert _validate_sql_against_schema(sql, ["tbdaaus01"]) == []
+
+
+def test_recent_six_month_closed_merchant_sql_is_completed_without_llm() -> None:
+    question = "최근 6달 이내에 폐업한 교촌치킨 가맹점 수 알려줘"
+    capability = workflow._select_verified_query_capability(question, {})
+    assert capability is not None
+
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("offline")):
+        result = workflow.extract_and_apply_params(
+            {
+                "question": question,
+                **capability,
+                "user_provided_params": {},
+            }
+        )
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {
+        "가맹점명": "교촌치킨",
+        "조회기간개월수": 6,
+    }
+    assert "DATE_ADD('MONTH', -6, CURRENT_DATE)" in result["final_sql"].upper()
+    assert _validate_sql_against_schema(result["final_sql"], ["tbdaaus01"]) == []
 
 
 def test_recent_closed_merchant_exact_name_request_removes_wildcards() -> None:
@@ -84,6 +113,7 @@ def test_recent_closed_merchant_exact_name_request_removes_wildcards() -> None:
 
     assert result["extracted_params"] == {
         "가맹점명": "교촌 치킨",
+        "조회기간개월수": 12,
         "이름정확일치": True,
     }
     assert "CONCAT('%', '교촌 치킨', '%')" not in result["final_sql"]

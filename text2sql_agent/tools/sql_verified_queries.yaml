@@ -1213,7 +1213,7 @@ verified_queries:
   - Athena
 - name: recent_closed_brand_merchant_count
   question: 최근 일년 이내 폐업한 교촌 치킨 가맹점 수 알려줘
-  description: 가맹점 일별 풍성화(tbdaaus01)의 국세청 휴폐업여부가 정상(0)이 아닌 상태로 처음 관측된 기준년월일을 폐업 관측일로 사용해, 최근 1년 내 지정 브랜드의 고유 가맹점 수를 계산합니다. 실제 국세청 폐업 신고일 컬럼이 없으므로 결과는 최초 폐업 상태 관측일 기준입니다.
+  description: 가맹점 일별 풍성화(tbdaaus01)의 국세청 휴폐업여부가 정상(0)이 아닌 상태로 처음 관측된 기준년월일을 폐업 관측일로 사용해, 최근 N개월 내 지정 브랜드의 고유 가맹점 수를 계산합니다. 실제 국세청 폐업 신고일 컬럼이 없으므로 결과는 최초 폐업 상태 관측일 기준입니다.
   sql: |
     WITH first_closed_observation AS (
       SELECT
@@ -1237,12 +1237,12 @@ verified_queries:
       GROUP BY a."가맹점번호"
     )
     SELECT
-      DATE_FORMAT(DATE_ADD('year', -1, CURRENT_DATE), '%Y%m%d') AS "조회시작일",
+      DATE_FORMAT(DATE_ADD('month', -{조회기간개월수}, CURRENT_DATE), '%Y%m%d') AS "조회시작일",
       DATE_FORMAT(CURRENT_DATE, '%Y%m%d') AS "조회종료일",
-      COUNT(DISTINCT f."가맹점번호") AS "최근1년폐업가맹점수"
+      COUNT(DISTINCT f."가맹점번호") AS "폐업가맹점수"
     FROM first_closed_observation f
     WHERE f."최초폐업관측일" BETWEEN
-      DATE_FORMAT(DATE_ADD('year', -1, CURRENT_DATE), '%Y%m%d')
+      DATE_FORMAT(DATE_ADD('month', -{조회기간개월수}, CURRENT_DATE), '%Y%m%d')
       AND DATE_FORMAT(CURRENT_DATE, '%Y%m%d')
   parameters:
     가맹점명:
@@ -1251,7 +1251,16 @@ verified_queries:
       required: true
       sample_values:
       - 교촌 치킨
+    조회기간개월수:
+      type: integer
+      description: CURRENT_DATE에서 과거로 조회할 개월 수. 최근 6달은 6, 최근 1년은 12입니다.
+      required: true
+      sample_values:
+      - 6
+      - 12
   tags:
+  - 최근기간
+  - 최근6개월
   - 최근1년
   - 폐업
   - 휴폐업

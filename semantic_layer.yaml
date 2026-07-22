@@ -18,7 +18,7 @@
 # =============================================================================
 
 semantic_layer_metadata:
-  version: "2026-07-16.3"
+  version: "2026-07-22.1"
   sql_dialect: athena_engine_v3
   target_models: [gemma4, gpt-oss]
   sources:
@@ -8617,8 +8617,8 @@ sql_generation_contract:
     YYYY년 M월: YYYYMM
     현재·이번달: 실행일이 속한 기준년월
     지난달·저번달·전월: 실행일 또는 비교 대상 월의 직전월
-    최근 N개월: 현재월 포함 N개 기준년월
-    최근 1년·지난 12개월: 실행일에서 1년 전부터 실행일까지 양 끝을 포함
+    최근 N개월·최근 N달: 월 스냅샷/월 집계는 현재월 포함 N개 기준년월, 일 이벤트는 실행일에서 N개월 전부터 실행일까지 양 끝을 포함
+    최근 N년·지난 N년: 월 스냅샷/월 집계는 현재월 포함 N×12개 기준년월, 일 이벤트는 실행일에서 N년 전부터 실행일까지 양 끝을 포함
     tbdaa1d12 월: SUBSTR(기준년월일,1,6) 후 고객×월 최신행
   ambiguity_rules:
     - 필수 기간·대상·코드값을 확정할 수 없으면 임의 값을 만들지 않고 추가 입력을 요청한다.
@@ -8636,7 +8636,7 @@ canonical_domains:
     business_scope: "가맹점·브랜드·업종별 매출, 거래건수, 순위와 수수료 분석"
     keywords: [가맹점, 점포, 매장, 브랜드, 상호, 업종, 매출순위, 가맹점매출, 수수료율]
     primary_entities: [merchant, merchant_daily_enrichment, merchant_monthly_performance, merchant_industry, domestic_sales]
-    preferred_metrics: [가맹점월매출금액, 가맹점수, 최근1년폐업가맹점수, 신용카드가맹점수수료율]
+    preferred_metrics: [가맹점월매출금액, 가맹점수, 최근기간폐업가맹점수, 신용카드가맹점수수료율]
     default_fact_table: tmdaa5e11
     default_time_dimension: 기준년월
     default_filters: []
@@ -9014,10 +9014,10 @@ canonical_metrics:
     synonyms: [기업카드 보유 가맹점주 수, 법인카드 소지 점주 인원, 기업카드 소지자 명수]
     unit: 명
     aggregation_behavior: distinct_count_latest_snapshot
-  - name: 최근1년폐업가맹점수
+  - name: 최근기간폐업가맹점수
     domain: merchant_sales
-    business_definition: 국세청 휴폐업 상태가 정상(0)이 아닌 것으로 최근 1년 안에 처음 관측된 고유 가맹점 수
-    expression: COUNT(DISTINCT "가맹점번호") WHERE "최초폐업관측일" BETWEEN DATE_FORMAT(DATE_ADD('year', -1, CURRENT_DATE), '%Y%m%d') AND DATE_FORMAT(CURRENT_DATE, '%Y%m%d')
+    business_definition: 국세청 휴폐업 상태가 정상(0)이 아닌 것으로 최근 N개월 안에 처음 관측된 고유 가맹점 수
+    expression: COUNT(DISTINCT "가맹점번호") WHERE "최초폐업관측일" BETWEEN DATE_FORMAT(DATE_ADD('month', -:조회기간개월수, CURRENT_DATE), '%Y%m%d') AND DATE_FORMAT(CURRENT_DATE, '%Y%m%d')
     source_table: tbdaaus01
     source_entity: merchant_daily_enrichment
     default_time_dimension: 기준년월일
@@ -9025,7 +9025,7 @@ canonical_metrics:
     required_filters:
       - COALESCE(tbdaaus01."휴폐업여부", '0') <> '0'
       - 가맹점번호별 MIN(기준년월일)을 최초폐업관측일로 계산
-      - 최초폐업관측일이 CURRENT_DATE - 1년부터 CURRENT_DATE까지
+      - 최초폐업관측일이 CURRENT_DATE - 조회기간개월수부터 CURRENT_DATE까지
       - 가맹점명·외부가맹점명·브랜드명 중 하나에 가맹점명 파라미터 부분일치
     name_filter:
       parameter: 가맹점명
@@ -9033,13 +9033,14 @@ canonical_metrics:
       default_match: contains
       normalize_whitespace: true
     time_policy:
-      range_start: DATE_ADD('year', -1, CURRENT_DATE)
+      parameter: 조회기간개월수
+      range_start: DATE_ADD('month', -:조회기간개월수, CURRENT_DATE)
       range_end: CURRENT_DATE
       boundaries: inclusive
     semantic_cautions:
       - 실제 국세청 폐업 신고일이 아니라 일별 스냅샷의 최초 폐업 상태 관측일
       - tbdaadt01.가맹점해지년월일은 KB 가맹점 계약 해지일이므로 폐업과 혼용하지 않음
-    synonyms: [최근 1년 폐업 가맹점 수, 지난 12개월 폐업 점포 수, 일년 이내 문 닫은 가맹점 개수]
+    synonyms: [최근 폐업 가맹점 수, 최근 6개월 폐업 가맹점 수, 최근 6달 폐업 점포 수, 최근 1년 폐업 가맹점 수, 지난 12개월 폐업 점포 수, 일년 이내 문 닫은 가맹점 개수]
     unit: 개
     aggregation_behavior: first_event_then_distinct_count
 
@@ -9152,30 +9153,35 @@ semantic_query_contracts:
     routing_strength: high
     support_status: supported_with_observation_date
     table_selection_mode: authoritative
-    description: 지정 브랜드에서 최근 1년 내 국세청 휴폐업 상태가 처음 관측된 고유 가맹점 수를 센다.
+    description: 지정 브랜드에서 최근 N개월·N달·N년 내 국세청 휴폐업 상태가 처음 관측된 고유 가맹점 수를 센다.
     match:
       required:
         - [폐업, 휴폐업, 문 닫은, 문닫은, 해지]
-        - [최근 1년, 최근 일년, 일년 이내, 지난 12개월, 최근 12개월]
+        - [최근, 지난]
+        - [개월, 달 이내, 달 동안, 달간, 년 이내, 년 동안, 년간, 1년, 일년, 반년]
         - [가맹점 수, 가맹점수, 가맹점 개수, 개수, 몇개, 몇 개, 몇 곳, 점포 수, 수 알려]
       optional:
         - [브랜드, 가맹점]
       excluded: [매출, 매출액, 매출금액, 판매금액]
     examples:
+      - 최근 6달 이내에 폐업한 교촌치킨 가맹점 수 알려줘
+      - 최근 6개월 이내 폐업한 교촌 치킨 가맹점 개수
       - 최근 일년 이내 폐업한 교촌 치킨 가맹점 수 알려줘
     source_tables: [tbdaaus01]
-    metric_names: [최근1년폐업가맹점수]
+    metric_names: [최근기간폐업가맹점수]
     result_grain: 조회기간 1행
     entity_binding:
       parameter: 가맹점명
       required: true
-      extraction: 최근 1년 기간·폐업 표현과 가맹점·점포 일반명 사이에 있는 고유 브랜드 명칭
+      extraction: 최근 N개월·N달·N년 기간 및 폐업 표현과 가맹점·점포 일반명 사이에 있는 고유 브랜드 명칭
     name_filter:
       columns: [가맹점명, 외부가맹점명, 브랜드명]
       default_match: contains
       normalize_whitespace: true
     time_policy:
-      range: CURRENT_DATE - 1년부터 CURRENT_DATE까지
+      parameter: 조회기간개월수
+      extraction: 최근 N개월·N달은 N, 반년은 6, 최근 N년은 N×12
+      range: CURRENT_DATE - 조회기간개월수부터 CURRENT_DATE까지
       boundaries: inclusive
     deduplication:
       first_event: 가맹점번호별 MIN(기준년월일) WHERE COALESCE(휴폐업여부, '0') <> '0'
@@ -9805,9 +9811,11 @@ query_references:
       file: athena_text2sql_reference.xlsx
       sheet: 추가 질의
       row: 3
-  - intent: 최근1년_브랜드가맹점_폐업수
+  - intent: 최근기간_브랜드가맹점_폐업수
     domain: merchant_sales
     when_user_says:
+      - "최근 6달 이내에 폐업한 교촌치킨 가맹점 수 알려줘"
+      - "최근 6개월 이내 폐업한 특정 브랜드 가맹점 개수"
       - "최근 일년 이내 폐업한 교촌 치킨 가맹점 수 알려줘"
       - "최근 1년 내 폐업한 특정 브랜드 가맹점 개수"
       - "브랜드 가맹점 중 지난 12개월 동안 폐업한 곳 수"
@@ -9820,9 +9828,9 @@ query_references:
       가맹점수: "COUNT(DISTINCT \"가맹점번호\")"
       이름검색: "가맹점명·외부가맹점명·브랜드명 LIKE '%' || :가맹점명 || '%'"
     rules:
-      - "최근 1년은 CURRENT_DATE에서 1년 전부터 오늘까지 양 끝을 포함한다."
+      - "최근 N개월·N달은 CURRENT_DATE에서 N개월 전부터 오늘까지, 최근 N년은 N×12개월 전부터 오늘까지 양 끝을 포함한다."
       - "tbdaaus01에는 실제 국세청 폐업 신고일이 없으므로 휴폐업 상태가 최초 관측된 기준년월일을 사용하고 이를 결과 의미에 명시한다."
-      - "이미 1년보다 오래전에 폐업 상태로 관측된 가맹점은 최근 1년 폐업 수에 포함하지 않는다."
+      - "지정한 조회기간보다 오래전에 폐업 상태로 관측된 가맹점은 최근 기간 폐업 수에 포함하지 않는다."
       - "가맹점 수는 가맹점번호를 COUNT DISTINCT하며, 가맹점주 인원이나 사업자등록번호 수로 바꾸지 않는다."
     verified_query: recent_closed_brand_merchant_count
   - intent: 브랜드가맹점_기업카드보유고객

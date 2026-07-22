@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>프로젝트 판단 및 실행 흐름</title>
+  <style>
+    html, body {
+      margin: 0;
+      min-width: 1600px;
+      background: #ffffff;
+    }
+
+    body {
+      box-sizing: border-box;
+      padding: 56px;
+      font-family: "Apple SD Gothic Neo", "Noto Sans KR", Arial, sans-serif;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+      width: max-content;
+      min-width: 100%;
+    }
+
+    .mermaid svg {
+      display: block;
+      max-width: none !important;
+      height: auto !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="mermaid">
+flowchart TD
+    START["사용자 질문 입력"] --&gt; TYPE{"어떤 질문인가?"}
+
+    TYPE --&gt;|"용어·지표·구조 설명"| DIRECT["Semantic Layer를 근거로&lt;br/&gt;SQL 없이 직접 설명"]
+    TYPE --&gt;|"기업영업 범위 밖"| REJECT["지원 가능한 질문 예시와 함께&lt;br/&gt;답변 불가 안내"]
+    TYPE --&gt;|"데이터 조회·집계"| DOMAIN["업무 도메인 판단&lt;br/&gt;규칙 → 지표·엔터티 → 임베딩 → LLM 보정"]
+
+    DOMAIN --&gt; SUPPORT{"안전하게 계산 가능한가?"}
+    SUPPORT --&gt;|"근거 컬럼·정의 부족"| BLOCK["값을 추정하지 않고&lt;br/&gt;계산 불가 사유 안내"]
+    SUPPORT --&gt;|"계산 가능"| CAP{"어떤 실행 방식을 사용할까?"}
+
+    CAP --&gt;|"의도가 검증 쿼리와 일치"| VQ["사전 검증 SQL 선택&lt;br/&gt;계약 → 임베딩 → 규칙 → LLM"]
+    CAP --&gt;|"전문 업무 로직과 일치"| TOOL["전용 Tool 실행&lt;br/&gt;예: 대손비용률·Excel 생성"]
+    CAP --&gt;|"일치하는 기능 없음"| GEN["관련 테이블 선택&lt;br/&gt;질문에 맞춰 SQL 생성"]
+
+    VQ --&gt; PARAM{"필수 조건이 충분한가?"}
+    TOOL --&gt; PARAM
+    GEN --&gt; AMBIG{"대상이 명확한가?"}
+
+    PARAM --&gt;|"기간·기업명·LS·IS 등 누락"| ASK["사용자에게 필요한 값만 요청"]
+    AMBIG --&gt;|"그 회사·해당 가맹점 등 모호함"| ASK
+    ASK --&gt; RESUME["입력값과 기존 판단을 유지한 채 재개"]
+    RESUME --&gt; PARAM
+
+    PARAM --&gt;|"충분함"| EXEC["읽기 전용 조회 실행"]
+    AMBIG --&gt;|"명확함"| SQL["SQL 생성"]
+    SQL --&gt; VALID{"스키마·시간·조인·SQL 의미 검증"}
+    VALID --&gt;|"통과"| EXEC
+    VALID --&gt;|"실패, 3회 미만"| SQL
+    VALID --&gt;|"3회 실패"| ERROR["안전하게 실행 중단"]
+
+    EXEC --&gt;|"DB 오류"| FALLBACK["검증 쿼리·Tool이면 일반 SQL 경로로 우회&lt;br/&gt;생성 SQL이면 최대 3회 재생성"]
+    FALLBACK --&gt; GEN
+    EXEC --&gt;|"성공"| ANSWER["결과 요약&lt;br/&gt;표·해석·조회 기준 표시"]
+    ANSWER --&gt; END["화면 표시·차트·파일 내보내기"]
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      securityLevel: "strict",
+      htmlLabels: false,
+      fontFamily: "Apple SD Gothic Neo, Noto Sans KR, Arial, sans-serif",
+      themeVariables: {
+        background: "#ffffff",
+        primaryColor: "#eef5ff",
+        primaryTextColor: "#172033",
+        primaryBorderColor: "#4f79b8",
+        secondaryColor: "#eef9f2",
+        tertiaryColor: "#fff7e7",
+        lineColor: "#667085",
+        edgeLabelBackground: "#ffffff",
+        fontSize: "17px"
+      },
+      flowchart: {
+        htmlLabels: false,
+        curve: "basis",
+        nodeSpacing: 44,
+        rankSpacing: 64,
+        padding: 18,
+        useMaxWidth: false
+      }
+    });
+  </script>
+</body>
+</html>
