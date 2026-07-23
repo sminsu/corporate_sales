@@ -428,6 +428,6 @@ def test_public_result_error_does_not_expose_sql_or_db_details() -> None:
 
     public_detail = web_service._public_result_error(raw_detail)
 
-    assert public_detail == "조회 처리 중 오류가 발생했습니다. 질문 조건을 확인하거나 다시 시도해 주세요."
+    assert public_detail == "SQL 처리에 실패했습니다. 아래 실패 원인 분석과 마지막 SQL을 확인해 주세요."
     assert "internal_schema" not in public_detail
     assert web_service._public_result_error("") == ""

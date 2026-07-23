@@ -1,22 +1,24 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="자연어 질문으로 기업영업 데이터를 조회하고 후속 분석하는 업무용 Text2SQL 화면" />
-    <meta name="theme-color" content="#0e1117" />
-    <title>KB카드 기업영업 에이전트 · Text2SQL Console</title>
+    <meta name="description" content="자연어 질문으로 기업영업 및 프랜차이즈 데이터를 조회하고 후속 분석하는 업무용 에이전트" />
+    <meta name="theme-color" content="#fbfaf7" />
+    <title>기업영업 &amp; 프랜차이즈 에이전트</title>
     <script>
       (() => {
         try {
-          const storedTheme = localStorage.getItem("text2sql:console:theme");
-          if (storedTheme === "light") document.documentElement.dataset.theme = "light";
+          const storedTheme = localStorage.getItem("text2sql:console:theme:v2");
+          if (storedTheme === "dark") {
+            delete document.documentElement.dataset.theme;
+          }
         } catch (_) {
-          /* Ignore storage errors and keep the default dark theme. */
+          /* Ignore storage errors and keep the default light theme. */
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260720" />
+    <link rel="stylesheet" href="styles.css?v=20260724" />
   </head>
   <body>
     <a class="skip-link" href="#questionInput">질문 입력으로 건너뛰기</a>
@@ -24,9 +26,11 @@
       <!-- ░░ LEFT RAIL ░░ -->
       <aside class="rail" aria-label="대화 및 보고서 메뉴">
         <div class="brand">
-          <div class="brand-mark">KB</div>
+          <div class="brand-mark">
+            <img src="kb-logo.png?v=20260723" alt="KB" />
+          </div>
           <div class="brand-text">
-            <h1>Text2SQL</h1>
+            <h1>기업영업 &amp; 프랜차이즈 에이전트</h1>
             <p id="serviceStatus"><span class="dot"></span>연결 확인 중</p>
           </div>
         </div>
@@ -76,7 +80,7 @@
             <h2>SQL 실행 · 요약 · 보고서</h2>
           </div>
           <div class="topbar-actions">
-            <button id="themeToggle" class="ghost-btn theme-toggle" type="button" aria-pressed="false">밝게</button>
+            <button id="themeToggle" class="ghost-btn theme-toggle" type="button" aria-pressed="true">어둡게</button>
             <button id="clearBtn" class="ghost-btn" type="button" title="현재 대화 비우기">비우기</button>
             <button id="inspectorToggle" class="ghost-btn icon-only" type="button" title="상세 패널 숨기기" aria-label="상세 패널 숨기기" aria-controls="inspector" aria-expanded="true">⛶</button>
           </div>
@@ -106,6 +110,24 @@
             <div class="error-text">
               <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
               <p id="errorMessage"></p>
+              <div id="errorDiagnostics" class="error-diagnostics hidden">
+                <dl class="error-diagnostic-grid">
+                  <div><dt>실패 단계</dt><dd id="errorFailureStage">—</dd></div>
+                  <div><dt>시도 횟수</dt><dd id="errorRetryCount">—</dd></div>
+                  <div><dt>분석 도메인</dt><dd id="errorSelectedDomain">—</dd></div>
+                  <div><dt>선택 테이블</dt><dd id="errorSelectedTables">—</dd></div>
+                </dl>
+                <div class="error-analysis">
+                  <span>실패 원인 분석</span>
+                  <strong id="errorFailureReason"></strong>
+                  <p id="errorFailureSuggestion"></p>
+                  <p id="errorValidationSummary" class="error-validation-summary hidden"></p>
+                </div>
+                <details class="failed-sql" open>
+                  <summary>실패한 SQL</summary>
+                  <pre id="failedSqlBox">확인할 SQL이 없습니다.</pre>
+                </details>
+              </div>
               <div class="error-actions">
                 <button id="retryBtn" type="button">다시 시도</button>
                 <button id="editQuestionBtn" type="button">질문 수정</button>
@@ -247,6 +269,7 @@
           <button id="tab-button-context" class="tab active" data-tab="context" type="button" role="tab" aria-controls="tab-context" aria-selected="true">개요</button>
           <button id="tab-button-data" class="tab" data-tab="data" type="button" role="tab" aria-controls="tab-data" aria-selected="false">데이터</button>
           <button id="tab-button-sql" class="tab" data-tab="sql" type="button" role="tab" aria-controls="tab-sql" aria-selected="false">SQL</button>
+          <button id="tab-button-tables" class="tab" data-tab="tables" type="button" role="tab" aria-controls="tab-tables" aria-selected="false">테이블</button>
           <button id="tab-button-history" class="tab" data-tab="history" type="button" role="tab" aria-controls="tab-history" aria-selected="false">이력</button>
         </div>
 
@@ -266,6 +289,21 @@
         <article id="tab-sql" class="tab-page" role="tabpanel" aria-labelledby="tab-button-sql" tabindex="0">
           <div class="tab-page-toolbar"><span class="table-meta">실행 SQL</span><button id="copySqlBtn" type="button" disabled>SQL 복사</button></div>
           <pre id="sqlBox" class="sql-box">실행 SQL이 없습니다.</pre>
+        </article>
+
+        <article id="tab-tables" class="tab-page" role="tabpanel" aria-labelledby="tab-button-tables" tabindex="0">
+          <div class="table-catalog-head">
+            <div>
+              <span class="kicker">Semantic Layer</span>
+              <strong id="tableCatalogMeta">사용 테이블을 불러오세요.</strong>
+              <small>입력창에서 <code>/tables</code>로도 열 수 있습니다.</small>
+            </div>
+            <label class="sr-only" for="tableCatalogSearch">사용 테이블 검색</label>
+            <input id="tableCatalogSearch" type="search" autocomplete="off" placeholder="테이블명 검색" />
+          </div>
+          <div id="tableCatalogList" class="table-catalog-list" aria-live="polite">
+            <div class="inspector-empty">이 탭을 열면 Semantic Layer에 등록된 사용 테이블을 표시합니다.</div>
+          </div>
         </article>
 
         <article id="tab-history" class="tab-page" role="tabpanel" aria-labelledby="tab-button-history" tabindex="0">
@@ -297,6 +335,8 @@ const state = {
   exampleQuestions: [],
   recommendedQuestions: [],
   failedRequest: null,
+  tableCatalog: [],
+  tableCatalogLoaded: false,
 };
 
 const WEBAPP_AGENT_NAME = "corporate_sales";
@@ -416,6 +456,15 @@ const cancelRequestBtn = $("#cancelRequestBtn");
 const errorPanel = $("#errorPanel");
 const errorTitle = $("#errorTitle");
 const errorMessage = $("#errorMessage");
+const errorDiagnostics = $("#errorDiagnostics");
+const errorFailureStage = $("#errorFailureStage");
+const errorRetryCount = $("#errorRetryCount");
+const errorSelectedDomain = $("#errorSelectedDomain");
+const errorSelectedTables = $("#errorSelectedTables");
+const errorFailureReason = $("#errorFailureReason");
+const errorFailureSuggestion = $("#errorFailureSuggestion");
+const errorValidationSummary = $("#errorValidationSummary");
+const failedSqlBox = $("#failedSqlBox");
 const retryBtn = $("#retryBtn");
 const editQuestionBtn = $("#editQuestionBtn");
 const resultMeta = $("#resultMeta");
@@ -438,11 +487,14 @@ const promptCoach = $("#promptCoach");
 const promptCoachMessage = $("#promptCoachMessage");
 const copyTableBtn = $("#copyTableBtn");
 const copySqlBtn = $("#copySqlBtn");
+const tableCatalogMeta = $("#tableCatalogMeta");
+const tableCatalogSearch = $("#tableCatalogSearch");
+const tableCatalogList = $("#tableCatalogList");
 const mobileMenuBtn = $("#mobileMenuBtn");
 const rail = $(".rail");
 const mainContent = $("#mainContent");
 
-const THEME_KEY = "text2sql:console:theme";
+const THEME_KEY = "text2sql:console:theme:v2";
 function getTheme() {
   return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
@@ -497,6 +549,7 @@ const progressGroupIndex = {
   extract_and_apply_params: 1,
   analyze_question: 1,
   check_sql_gen_params: 1,
+  prepare_direct_sql: 2,
   execute_tool: 2,
   run_tool_query: 2,
   run_matched_query: 2,
@@ -745,6 +798,11 @@ function webappQueryPayload(payload = {}) {
 
 function canUseFollowupMode() {
   return Boolean(state.lastResultId && state.canFollowup && !state.continuation);
+}
+
+function looksLikeDirectSql(value) {
+  const text = String(value || "").trim().replace(/^```(?:sql|postgresql|trino|presto)?\s*/i, "");
+  return /^(SELECT|WITH)\b/i.test(text);
 }
 
 function beginActiveRequest(kind, question, restoreTarget = "composer") {
@@ -1109,6 +1167,10 @@ function clearInlineError() {
   errorPanel.classList.add("hidden");
   errorTitle.textContent = "요청을 처리하지 못했습니다.";
   errorMessage.textContent = "";
+  errorDiagnostics.classList.add("hidden");
+  failedSqlBox.textContent = "확인할 SQL이 없습니다.";
+  errorValidationSummary.textContent = "";
+  errorValidationSummary.classList.add("hidden");
   retryBtn.classList.add("hidden");
   editQuestionBtn.classList.add("hidden");
 }
@@ -1168,12 +1230,32 @@ function resetResultPanels() {
   setExportEnabled(false);
 }
 
+function renderFailureDiagnostics(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== "object") {
+    errorDiagnostics.classList.add("hidden");
+    return;
+  }
+  const tables = Array.isArray(diagnostics.selected_tables) ? diagnostics.selected_tables : [];
+  errorFailureStage.textContent = diagnostics.stage_label || "SQL 처리";
+  errorRetryCount.textContent = diagnostics.retry_count ? `${diagnostics.retry_count}회` : "재시도 없음";
+  errorSelectedDomain.textContent = diagnostics.selected_domain || "미분류";
+  errorSelectedTables.textContent = tables.length ? tables.join(", ") : "선택 테이블 없음";
+  errorFailureReason.textContent = diagnostics.reason || "SQL 처리 중 오류가 발생했습니다.";
+  errorFailureSuggestion.textContent = diagnostics.suggestion || "SQL과 선택 테이블을 확인해 주세요.";
+  const validationSummary = String(diagnostics.validation_summary || "").trim();
+  errorValidationSummary.textContent = validationSummary ? `검증 결과: ${validationSummary}` : "";
+  errorValidationSummary.classList.toggle("hidden", !validationSummary);
+  failedSqlBox.textContent = diagnostics.sql || "확인할 SQL이 없습니다.";
+  errorDiagnostics.classList.remove("hidden");
+}
+
 function showInlineError(message, title = "요청을 처리하지 못했습니다.", options = {}) {
   const settings = typeof options === "boolean" ? { appendMessage: options } : options || {};
   const appendMessage = settings.appendMessage === true;
   const safeMessage = String(message || "알 수 없는 오류가 발생했습니다.");
   errorTitle.textContent = title;
   errorMessage.textContent = safeMessage;
+  renderFailureDiagnostics(settings.diagnostics);
   errorPanel.classList.remove("hidden");
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
@@ -1288,6 +1370,67 @@ async function loadExamples() {
     state.exampleQuestions = normalizedQuestions(DEFAULT_EXAMPLES);
     renderPromptSuggestionContent();
     renderExampleButtons(heroExamples, DEFAULT_EXAMPLES.slice(0, 3), "starter-chip");
+  }
+}
+
+function renderTableCatalog() {
+  if (!tableCatalogList || !tableCatalogMeta) return;
+  const query = String(tableCatalogSearch?.value || "").trim().toLocaleLowerCase("ko-KR");
+  const filtered = state.tableCatalog.filter((table) => {
+    if (!query) return true;
+    return [
+      table.name,
+      table.physical_table,
+      table.korean_name,
+      table.description,
+      table.grain,
+    ].some((value) => String(value || "").toLocaleLowerCase("ko-KR").includes(query));
+  });
+  tableCatalogMeta.textContent = query
+    ? `${filtered.length}개 검색 결과 · 전체 ${state.tableCatalog.length}개`
+    : `조회 가능한 테이블 ${state.tableCatalog.length}개`;
+  if (!filtered.length) {
+    tableCatalogList.innerHTML = `<div class="inspector-empty">검색 조건과 일치하는 테이블이 없습니다.</div>`;
+    return;
+  }
+  tableCatalogList.innerHTML = filtered
+    .map(
+      (table) => `
+        <details class="table-catalog-item">
+          <summary>
+            <span>
+              <strong>${escapeHtml(table.korean_name || table.name)}</strong>
+              <code>${escapeHtml(table.physical_table || table.name)}</code>
+            </span>
+            <span class="table-catalog-toggle" aria-hidden="true">+</span>
+          </summary>
+          <div class="table-catalog-detail">
+            <p>${escapeHtml(table.description || "등록된 설명이 없습니다.")}</p>
+            <dl>
+              <dt>Grain</dt>
+              <dd>${escapeHtml(table.grain || "미정의")}</dd>
+            </dl>
+          </div>
+        </details>`,
+    )
+    .join("");
+}
+
+async function loadTableCatalog() {
+  if (!tableCatalogList || state.tableCatalogLoaded) {
+    renderTableCatalog();
+    return;
+  }
+  tableCatalogMeta.textContent = "사용 테이블을 불러오는 중입니다.";
+  tableCatalogList.innerHTML = `<div class="inspector-empty">테이블 목록을 불러오는 중입니다.</div>`;
+  try {
+    const data = await api("api/tables");
+    state.tableCatalog = Array.isArray(data?.tables) ? data.tables : [];
+    state.tableCatalogLoaded = true;
+    renderTableCatalog();
+  } catch (error) {
+    tableCatalogMeta.textContent = "사용 테이블을 불러오지 못했습니다.";
+    tableCatalogList.innerHTML = `<div class="inspector-empty">${escapeHtml(friendlyErrorMessage(error))}</div>`;
   }
 }
 
@@ -1799,7 +1942,27 @@ function renderResultMeta(data) {
   resultMeta.classList.remove("hidden");
 }
 
-function renderTable(columns, rows) {
+const tableSortState = { columns: [], rows: [], sortIndex: -1, sortDir: 1 };
+
+function compareCellValues(a, b) {
+  const aEmpty = a === null || a === undefined || a === "";
+  const bEmpty = b === null || b === undefined || b === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  const aNum = typeof a === "number" ? a : Number(String(a).replaceAll(",", ""));
+  const bNum = typeof b === "number" ? b : Number(String(b).replaceAll(",", ""));
+  if (Number.isFinite(aNum) && Number.isFinite(bNum)) return aNum - bNum;
+  return String(a).localeCompare(String(b), "ko-KR");
+}
+
+function renderTable(columns, rows, keepSort = false) {
+  if (!keepSort) {
+    tableSortState.columns = columns || [];
+    tableSortState.rows = rows || [];
+    tableSortState.sortIndex = -1;
+    tableSortState.sortDir = 1;
+  }
   if (!columns?.length || !rows?.length) {
     tableMeta.textContent = "조회 데이터가 없습니다.";
     resultTable.innerHTML = "";
@@ -1809,7 +1972,14 @@ function renderTable(columns, rows) {
   }
   tableMeta.textContent = `${rows.length.toLocaleString("ko-KR")}건 표시`;
   resultTable.setAttribute("aria-label", `조회 결과 ${rows.length.toLocaleString("ko-KR")}건`);
-  const thead = `<thead><tr>${columns.map((c) => `<th scope="col">${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
+  const thead = `<thead><tr>${columns
+    .map((c, idx) => {
+      const active = idx === tableSortState.sortIndex;
+      const arrow = active ? (tableSortState.sortDir === 1 ? " ▲" : " ▼") : "";
+      const ariaSort = active ? (tableSortState.sortDir === 1 ? "ascending" : "descending") : "none";
+      return `<th scope="col" class="sortable" data-sort-col="${idx}" aria-sort="${ariaSort}" title="클릭하면 이 열로 정렬합니다">${escapeHtml(c)}${arrow}</th>`;
+    })
+    .join("")}</tr></thead>`;
   const tbody = rows
     .map((row) => {
       const cells = columns
@@ -1825,6 +1995,23 @@ function renderTable(columns, rows) {
   resultTable.innerHTML = `${thead}<tbody>${tbody}</tbody>`;
   copyTableBtn.disabled = false;
 }
+
+resultTable.addEventListener("click", (event) => {
+  const header = event.target.closest("th[data-sort-col]");
+  if (!header || !tableSortState.rows.length) return;
+  const index = Number(header.dataset.sortCol);
+  if (!Number.isInteger(index)) return;
+  if (tableSortState.sortIndex === index) {
+    tableSortState.sortDir = -tableSortState.sortDir;
+  } else {
+    tableSortState.sortIndex = index;
+    tableSortState.sortDir = 1;
+  }
+  const sorted = [...tableSortState.rows].sort(
+    (a, b) => compareCellValues(a[index], b[index]) * tableSortState.sortDir,
+  );
+  renderTable(tableSortState.columns, sorted, true);
+});
 
 function renderCompactSummary(columns, rows) {
   if (!columns?.length || !rows?.length) {
@@ -2336,7 +2523,7 @@ function renderResult(data, context = {}) {
   setInspectorHasData(true);
   setExportEnabled(Boolean(data.result_id) && !data.error);
   if (data.error) {
-    showInlineError(data.error, "조회 중 확인 필요", false);
+    showInlineError(data.error, "SQL 처리 실패", { diagnostics: data.failure_details });
   } else {
     clearInlineError();
   }
@@ -2466,10 +2653,11 @@ async function submitFollowup(question, options = {}) {
 async function submitQuestion(payload) {
   if (state.isBusy) return;
   setBusy(true);
-  if (state.llmReady === false) {
+  const directSql = looksLikeDirectSql(payload.question || state.pendingQuestion || "");
+  if (!directSql && state.llmReady === false) {
     await loadHealth();
   }
-  if (state.llmReady === false) {
+  if (!directSql && state.llmReady === false) {
     const message = llmUnavailableMessage();
     state.failedRequest = { kind: "query", question: payload.question || state.pendingQuestion || "" };
     state.retryAction = () => submitQuestion(payload);
@@ -2536,6 +2724,14 @@ function handleSubmit() {
     showToast(state.continuation ? "추가 정보를 입력해주세요." : "질문을 입력해주세요.");
     questionInput.focus();
     showPromptSuggestions();
+    return;
+  }
+  if (question.toLowerCase() === "/tables") {
+    hidePromptSuggestions();
+    questionInput.value = "";
+    autoGrowInput();
+    updatePromptCoach();
+    openTableCatalog();
     return;
   }
   hidePromptSuggestions();
@@ -2818,7 +3014,10 @@ compactInspectorMedia.addEventListener?.("change", syncInspectorViewport);
 syncInspectorViewport();
 
 $$(".tab").forEach((button) => {
-  button.addEventListener("click", () => activateInspectorTab(button));
+  button.addEventListener("click", () => {
+    activateInspectorTab(button);
+    if (button.dataset.tab === "tables") loadTableCatalog();
+  });
   button.addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
@@ -2845,7 +3044,26 @@ function activateInspectorTab(button, focus = false) {
   if (focus) button.focus();
 }
 
+function openTableCatalog() {
+  const button = $('[data-tab="tables"]');
+  if (!button) return;
+  if (tableCatalogSearch) tableCatalogSearch.value = "";
+  if (compactInspectorMedia.matches) {
+    appEl.classList.add("inspector-mobile-open");
+    inspector.setAttribute("role", "dialog");
+    inspector.setAttribute("aria-modal", "true");
+    inspector.setAttribute("aria-label", "조회 상세 정보");
+  } else {
+    appEl.classList.remove("inspector-collapsed");
+  }
+  updateInspectorButton(true);
+  activateInspectorTab(button, true);
+  loadTableCatalog();
+}
+
 activateInspectorTab($(".tab.active"));
+
+tableCatalogSearch?.addEventListener("input", renderTableCatalog);
 
 $$("[data-export]").forEach((button) => {
   button.addEventListener("click", async () => {

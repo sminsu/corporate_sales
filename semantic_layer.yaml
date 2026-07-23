@@ -18,7 +18,7 @@
 # =============================================================================
 
 semantic_layer_metadata:
-  version: "2026-07-22.1"
+  version: "2026-07-23.1"
   sql_dialect: athena_engine_v3
   target_models: [gemma4, gpt-oss]
   sources:
@@ -8602,6 +8602,7 @@ sql_generation_contract:
     - Glue partition metadata가 선언되지 않은 year/month 컬럼은 만들지 않는다.
     - 질문에 없는 취소·활성·상태 코드를 임의로 추가하지 않는다.
     - 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본 LIKE '%이름%' 부분일치를 사용하고, 사용자가 이름 고정·이름만·정확 일치를 명시한 경우에만 앞뒤 %를 제거한다.
+    - 가맹점·브랜드 검색은 semantic_attributes.merchant_search_name의 테이블별 source_mappings를 사용하며, 브랜드 컬럼이 있는 테이블에서는 가맹점명·외부가맹점명·브랜드명 OR 조건 전체를 괄호로 묶는다.
     - 상세 목록은 요청 개수가 없으면 LIMIT 100을 적용한다.
   grain_and_aggregation_rules:
     - 일·월 snapshot은 table aggregation_policy의 최신행 축소를 먼저 적용한다.
@@ -8610,11 +8611,14 @@ sql_generation_contract:
     - 기업카드 신용+체크 축과 개별+공용 축, 총이용액과 세부 이용액처럼 overlap_group이 다른 값을 함께 더하지 않는다.
     - 가맹점 월매출은 tmdaa5e11의 일시불+할부이며 tmdaaus01 가맹점총지급금액으로 대체하지 않는다.
     - 가맹점주 인원은 대표고객식별자를 COUNT DISTINCT하고 가맹점번호나 기업고객식별자로 대체하지 않는다.
+    - 가맹점주가 운영하는 기업의 속성·리스크를 물으면 기업고객식별자를 사용하고, 가맹점주 개인의 식별·인원은 대표고객식별자를 사용한다.
+    - 가맹점 결제 금융기관별 가맹점 수는 가맹점번호를 COUNT DISTINCT하고 대표고객식별자 인원과 혼용하지 않는다.
     - 폐업 가맹점 수는 국세청 휴폐업여부가 정상(0)이 아닌 최초 관측일과 가맹점번호 DISTINCT를 사용하며 KB 가맹점 계약 해지와 구분한다.
     - 전월 대비 증감률은 요청 시작월보다 한 달 앞선 월까지 읽어 LAG를 계산한 뒤 요청 기간만 출력한다.
   time_resolution:
     YYYY년: YYYY01~YYYY12
     YYYY년 M월: YYYYMM
+    YYMM 기준·YYMM월: "2000년대 YYYYMM (예: 2605 기준 → 202605)"
     현재·이번달: 실행일이 속한 기준년월
     지난달·저번달·전월: 실행일 또는 비교 대상 월의 직전월
     최근 N개월·최근 N달: 월 스냅샷/월 집계는 현재월 포함 N개 기준년월, 일 이벤트는 실행일에서 N개월 전부터 실행일까지 양 끝을 포함
@@ -8626,6 +8630,8 @@ sql_generation_contract:
     - 업종별 이용금액은 결제처 업종(tbdaabt30.가맹점업종코드), 기업 자체 업종은 명시된 경우에만 표준산업분류코드를 사용한다.
     - 관리기업목록이 없으면 사업자등록번호 목록을 파라미터로 직접 입력하도록 요청한다.
     - 현금카드결제기관구분코드는 금융기관 코드이며 보통·당좌 같은 계좌 종류가 아니다. 계좌 종류 원천 컬럼과 당좌 코드 매핑이 없으면 당좌계좌 인원·비율 SQL을 만들지 않는다.
+    - '"가맹점 계좌"가 은행명과 함께 쓰이면 계좌번호가 아니라 가맹점 대금지급 결제금융기관으로 해석한다. 실제 계좌번호나 보통·당좌 같은 계좌 종류는 현재 스키마에서 조회하지 않는다.'
+    - '가맹점 문맥의 단독 "대손율"은 월말 기대대손충당금/원화대출잔액의 대손충당금률로 해석한다. 사용자가 대손비용률·상각·보정계수·LS·IS를 명시하면 월초/월말 충당금과 상각 기반 대손비용률로 분리한다.'
   result_defaults:
     list_limit: 100
     preview_rows: 30
@@ -8633,10 +8639,10 @@ sql_generation_contract:
     percent_round_digits: 2
 canonical_domains:
   - name: merchant_sales
-    business_scope: "가맹점·브랜드·업종별 매출, 거래건수, 순위와 수수료 분석"
-    keywords: [가맹점, 점포, 매장, 브랜드, 상호, 업종, 매출순위, 가맹점매출, 수수료율]
-    primary_entities: [merchant, merchant_daily_enrichment, merchant_monthly_performance, merchant_industry, domestic_sales]
-    preferred_metrics: [가맹점월매출금액, 가맹점수, 최근기간폐업가맹점수, 신용카드가맹점수수료율]
+    business_scope: "가맹점·브랜드·업종별 기본정보, 결제금융기관, 매출, 거래건수, 순위와 수수료 분석"
+    keywords: [가맹점, 점포, 매장, 브랜드, 상호, 업종, 매출순위, 가맹점매출, 수수료율, 가맹점계좌, 결제계좌, 결제금융기관, 국민은행]
+    primary_entities: [merchant, merchant_daily_enrichment, merchant_monthly_snapshot, merchant_monthly_performance, merchant_industry, domestic_sales]
+    preferred_metrics: [가맹점월매출금액, 가맹점수, 결제금융기관별가맹점수, 최근기간폐업가맹점수, 신용카드가맹점수수료율]
     default_fact_table: tmdaa5e11
     default_time_dimension: 기준년월
     default_filters: []
@@ -8668,7 +8674,7 @@ canonical_domains:
     business_scope: "기업 여신한도, 연체, 거래정지, 특수채권과 대손충당금 분석"
     keywords: [여신, 한도, 연체, 미납, 거래정지, 특수채권, 부실채권, 대손, 충당금, ECL, 리스크]
     primary_entities: [corporate_customer_daily, card_delinquency_daily, transaction_stop, special_debt, loss_provision]
-    preferred_metrics: [총여신한도금액, 연체회원수, 특수채권편입원금, 기대대손충당금]
+    preferred_metrics: [총여신한도금액, 연체회원수, 특수채권편입원금, 기대대손충당금, 가맹점포트폴리오대손충당금률]
     default_fact_table: tbdaa1d12
     default_time_dimension: 기준년월일
     default_filters: []
@@ -8742,7 +8748,7 @@ semantic_entities:
     korean_name: 가맹점
     physical_table: tbdaadt01
     grain: 가맹점번호
-    canonical_dimensions: [가맹점번호, 가맹점명, 한글가맹점명, 대표고객식별자, 기업고객식별자, 가맹점업종코드, MCC업종코드, 가맹점상태구분코드, 가맹점해지년월일]
+    canonical_dimensions: [가맹점번호, 가맹점명, 한글가맹점명, 대표고객식별자, 기업고객식별자, 사업자등록번호, 법인등록번호, 가맹점업종코드, MCC업종코드, 가맹점사업주체구분코드, 현금카드결제기관구분코드, 가맹점상태구분코드, 등록년월일, 가맹점해지년월일]
     canonical_facts: []
     use_when: [가맹점명·업종·상태를 결과에 표시할 때]
   - name: merchant_monthly_performance
@@ -8798,9 +8804,9 @@ semantic_entities:
     korean_name: 대손충당금
     physical_table: tbmewcm94
     grain: 기준년월 × 충당금식별번호 × 차주구분
-    canonical_dimensions: [기준년월, 충당금식별번호, 회원일련번호]
-    canonical_facts: [기대대손충당금]
-    use_when: [IFRS9 기대손실이나 충당금 규모를 조회할 때]
+    canonical_dimensions: [기준년월, 충당금식별번호, 회원일련번호, 고객식별자, 개인기업구분코드, 충당금차주구분코드]
+    canonical_facts: [원화대출잔액, 기대1년PD율, 충당금기대LGD율, 기대대손충당금]
+    use_when: [IFRS9 기대손실·충당금 규모 또는 기대대손충당금/원화대출잔액의 대손충당금률을 조회할 때]
   - name: relationship_manager
     korean_name: 기업고객전담관리
     physical_table: tsmagcca1
@@ -8843,10 +8849,10 @@ semantic_entities:
     korean_name: 가맹점월스냅샷
     physical_table: tmdaa5d01
     grain: 기준년월 × 가맹점번호
-    canonical_dimensions: []
+    canonical_dimensions: [기준년월, 가맹점번호, 기업고객식별자, 대표고객식별자, 가맹점명, 가맹점상태구분코드, 현금카드결제기관구분코드]
     canonical_facts: []
     use_when:
-      - 해당 원천 테이블의 속성 또는 시점 이력이 명시적으로 필요할 때
+      - 월 기준 가맹점·기업고객 모집단을 만들거나 같은 월 대손충당금과 연결할 때
   - name: merchant_daily_enrichment
     korean_name: 가맹점일별요약
     physical_table: tbdaaus01
@@ -8890,6 +8896,116 @@ semantic_entities:
     use_when:
       - 해당 원천 테이블의 속성 또는 시점 이력이 명시적으로 필요할 때
 
+# =============================================================================
+# 3. SEMANTIC ATTRIBUTES - 질의와 독립적인 역할·코드·컬럼 매핑
+# =============================================================================
+semantic_attributes:
+  - name: merchant_search_name
+    korean_name: 가맹점·브랜드 검색명
+    domains: [merchant_sales, corporate_sales_targeting, credit_risk]
+    business_definition: 사용자가 말한 상호·가맹점·브랜드 명칭을 물리 테이블에서 찾기 위한 공통 검색 속성
+    aliases: [가맹점명, 브랜드명, 상호명, 매장명, 점포명]
+    parameter_name: 가맹점명
+    default_match: contains
+    case_insensitive: true
+    normalize_whitespace: true
+    source_mappings:
+      - {entity: merchant, table: tbdaadt01, columns: [가맹점명, 한글가맹점명]}
+      - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [가맹점명, 외부가맹점명, 브랜드명]}
+      - {entity: merchant_monthly_snapshot, table: tmdaa5d01, columns: [가맹점명, 한글가맹점명]}
+      - {entity: merchant_monthly_performance, table: tmdaa5e11, columns: [가맹점명]}
+      - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [가맹점명, 외부가맹점명, 브랜드명]}
+    semantic_cautions:
+      - 여러 검색 컬럼은 OR로 연결한 뒤 괄호로 묶어 기간·상태·카드 조건이 OR 전체에 적용되게 한다.
+      - 브랜드명 컬럼이 없는 테이블에서는 가맹점명·한글가맹점명만 사용하고 존재하지 않는 브랜드명 컬럼을 만들지 않는다.
+  - name: merchant_identifier
+    korean_name: 가맹점 식별자
+    domains: [merchant_sales, corporate_sales_targeting]
+    business_definition: KB카드와 계약한 개별 사업장을 식별하는 가맹점번호
+    aliases: [가맹점번호, 가맹점ID, 점포ID, 매장번호]
+    source_mappings:
+      - {entity: merchant, table: tbdaadt01, column: 가맹점번호, role: merchant_key}
+      - {entity: merchant_daily_enrichment, table: tbdaaus01, column: 가맹점번호, role: merchant_key}
+      - {entity: merchant_monthly_snapshot, table: tmdaa5d01, column: 가맹점번호, role: merchant_key}
+      - {entity: merchant_monthly_performance, table: tmdaa5e11, column: 가맹점번호, role: merchant_key}
+      - {entity: merchant_monthly_enrichment, table: tmdaaus01, column: 가맹점번호, role: merchant_key}
+    semantic_cautions:
+      - 가맹점 수는 COUNT(DISTINCT 가맹점번호)로 계산한다.
+  - name: merchant_corporate_customer
+    korean_name: 가맹점 운영 기업고객
+    domains: [merchant_sales, corporate_sales_targeting, credit_risk]
+    business_definition: 가맹점 사업체를 기업고객 단위로 식별하는 기업고객식별자
+    aliases: [기업고객식별자, 가맹점 기업고객, 운영기업, 가맹점주 기업]
+    source_mappings:
+      - {entity: merchant, table: tbdaadt01, column: 기업고객식별자, role: corporate_customer_key}
+      - {entity: merchant_daily_enrichment, table: tbdaaus01, column: 기업고객식별자, role: corporate_customer_key}
+      - {entity: merchant_monthly_snapshot, table: tmdaa5d01, column: 기업고객식별자, role: corporate_customer_key}
+      - {entity: merchant_monthly_enrichment, table: tmdaaus01, column: 기업고객식별자, role: corporate_customer_key}
+      - {entity: loss_provision, table: tbmewcm94, column: 고객식별자, role: corporate_customer_key}
+    semantic_cautions:
+      - 기업고객 목록은 기업고객식별자 IS NOT NULL과 DISTINCT를 적용한다.
+      - 기업 리스크·충당금은 기업고객식별자로 연결하며 대표고객식별자와 바꾸지 않는다.
+  - name: merchant_owner
+    korean_name: 가맹점 주대표자
+    domains: [merchant_sales, corporate_sales_targeting]
+    business_definition: 가맹점의 주대표자 개인을 식별하는 대표고객식별자
+    aliases: [가맹점주, 점주, 가맹점 대표자, 주대표자, 개인고객식별자]
+    source_mappings:
+      - {entity: merchant, table: tbdaadt01, column: 대표고객식별자, role: person_key}
+      - {entity: merchant_daily_enrichment, table: tbdaaus01, column: 대표고객식별자, role: person_key}
+      - {entity: merchant_monthly_snapshot, table: tmdaa5d01, column: 대표고객식별자, role: person_key}
+      - {entity: merchant_monthly_enrichment, table: tmdaaus01, column: 대표고객식별자, role: person_key}
+    semantic_cautions:
+      - 가맹점주 인원은 대표고객식별자 IS NOT NULL 후 COUNT(DISTINCT 대표고객식별자)를 사용한다.
+      - 가맹점주가 운영하는 기업의 매출·카드·리스크를 묻는 경우 사람 수가 아니므로 대표고객식별자로 집계하지 않는다.
+  - name: corporate_card_holding
+    korean_name: 유효 기업카드 보유
+    domains: [corporate_sales_targeting, merchant_sales]
+    business_definition: 기업 명의의 유효 신용카드 또는 체크카드를 한 장 이상 보유한 상태
+    aliases: [기업카드 보유, 기업카드 소지, 법인카드 보유, 법인카드 소지]
+    filter_expression: COALESCE("유효기업신용카드수", 0) + COALESCE("유효기업체크카드수", 0) > 0
+    source_mappings:
+      - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수]}
+      - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수]}
+      - {entity: corporate_customer_daily, table: tbdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수]}
+    semantic_cautions:
+      - 신용+체크는 카드 종류 축이다.
+      - 개별+공용은 소유 형태 축이므로 신용+체크와 함께 네 컬럼을 합산하지 않는다.
+  - name: merchant_payment_institution
+    korean_name: 가맹점 결제금융기관
+    domains: [merchant_sales]
+    business_definition: 가맹점 판매대금이 지급되는 원화 결제 금융기관을 나타내는 코드
+    aliases: [가맹점 계좌, 가맹점계좌, 가맹점결제계좌, 결제계좌, 결제은행, 지급은행, 결제금융기관]
+    parameter_name: 결제금융기관코드
+    source_mappings:
+      - {entity: merchant, table: tbdaadt01, column: 현금카드결제기관구분코드, role: payment_institution_code}
+      - {entity: merchant_daily_enrichment, table: tbdaaus01, column: 현금카드결제기관구분코드, role: payment_institution_code}
+      - {entity: merchant_monthly_snapshot, table: tmdaa5d01, column: 현금카드결제기관구분코드, role: payment_institution_code}
+      - {entity: merchant_monthly_performance, table: tmdaa5e11, column: 현금카드결제기관구분코드, role: payment_institution_code}
+      - {entity: merchant_monthly_enrichment, table: tmdaaus01, column: 현금카드결제기관구분코드, role: payment_institution_code}
+    value_semantics:
+      '004':
+        label: KB국민은행
+        aliases: [국민은행, KB은행, KB국민, 국민]
+        provenance: user_provided_reference
+    semantic_cautions:
+      - 현금카드결제기관구분코드는 계좌번호가 아니라 금융기관 코드다.
+      - 보통예금·당좌예금 같은 계좌 종류 판정에 사용하지 않는다.
+      - 은행별 가맹점 수는 COUNT(DISTINCT 가맹점번호)를 사용한다.
+  - name: merchant_profile
+    korean_name: 가맹점 기본정보
+    domains: [merchant_sales]
+    business_definition: 가맹점 마스터의 식별·사업자·업종·사업주체·결제금융기관·수수료·등록 속성 묶음
+    aliases: [가맹점 기본 정보, 가맹점 기본정보, 가맹점 상세 정보, 가맹점 정보]
+    source_mappings:
+      - entity: merchant
+        table: tbdaadt01
+        columns: [가맹점번호, 기업고객식별자, 대표고객식별자, 사업자등록번호, 법인등록번호, 가맹점명, 가맹점업종코드, MCC업종코드, 가맹점사업주체구분코드, 현금카드결제기관구분코드, 신용카드가맹점수수료율, 체크카드가맹점수수료율, 등록년월일]
+    semantic_cautions:
+      - 가맹점번호식별자라는 컬럼은 없으며 실제 컬럼 가맹점번호를 사용한다.
+      - 동일 컬럼을 중복 SELECT하지 않는다.
+      - 상세 목록은 요청 개수가 없으면 LIMIT 100을 적용한다.
+
 canonical_metrics:
   - {name: 카드매출금액, domain: card_usage, expression: 'SUM(tbdaabt30."매출금액")', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [],
     synonyms: [카드매출, 국내이용금액, 카드이용금액, 총매출], unit: 원, aggregation_behavior: additive_at_declared_grain}
@@ -8903,6 +9019,20 @@ canonical_metrics:
     default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점매출, 가맹점매출액, 점포매출, 월매출액], unit: 원, aggregation_behavior: additive_at_declared_grain}
   - {name: 가맹점수, domain: merchant_sales, expression: 'COUNT(DISTINCT tbdaadt01."가맹점번호")', source_table: tbdaadt01, source_entity: merchant, default_time_dimension: '', required_filters: [],
     synonyms: [점포수, 매장수, 가맹점개수], unit: 개, aggregation_behavior: distinct_count}
+  - name: 결제금융기관별가맹점수
+    domain: merchant_sales
+    business_definition: 지정 가맹점·브랜드 중 선택한 대금지급 결제금융기관을 사용하는 고유 가맹점 수
+    expression: COUNT(DISTINCT tbdaadt01."가맹점번호")
+    source_table: tbdaadt01
+    source_entity: merchant
+    default_time_dimension: ""
+    result_grain: 결제금융기관코드 1행
+    required_filters:
+      - tbdaadt01."현금카드결제기관구분코드" = :결제금융기관코드
+      - merchant_search_name 부분일치
+    synonyms: [은행별 가맹점 수, 결제은행 가맹점 수, 가맹점 계좌 은행별 개수, KB국민은행 가맹점 수]
+    unit: 개
+    aggregation_behavior: distinct_count
   - {name: 신용카드가맹점수수료율, domain: merchant_sales, expression: 'AVG(tmdaa5e11."신용카드가맹점수수료율")', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월,
     required_filters: [], synonyms: [가맹점수수료율, 수수료율], unit: '%', aggregation_behavior: derived_non_additive}
   - {name: 회원수, domain: customer_card_portfolio, expression: 'COUNT(DISTINCT tbdaaat03."회원일련번호")', source_table: tbdaaat03, source_entity: member, default_time_dimension: '', required_filters: [],
@@ -8931,6 +9061,28 @@ canonical_metrics:
     synonyms: [부실채권원금, 특수채권원금], unit: 원, aggregation_behavior: additive_at_declared_grain}
   - {name: 기대대손충당금, domain: credit_risk, expression: 'SUM(tbmewcm94."기대대손충당금")', source_table: tbmewcm94, source_entity: loss_provision, default_time_dimension: 기준년월, required_filters: [
       기준년월 제한 또는 기준년월별 GROUP BY], synonyms: [대손충당금, 충당금, 기대손실, ECL], unit: 원, aggregation_behavior: additive_at_declared_grain}
+  - name: 가맹점포트폴리오대손충당금률
+    domain: credit_risk
+    business_definition: 지정 가맹점·브랜드와 연결된 기업고객 포트폴리오의 월말 원화대출잔액 대비 기대대손충당금 비율
+    expression: ROUND(SUM(tbmewcm94."기대대손충당금") / NULLIF(SUM(tbmewcm94."원화대출잔액"), 0) * 100, 4)
+    numerator_expression: SUM(tbmewcm94."기대대손충당금")
+    denominator_expression: NULLIF(SUM(tbmewcm94."원화대출잔액"), 0)
+    source_table: tbmewcm94
+    source_entity: loss_provision
+    default_time_dimension: 기준년월
+    result_grain: 기준년월 1행
+    required_filters:
+      - tmdaa5d01에서 같은 기준년월·가맹점 검색명에 해당하는 기업고객식별자를 DISTINCT로 먼저 추출
+      - tmdaa5d01."기업고객식별자" = tbmewcm94."고객식별자"
+      - tmdaa5d01."기준년월" = tbmewcm94."기준년월" = :기준년월
+      - tbmewcm94."개인기업구분코드" = '2'
+      - tbmewcm94."원화대출잔액" 합계가 0이면 비율은 NULL
+    synonyms: [가맹점 대손율, 가맹점주 대손율, 브랜드 대손율, 대손충당금률, 충당금 적립률]
+    unit: '%'
+    aggregation_behavior: ratio_of_sums
+    semantic_cautions:
+      - 가맹점주 개인의 대손율이 아니라 해당 가맹점을 운영하는 기업고객 포트폴리오 기준
+      - 대손비용률은 월초·월말 충당금 변화와 상각을 사용하는 별도 지표
   - name: 법인카드월이용금액
     domain: card_usage
     business_definition: 법인·기업 카드의 월별 이용 합계 금액
@@ -8961,6 +9113,8 @@ canonical_metrics:
     result_grain: 기준년월
     required_filters:
       - tmdaa3e16."개인기업구분코드" = '2'
+      - 월이용금액은 SUM(COALESCE(tmdaa3e16."금월이용합계금액", 0)) GROUP BY "기준년월"로 먼저 집계한 alias
+      - 전월이용금액은 월이용금액에 window_expression(LAG)을 적용한 alias
       - 요청 시작월의 증감률 계산을 위해 입력 스캔은 시작월보다 한 달 앞서 시작
       - LAG 계산 후 최종 출력은 사용자가 요청한 시작월과 종료월만 유지
       - 전월이용금액이 NULL 또는 0이면 증감률은 NULL
@@ -9087,7 +9241,7 @@ semantic_query_contracts:
     match:
       required:
         - [매출, 매출액, 매출금액]
-        - [최근, 지난, 월별, 개월, 년]
+        - [최근, 지난, 월별, 개월, 년, 기준]
       optional:
         - [가맹점, 브랜드, 점포, 매장]
       excluded: [법인카드 이용금액, 기업카드 이용금액, 폐업, 휴폐업, 문 닫은, 가맹점 수, 가맹점수, 업종별, 가맹점별, 점포별, 매장별]
@@ -9112,6 +9266,194 @@ semantic_query_contracts:
       recent_n_years: 현재월 포함 N×12개 기준년월
     calculation:
       monthly_sales: SUM(COALESCE(가맹점일시불매출금액, 0) + COALESCE(가맹점할부매출금액, 0))
+  - name: named_merchant_store_sales_at_month
+    domain: merchant_sales
+    verified_query: merchant_named_store_sales_at_month
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 지정 월과 가맹점·브랜드 검색명에 해당하는 개별 가맹점번호별 월 매출액을 일시불+할부로 계산한다.
+    match:
+      required:
+        - [매출, 매출액, 매출금액]
+        - [가맹점주, 가맹점 주, 점주, 가맹점별, 각 가맹점, 점포별, 매장별]
+        - [기준, 월]
+      optional:
+        - [가맹점, 브랜드]
+      excluded: [대손, 충당금, 계좌, 결제은행, 기업카드 이용금액, 법인카드 이용금액]
+    source_tables: [tmdaa5e11]
+    metric_names: [가맹점월매출금액]
+    semantic_attributes: [merchant_search_name, merchant_identifier]
+    result_grain: 기준년월 × 가맹점번호
+    dimensions: [기준년월, 가맹점번호, 가맹점명]
+    entity_binding:
+      parameter: 가맹점명
+      extraction: 가맹점주·점주·가맹점 표현 직전에 나타난 고유 가맹점·브랜드 명칭
+      required: true
+    name_filter:
+      columns: [가맹점명]
+      default_match: contains
+      exact_match_only_when_explicit: true
+    time_policy:
+      parameter: 기준년월
+      required: true
+      YYMM: 2000년대 YYYYMM으로 확장
+    calculation:
+      merchant_month_sales: COALESCE(가맹점일시불매출금액, 0) + COALESCE(가맹점할부매출금액, 0)
+    result_fields: [기준년월, 가맹점번호, 가맹점명, 당월매출금액]
+  - name: brand_merchant_corporate_card_customer_list
+    domain: corporate_sales_targeting
+    verified_query: brand_merchants_with_corporate_card
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 지정 월의 가맹점별 최신 일 스냅샷에서 검색명과 유효 기업카드 보유 조건을 만족하는 기업고객식별자 목록을 반환한다.
+    match:
+      required:
+        - [기업카드, 법인카드]
+        - [기업고객식별자, 기업고객 ID, 기업고객ID, 기업고객 리스트, 기업고객 목록]
+      optional:
+        - [소지, 보유, 가맹점, 브랜드, 리스트, 목록]
+      excluded: [몇명, 몇 명, 명수, 인원, 매출, 대손]
+    source_tables: [tbdaaus01]
+    metric_names: []
+    semantic_attributes: [merchant_search_name, merchant_corporate_customer, corporate_card_holding]
+    result_grain: 기업고객식별자 1행
+    entity_binding:
+      parameter: 가맹점명
+      required: true
+      extraction: 가맹점·브랜드 표현 앞의 고유 명칭
+    name_filter:
+      columns: [가맹점명, 외부가맹점명, 브랜드명]
+      default_match: contains
+    time_policy:
+      parameter: 기준년월
+      required: true
+      YYMM: 2000년대 YYYYMM으로 확장
+    deduplication:
+      snapshot: 가맹점번호×SUBSTR(기준년월일,1,6)별 기준년월일 DESC ROW_NUMBER() = 1
+      result: SELECT DISTINCT 기업고객식별자
+    filters:
+      - 기업고객식별자 IS NOT NULL
+      - 유효기업신용카드수 + 유효기업체크카드수 > 0
+  - name: merchant_profile_by_name
+    domain: merchant_sales
+    verified_query: merchant_detail_by_name
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 가맹점 검색명으로 마스터의 식별·사업자·업종·사업주체·결제금융기관·수수료·등록 기본정보를 조회한다.
+    match:
+      required:
+        - [가맹점, 점포, 매장]
+        - [기본 정보, 기본정보, 상세 정보, 상세정보]
+      optional:
+        - [사업자번호, 업종, 수수료, 등록일]
+      excluded: [매출, 대손, 충당금, 계좌만, 결제은행]
+    source_tables: [tbdaadt01]
+    metric_names: []
+    semantic_attributes: [merchant_search_name, merchant_profile]
+    result_grain: 가맹점번호 1행
+    entity_binding:
+      parameter: 가맹점명
+      required: true
+      extraction: 가맹점 기본정보 표현 앞의 고유 명칭
+    name_filter:
+      columns: [가맹점명, 한글가맹점명]
+      default_match: contains
+    result_fields: [가맹점번호, 기업고객식별자, 대표고객식별자, 사업자등록번호, 법인등록번호, 가맹점명, 가맹점업종코드, MCC업종코드, 가맹점사업주체구분코드, 현금카드결제기관구분코드, 신용카드가맹점수수료율, 체크카드가맹점수수료율, 등록년월일]
+  - name: merchant_payment_institution_list
+    domain: merchant_sales
+    verified_query: merchant_payment_institution_list
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 지정 가맹점·브랜드의 가맹점번호와 운영 고객 식별자, 대금지급 결제금융기관 코드를 목록으로 반환한다.
+    match:
+      required:
+        - [가맹점 계좌, 가맹점계좌, 가맹점결제계좌, 결제계좌, 결제은행, 지급은행, 결제금융기관]
+        - [알려줘, 보여줘, 목록, 리스트, 정보]
+      optional:
+        - [가맹점주, 점주, 가맹점, 브랜드]
+      excluded: [몇 개, 몇개, 개수, 가맹점 수, 가맹점수, 비율, 당좌, 보통예금, 계좌 종류]
+    source_tables: [tbdaadt01]
+    metric_names: []
+    semantic_attributes: [merchant_search_name, merchant_identifier, merchant_corporate_customer, merchant_owner, merchant_payment_institution]
+    result_grain: 가맹점번호 1행
+    entity_binding:
+      parameter: 가맹점명
+      required: true
+      extraction: 가맹점주·점주·가맹점 계좌 표현 앞의 고유 명칭
+    name_filter:
+      columns: [가맹점명, 한글가맹점명]
+      default_match: contains
+    result_fields: [등록년월일, 가맹점번호, 기업고객식별자, 대표고객식별자, 가맹점명, 현금카드결제기관구분코드]
+    ambiguity_policy:
+      - 현금카드결제기관구분코드는 가맹점 대금지급 결제금융기관 코드이며 계좌번호나 계좌 종류가 아님
+  - name: merchant_count_by_payment_institution
+    domain: merchant_sales
+    verified_query: merchant_count_by_payment_institution
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 지정 가맹점·브랜드에서 사용자가 말한 결제금융기관 코드를 사용하는 고유 가맹점 수를 계산한다.
+    match:
+      required:
+        - [가맹점 계좌, 가맹점계좌, 가맹점결제계좌, 결제계좌, 결제은행, 지급은행, 결제금융기관]
+        - [가맹점 수, 가맹점수, 몇 개, 몇개, 개수, 수 알려줘]
+      required_attribute_values: [merchant_payment_institution]
+      optional:
+        - [가맹점주, 점주, 브랜드]
+      excluded: [당좌, 보통예금, 계좌 종류, 비율]
+    source_tables: [tbdaadt01]
+    metric_names: [결제금융기관별가맹점수]
+    semantic_attributes: [merchant_search_name, merchant_identifier, merchant_payment_institution]
+    result_grain: 결제금융기관코드 1행
+    entity_binding:
+      parameter: 가맹점명
+      required: true
+      extraction: 가맹점주·점주·가맹점 계좌 표현 앞의 고유 명칭
+    filters:
+      - 현금카드결제기관구분코드 = :결제금융기관코드
+    calculation:
+      merchant_count: COUNT(DISTINCT 가맹점번호)
+  - name: merchant_portfolio_allowance_rate
+    domain: credit_risk
+    verified_query: merchant_portfolio_allowance_rate
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 지정 가맹점·브랜드와 연결된 기업고객의 월말 기대대손충당금을 원화대출잔액으로 나눈 대손충당금률을 계산한다.
+    match:
+      required:
+        - [대손율, 대손률, 대손충당금률, 충당금 적립률]
+        - [가맹점주, 가맹점 주, 가맹점, 점주, 브랜드]
+      optional:
+        - [기업, 포트폴리오, 리스크]
+      excluded: [대손비용률, 대손비용율, 상각, 보정계수, LS, IS]
+    source_tables: [tmdaa5d01, tbmewcm94]
+    metric_names: [가맹점포트폴리오대손충당금률]
+    semantic_attributes: [merchant_search_name, merchant_corporate_customer]
+    result_grain: 기준년월 1행
+    entity_binding:
+      parameter: 가맹점명
+      required: true
+      extraction: 가맹점주·점주·가맹점 표현 앞의 고유 명칭
+    time_policy:
+      parameter: 기준년월
+      required: true
+      YYMM: 2000년대 YYYYMM으로 확장
+    deduplication:
+      merchant_customers: 같은 기준년월의 기업고객식별자를 DISTINCT로 먼저 추출
+    filters:
+      - tbmewcm94.개인기업구분코드 = '2'
+      - tmdaa5d01.기업고객식별자 = tbmewcm94.고객식별자
+      - 두 테이블 기준년월 = :기준년월
+    calculation:
+      allowance_rate_percent: SUM(기대대손충당금) / NULLIF(SUM(원화대출잔액), 0) * 100
+    ambiguity_policy:
+      - 결과는 가맹점주 개인이 아니라 가맹점을 운영하는 기업고객 포트폴리오 기준
+      - 대손비용률을 명시하면 이 계약을 사용하지 않고 월초·월말 충당금과 상각 기반 별도 지표를 사용
   - name: brand_owner_corporate_card_count
     domain: corporate_sales_targeting
     verified_query: brand_merchant_owner_corporate_card_count
@@ -9332,6 +9674,18 @@ semantic_join_graph:
       caution: 기준년월을 반드시 제한
       confidence: inferred
       provenance: workbook_grain_and_column_definition
+    - name: merchant_monthly_snapshot_to_loss_provision
+      from_entity: merchant_monthly_snapshot
+      to_entity: loss_provision
+      from_table: tmdaa5d01
+      to_table: tbmewcm94
+      join_type: many_to_many_after_customer_dedup
+      sql: tmdaa5d01."기준년월" = tbmewcm94."기준년월" AND tmdaa5d01."기업고객식별자" = tbmewcm94."고객식별자"
+      use_when:
+        - 지정 월 가맹점·브랜드 운영 기업의 대손충당금과 원화대출잔액 조회
+      caution: tmdaa5d01에서 기준년월과 가맹점 검색명을 적용한 기업고객식별자를 DISTINCT로 먼저 축소한 뒤 조인해 복수 가맹점으로 인한 충당금 중복을 방지
+      confidence: curated
+      provenance: user_reference_and_source_column_roles
     - name: merchant_to_daily_enrichment
       from_entity: merchant
       to_entity: merchant_daily_enrichment
@@ -9501,6 +9855,18 @@ glossary:
     aliases: ["전월 대비 증감률", "전월비", "월별 증감률"]
     sql_hint: "입력은 요청 시작월의 직전월부터 읽고 LAG(월금액) OVER (ORDER BY 기준년월)를 계산한 뒤 최종 출력은 요청 기간만 남긴다."
     domains: [card_usage]
+  - term: "가맹점결제금융기관"
+    canonical: "tbdaadt01.현금카드결제기관구분코드"
+    description: "가맹점 판매대금의 원화 결제 금융기관 코드. 일상 질문의 '가맹점 계좌/결제계좌'가 은행명과 함께 나오면 이 의미로 해석한다."
+    aliases: ["가맹점 계좌", "가맹점결제계좌", "결제계좌", "결제은행", "지급은행"]
+    sql_hint: "가맹점 마스터에서 현금카드결제기관구분코드를 반환하거나 필터링한다. KB국민은행은 semantic_attributes.merchant_payment_institution의 코드 004를 사용한다."
+    domains: [merchant_sales]
+  - term: "가맹점포트폴리오대손율"
+    canonical: "SUM(기대대손충당금) / NULLIF(SUM(원화대출잔액), 0) * 100"
+    description: "지정 가맹점·브랜드와 연결된 기업고객 포트폴리오의 월말 대손충당금률. 가맹점주 개인의 리스크가 아니며 대손비용률과 구분한다."
+    aliases: ["가맹점 대손율", "가맹점주 대손율", "브랜드 대손율", "대손충당금률"]
+    sql_hint: "tmdaa5d01에서 기준월·검색명에 해당하는 기업고객식별자를 DISTINCT로 만든 뒤 같은 월 tbmewcm94.고객식별자에 연결하고 비율은 합계의 비율로 재계산한다."
+    domains: [credit_risk]
   - term: "가맹점계좌종류"
     canonical: "현재 semantic layer에서 미지원"
     description: "현재 스키마에는 보통예금·당좌예금 같은 가맹점 계좌 종류 컬럼과 코드북이 없다. 현금카드결제기관구분코드는 금융기관 코드이지 계좌 종류가 아니다."

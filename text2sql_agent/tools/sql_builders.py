@@ -7,7 +7,7 @@ from functools import lru_cache
 
 import yaml
 
-from ..config import DB_BACKEND, DB_SCHEMA_PREFIX as _SCHEMA, SCHEMA_PATH
+from ..config import DB_BACKEND, SCHEMA_PATH
 from ..managed_scope import render_athena_business_number_values
 
 # ---------------------------------------------------------------------------

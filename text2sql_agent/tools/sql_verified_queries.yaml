@@ -1381,6 +1381,7 @@ verified_queries:
       m."법인등록번호",
       m."가맹점명",
       m."가맹점업종코드",
+      m."MCC업종코드",
       m."가맹점사업주체구분코드",
       m."현금카드결제기관구분코드",
       m."신용카드가맹점수수료율",
@@ -1416,6 +1417,156 @@ verified_queries:
   - 마초스테이크하우스
   - 가맹점상세
   - tbdaadt01
+  - Athena
+- name: merchant_named_store_sales_at_month
+  question: 지정 월 특정 가맹점 또는 브랜드의 가맹점번호별 매출액을 알려줘
+  description: 월 가맹점 실적에서 검색명에 해당하는 개별 가맹점번호별 일시불+할부 매출액을 반환합니다.
+  sql: |
+    SELECT
+      s."기준년월",
+      s."가맹점번호",
+      s."가맹점명",
+      COALESCE(s."가맹점일시불매출금액", 0)
+        + COALESCE(s."가맹점할부매출금액", 0) AS "당월매출금액"
+    FROM card_system.tmdaa5e11 s
+    WHERE s."기준년월" = '{기준년월}'
+      AND LOWER(COALESCE(s."가맹점명", ''))
+        LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+    ORDER BY "당월매출금액" DESC, s."가맹점번호"
+    LIMIT {limit}
+  parameters:
+    기준년월:
+      type: string
+      description: 가맹점 매출을 조회할 기준년월(YYYYMM). YYMM 입력은 2000년대 YYYYMM으로 확장
+      required: true
+    가맹점명:
+      type: like_string
+      description: 가맹점명에서 찾을 가맹점 또는 브랜드 검색어
+      required: true
+    limit:
+      type: integer
+      description: 개별 가맹점 목록 제한 건수
+      default: '100'
+  tags:
+  - 가맹점별매출
+  - 브랜드매출
+  - 기준년월
+  - tmdaa5e11
+  - Athena
+- name: merchant_payment_institution_list
+  question: 특정 가맹점 또는 브랜드의 가맹점 결제금융기관 목록을 알려줘
+  description: 가맹점 마스터에서 검색명에 해당하는 가맹점과 운영 고객 식별자, 대금지급 결제금융기관 코드를 반환합니다.
+  sql: |
+    SELECT
+      m."등록년월일",
+      m."가맹점번호",
+      m."기업고객식별자",
+      m."대표고객식별자",
+      m."가맹점명",
+      m."현금카드결제기관구분코드" AS "가맹점결제금융기관코드"
+    FROM card_system.tbdaadt01 m
+    WHERE (
+      LOWER(COALESCE(m."가맹점명", ''))
+        LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+      OR LOWER(COALESCE(m."한글가맹점명", ''))
+        LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+    )
+    ORDER BY m."가맹점명", m."가맹점번호"
+    LIMIT {limit}
+  parameters:
+    가맹점명:
+      type: like_string
+      description: 가맹점명 또는 브랜드를 찾을 검색어
+      required: true
+    limit:
+      type: integer
+      description: 가맹점 목록 제한 건수
+      default: '100'
+  tags:
+  - 가맹점계좌
+  - 결제계좌
+  - 결제금융기관
+  - tbdaadt01
+  - Athena
+- name: merchant_count_by_payment_institution
+  question: 특정 가맹점 또는 브랜드 중 지정 결제금융기관을 사용하는 가맹점 수를 알려줘
+  description: 가맹점 마스터에서 검색명과 결제금융기관 코드를 적용해 고유 가맹점번호 수를 계산합니다.
+  sql: |
+    SELECT
+      '{결제금융기관코드}' AS "결제금융기관코드",
+      COUNT(DISTINCT m."가맹점번호") AS "가맹점수"
+    FROM card_system.tbdaadt01 m
+    WHERE (
+      LOWER(COALESCE(m."가맹점명", ''))
+        LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+      OR LOWER(COALESCE(m."한글가맹점명", ''))
+        LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+    )
+      AND m."현금카드결제기관구분코드" = '{결제금융기관코드}'
+  parameters:
+    가맹점명:
+      type: like_string
+      description: 가맹점명 또는 브랜드를 찾을 검색어
+      required: true
+    결제금융기관코드:
+      type: string
+      semantic_attribute: merchant_payment_institution
+      description: semantic attribute에서 은행명으로 해석한 가맹점 대금지급 결제금융기관 코드
+      required: true
+  tags:
+  - 가맹점계좌
+  - 결제금융기관
+  - 은행별가맹점수
+  - tbdaadt01
+  - Athena
+- name: merchant_portfolio_allowance_rate
+  question: 지정 월 특정 가맹점 또는 브랜드 운영 기업의 대손충당금률을 알려줘
+  description: 월 가맹점 스냅샷에서 기업고객을 중복 제거한 뒤 같은 월 대손충당금과 연결해 원화대출잔액 대비 기대대손충당금 비율을 계산합니다.
+  sql: |
+    WITH merchant_customers AS (
+      SELECT DISTINCT
+        m."기업고객식별자"
+      FROM card_system.tmdaa5d01 m
+      WHERE m."기준년월" = '{기준년월}'
+        AND (
+          LOWER(COALESCE(m."가맹점명", ''))
+            LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+          OR LOWER(COALESCE(m."한글가맹점명", ''))
+            LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+        )
+        AND m."기업고객식별자" IS NOT NULL
+    )
+    SELECT
+      p."기준년월",
+      SUM(p."원화대출잔액") AS "원화대출잔액",
+      SUM(p."기대대손충당금") AS "기대대손충당금",
+      ROUND(
+        CAST(SUM(p."기대대손충당금") AS DOUBLE)
+          / NULLIF(CAST(SUM(p."원화대출잔액") AS DOUBLE), 0.0)
+          * 100,
+        4
+      ) AS "대손충당금률_퍼센트"
+    FROM card_system.tbmewcm94 p
+    INNER JOIN merchant_customers c
+      ON p."고객식별자" = c."기업고객식별자"
+    WHERE p."기준년월" = '{기준년월}'
+      AND p."개인기업구분코드" = '2'
+    GROUP BY p."기준년월"
+  parameters:
+    기준년월:
+      type: string
+      description: 대손충당금률을 계산할 기준년월(YYYYMM)
+      required: true
+    가맹점명:
+      type: like_string
+      description: 가맹점명 또는 브랜드를 찾을 검색어
+      required: true
+  tags:
+  - 가맹점대손율
+  - 가맹점주대손율
+  - 대손충당금률
+  - tmdaa5d01
+  - tbmewcm94
   - Athena
 - name: active_merchant_industry_codes
   question: 사용 중인 가맹점 업종 코드명 알려줘
@@ -2002,18 +2153,18 @@ verified_queries:
     가맹점별 상세가 필요한 질문은 이 템플릿이 아니라 자동 SQL 생성 경로를 사용합니다.
   sql: |
     SELECT
-      a.기준년월,
-      SUM(COALESCE(a.가맹점일시불매출금액, 0)) AS 일시불매출,
-      SUM(COALESCE(a.가맹점할부매출금액, 0)) AS 할부매출,
-      SUM(COALESCE(a.가맹점일시불매출금액, 0) + COALESCE(a.가맹점할부매출금액, 0)) AS 총매출금액,
-      SUM(COALESCE(a.가맹점일시불매출건수, 0) + COALESCE(a.가맹점할부매출건수, 0)) AS 총매출건수,
-      SUM(COALESCE(a.가맹점수입수수료, 0)) AS 수수료수입,
-      AVG(a.신용카드가맹점수수료율) AS 평균수수료율
+      a."기준년월",
+      SUM(COALESCE(a."가맹점일시불매출금액", 0)) AS "일시불매출",
+      SUM(COALESCE(a."가맹점할부매출금액", 0)) AS "할부매출",
+      SUM(COALESCE(a."가맹점일시불매출금액", 0) + COALESCE(a."가맹점할부매출금액", 0)) AS "총매출금액",
+      SUM(COALESCE(a."가맹점일시불매출건수", 0) + COALESCE(a."가맹점할부매출건수", 0)) AS "총매출건수",
+      SUM(COALESCE(a."가맹점수입수수료", 0)) AS "수수료수입",
+      AVG(a."신용카드가맹점수수료율") AS "평균수수료율"
     FROM card_system.tmdaa5e11 a
-    WHERE a.가맹점명 LIKE '%{가맹점명}%'
-      AND a.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
-    GROUP BY a.기준년월
-    ORDER BY a.기준년월
+    WHERE a."가맹점명" LIKE '%{가맹점명}%'
+      AND a."기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY a."기준년월"
+    ORDER BY a."기준년월"
   parameters:
     가맹점명:
       type: string

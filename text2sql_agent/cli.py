@@ -12,8 +12,9 @@ from .exports import (
     export_to_word,
     format_number_for_report as format_number,
 )
+from .config import ENABLE_EMBEDDING_PRECOMPUTE
 from .tools.registry import TOOLS
-from .workflow import EMBEDDINGS_AVAILABLE, run_agent_with_prompts
+from .workflow import run_agent_with_prompts
 
 _NUMERIC = (int, float, Decimal)
 
@@ -67,7 +68,10 @@ def main():
     print(" - 보고서 내보내기 (Word/Excel/Text)")
     print("=" * 60)
     print(f" LLM: {LLM_MODEL} @ {LLM_BASE_URL}")
-    embed_status = "ON" if EMBEDDINGS_AVAILABLE else "OFF (LLM 폴백)"
+    # 기존에는 workflow.EMBEDDINGS_AVAILABLE를 import 시점에 복사해 항상 OFF로
+    # 표시됐다. 배너는 설정값 기준으로 안내하고, 실제 가용성은 첫 질문 처리 시
+    # 사전계산 결과에 따라 결정된다.
+    embed_status = "ON (첫 질문 시 사전계산)" if ENABLE_EMBEDDING_PRECOMPUTE else "OFF (규칙/LLM 폴백)"
     print(f" Embedding: {embed_status}")
     print(f" 등록된 Tool: {len(TOOLS)}개")
     for t in TOOLS:

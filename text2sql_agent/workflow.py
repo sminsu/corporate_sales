@@ -12,7 +12,6 @@ from langgraph.graph import END, StateGraph
 
 from .config import (
     DB_BACKEND,
-    DB_SCHEMA,
     DB_SCHEMA_PREFIX,
     EMBED_MATCH_THRESHOLD,
     ENABLE_EMBEDDING_PRECOMPUTE,
@@ -36,16 +35,20 @@ from .schema import (
     _needs_domain_adjudication,
     _adjudicate_domain_with_llm,
     _result_summary,
+    _extract_schema_tables,
     _validate_sql_against_schema,
     _weighted_domain_scores,
     build_domain_context,
     build_glossary_summary,
     build_metrics_summary,
+    build_semantic_attributes_summary,
     build_semantic_contract_summary,
     build_semantic_join_context,
     find_relevant_queries,
     find_relevant_references,
     find_relevant_semantic_query_contracts,
+    resolve_semantic_attribute_value,
+    semantic_attribute_candidates,
     semantic_query_contract_candidates,
     semantic_join_paths_for_tables,
 )
@@ -131,16 +134,54 @@ def _parse_llm_json(value: object) -> dict:
     candidates = [_strip_llm_code_fence(text), _extract_balanced_json_object(text)]
     for candidate in dict.fromkeys(candidate for candidate in candidates if candidate):
         normalized = re.sub(r",\s*([}\]])", r"\1", candidate.strip())
-        try:
-            parsed = json.loads(normalized)
-        except json.JSONDecodeError:
+        # 한국어 IME/소형 모델이 곧은따옴표 대신 둥근따옴표(“ ” ‘ ’)를 내는 경우가
+        # 있어, 원문 파싱이 실패했을 때만 치환본을 추가로 시도한다.
+        straightened = normalized.translate(str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"}))
+        attempts = [normalized] if straightened == normalized else [normalized, straightened]
+        for attempt in attempts:
             try:
-                parsed = ast.literal_eval(normalized)
-            except (SyntaxError, ValueError):
-                continue
-        if isinstance(parsed, dict):
-            return parsed
+                parsed = json.loads(attempt)
+            except json.JSONDecodeError:
+                try:
+                    parsed = ast.literal_eval(attempt)
+                except (SyntaxError, ValueError):
+                    continue
+            if isinstance(parsed, dict):
+                return parsed
     return {}
+
+
+def _truncate_after_sql_terminator(text: str) -> str:
+    """Cut trailing prose a small model appends after the statement's ``;``.
+
+    The semicolon itself is kept. Semicolons inside string literals, quoted
+    identifiers, and comments are ignored, and nothing changes when no
+    terminator exists.
+    """
+    quote = ""
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "-" and text[index : index + 2] == "--":
+            newline = text.find("\n", index)
+            index = length if newline < 0 else newline
+            continue
+        elif char == "/" and text[index : index + 2] == "/*":
+            end = text.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            continue
+        elif char == ";":
+            return text[: index + 1]
+        index += 1
+    return text
 
 
 def _extract_sql_from_llm(value: object) -> str:
@@ -153,9 +194,11 @@ def _extract_sql_from_llm(value: object) -> str:
     ).strip()
     text = _strip_llm_code_fence(raw)
     if text != raw:
-        return text.strip()
+        return _truncate_after_sql_terminator(text.strip()).strip()
     match = re.search(r"(?im)^\s*(SELECT|WITH)\b", text)
-    return text[match.start() :].strip() if match else text.strip()
+    if match:
+        text = text[match.start() :]
+    return _truncate_after_sql_terminator(text.strip()).strip()
 
 
 def _precompute_embeddings():
@@ -220,6 +263,8 @@ def classify_question(state: Text2SQLState) -> dict:
         return {"question_type": state["question_type"]}
 
     question = state["question"]
+    if _looks_like_direct_sql(question):
+        return {"question_type": "direct_sql"}
     if _rule_classify_question(question):
         return {"question_type": "need_sql"}
     domain_lines = []
@@ -270,6 +315,12 @@ need_sql 또는 direct 또는 reject"""
     else:
         qtype = "need_sql"
     return {"question_type": qtype}
+
+
+def _looks_like_direct_sql(question: str) -> bool:
+    """Recognize a user-authored read query without treating surrounding prose as SQL."""
+    stripped = _strip_llm_code_fence(question)
+    return bool(re.match(r"^\s*(?:SELECT|WITH)\b", stripped, flags=re.IGNORECASE))
 
 
 def _rule_classify_question(question: str) -> bool:
@@ -419,6 +470,15 @@ def _extract_ym_from_question(question: str) -> str:
     match = re.search(r"\b(20\d{2})(0[1-9]|1[0-2])\b", question)
     if match:
         return match.group(0)
+    match = re.search(
+        r"(?<!\d)(\d{2})(0[1-9]|1[0-2])\s*(?=(?:기준|월))(?!\d)",
+        question,
+    )
+    if match:
+        return f"20{match.group(1)}{match.group(2)}"
+    match = re.fullmatch(r"\s*(\d{2})(0[1-9]|1[0-2])\s*", question or "")
+    if match:
+        return f"20{match.group(1)}{match.group(2)}"
     if _has_previous_month_lookup(question):
         return _previous_ym()
     if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", question):
@@ -539,6 +599,7 @@ def _apply_name_filter_mode(question: str, sql: str) -> str:
 _TIME_EXPRESSION_RE = re.compile(
     r"("
     r"20\d{2}\s*년|20\d{2}(?:0[1-9]|1[0-2])(?:[0-3]\d)?|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)|"
     r"\d{1,2}\s*월|\d{4}-\d{1,2}|\d{4}\.\d{1,2}|"
     r"(?:최근|지난)\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)|"
     r"오늘|어제|내일|현재|최근|이번\s*(?:달|월|년)|저번\s*달|지난\s*(?:달|월|해|년)|전월|전년|작년|올해|"
@@ -573,8 +634,9 @@ def _time_resolution_instruction(question: str) -> str:
     current_ym = _current_ym()
     previous_ym = _previous_ym()
     if _has_time_expression(question):
-        return f"""16. 날짜 해석 ({_current_date_context()}):
+        return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자가 명시한 월/기간/상대시점만 날짜 조건으로 반영합니다.
+    - "2605 기준" 같은 YYMM 축약은 2000년대 YYYYMM인 "202605"로 해석합니다.
     - "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석합니다.
     - 이때 기준년월 컬럼은 "{current_ym}" 조건을 사용합니다.
     - 이때 기준년월일/실적기준년월일 컬럼은 SUBSTR(일자컬럼, 1, 6) = "{current_ym}" 범위 안의 최신 기준일을 사용합니다.
@@ -584,7 +646,7 @@ def _time_resolution_instruction(question: str) -> str:
     - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬합니다."""
 
     if _is_snapshot_status_question(question):
-        return f"""16. 날짜 해석 ({_current_date_context()}):
+        return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자 질문에 특정 월/기간/상대시점이 없어도 조회 실패로 처리하지 말고, 시스템이 기준시점을 정해 조회합니다.
     - "소지/보유/현황/유효" 같은 스냅샷성 질문의 기본 기준시점은 데이터 최신 스냅샷입니다.
     - 기준년월 컬럼은 해당 테이블의 MAX(기준년월)을 서브쿼리/CTE로 사용합니다.
@@ -593,7 +655,7 @@ def _time_resolution_instruction(question: str) -> str:
     - 카드 유효성 판단은 질문에 기준일이 없으면 현재 실행일({datetime.now().strftime("%Y%m%d")}) 기준으로 실제카드만료년월일 > 현재일 조건을 사용합니다.
     - 예시 SQL의 sample_values/default 값은 형식 참고용입니다. 불가피하게 고정 기준시점을 쓰면 답변에서 그 기준시점을 반드시 명시할 수 있게 SQL에 드러내세요."""
 
-    return f"""16. 날짜 해석 ({_current_date_context()}):
+    return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자 질문에 특정 월/기간/상대시점이 없어도 조회 실패로 처리하지 말고, 기준시점이 필요한 경우 시스템이 기준시점을 정해 조회합니다.
     - 기간 집계 질문은 시간 조건 없이 전체 기간 기준으로 집계하거나, 스키마 규칙상 스냅샷이 필수인 지표만 MAX(기준시점) 서브쿼리를 사용합니다.
     - 시스템이 기준시점을 정해 조회하면 SELECT 결과나 답변에서 그 기준시점을 명시할 수 있게 SQL에 드러내세요.
@@ -694,6 +756,16 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
         if 1 <= int(match.group(2)) <= 12
     ]
     months.extend(re.findall(r"(?<!\d)(20\d{2}(?:0[1-9]|1[0-2]))(?!\d)", text))
+    months.extend(
+        f"20{match.group(1)}{match.group(2)}"
+        for match in re.finditer(
+            r"(?<!\d)(\d{2})(0[1-9]|1[0-2])\s*(?=(?:기준|월))(?!\d)",
+            text,
+        )
+    )
+    shorthand_only = re.fullmatch(r"\s*(\d{2})(0[1-9]|1[0-2])\s*", text)
+    if shorthand_only:
+        months.append(f"20{shorthand_only.group(1)}{shorthand_only.group(2)}")
     months = list(dict.fromkeys(months))
     if months:
         return months[0], months[-1], explicit_day
@@ -835,6 +907,7 @@ def _extract_merchant_name_by_rule(question: str) -> str:
         return recent_closed_name
     text = re.sub(r"20\d{2}\s*년\s*\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?", " ", text)
     text = re.sub(r"(?<!\d)20\d{4}(?:\d{2})?(?!\d)", " ", text)
+    text = re.sub(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?=기준|월)(?!\d)", " ", text)
     token = r"[0-9A-Za-z가-힣&()._-]+"
     patterns = [
         rf"({token}(?:\s+{token}){{0,4}}?)\s+(?:가맹점\s*주|가맹점주|점주|대표자)",
@@ -944,6 +1017,14 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
     """
     names = {str(spec.get("name") or "") for spec in param_specs if spec.get("name")}
     params: dict = {}
+    for spec in param_specs:
+        name = str(spec.get("name") or "")
+        if not name:
+            continue
+        attribute_name = str(spec.get("semantic_attribute") or name)
+        resolved = resolve_semantic_attribute_value(SCHEMA, attribute_name, question)
+        if resolved:
+            params[name] = resolved
     recent_period_months = _extract_recent_period_months_by_rule(question)
     for name in {"조회기간개월수", "기간개월수"} & names:
         if recent_period_months is not None:
@@ -1500,7 +1581,13 @@ def run_tool_query(state: Text2SQLState) -> dict:
     prepared_sql = prepare_sql_for_backend(sql)
     columns, rows, error = execute_sql(prepared_sql)
     if error:
-        return {"query_columns": [], "query_rows": [], "query_error": error, "selected_tool": "", "final_sql": ""}
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": error,
+            "selected_tool": "",
+            "final_sql": prepared_sql,
+        }
     return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
 
 
@@ -1793,9 +1880,13 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
     ])
     param_specs = [dict(spec) for spec in base_specs]
     for pname, pinfo in vq_params_def.items():
-        if not any(s["name"] == pname for s in param_specs):
-            info = pinfo if isinstance(pinfo, dict) else {}
-            param_specs.append({"name": pname, "type": info.get("type", "string"), "description": info.get("description", "")})
+        info = pinfo if isinstance(pinfo, dict) else {}
+        existing = next((spec for spec in param_specs if spec["name"] == pname), None)
+        if existing is None:
+            param_specs.append({"name": pname, **info})
+        else:
+            for key, value in info.items():
+                existing.setdefault(key, value)
     if (
         any(str(spec.get("name") or "") in _ENTITY_NAME_PARAM_NAMES for spec in param_specs)
         and not any(spec.get("name") == "이름정확일치" for spec in param_specs)
@@ -1883,7 +1974,13 @@ def run_matched_query(state: Text2SQLState) -> dict:
     prepared_sql = prepare_sql_for_backend(sql)
     columns, rows, error = execute_sql(prepared_sql)
     if error:
-        return {"query_columns": [], "query_rows": [], "query_error": error, "matched_query_name": "", "final_sql": ""}
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": error,
+            "matched_query_name": "",
+            "final_sql": prepared_sql,
+        }
     return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
 
 
@@ -1903,6 +2000,9 @@ def direct_answer(state: Text2SQLState) -> dict:
 
 ## 비즈니스 용어집
 {glossary}
+
+## 재사용 가능한 Semantic Attribute
+{build_semantic_attributes_summary(SCHEMA, question, selected_domain)}
 
 ## 메트릭 정의
 {metrics}
@@ -1999,6 +2099,10 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         terms = [metric.get("name", ""), *metric.get("synonyms", [])]
         if any(_phrase_in_question(q_compact, term) for term in terms):
             add(metric.get("source_table"), 20)
+
+    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
+        for mapping in attribute.get("source_mappings", []):
+            add(mapping.get("table"), 18)
 
     for contract in matched_contracts:
         for table_name in contract.get("source_tables", []):
@@ -2147,6 +2251,22 @@ def _column_evidence(question: str, table_names: list[str]) -> str:
                     json.dumps(metric.get("time_policy", {}), ensure_ascii=False),
                     json.dumps(metric.get("name_filter", {}), ensure_ascii=False),
                     " ".join(str(value) for value in metric.get("required_filters", [])),
+                ]
+            )
+    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
+        mapped_tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in attribute.get("source_mappings", [])
+        }
+        if mapped_tables.intersection(table_names):
+            evidence.extend(
+                [
+                    attribute.get("name", ""),
+                    attribute.get("korean_name", ""),
+                    attribute.get("business_definition", ""),
+                    json.dumps(attribute.get("source_mappings", []), ensure_ascii=False),
+                    json.dumps(attribute.get("value_semantics", {}), ensure_ascii=False),
+                    " ".join(str(value) for value in attribute.get("semantic_cautions", [])),
                 ]
             )
     for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2):
@@ -2388,6 +2508,9 @@ def analyze_question(state: Text2SQLState) -> dict:
 ## 비즈니스 용어집
 {build_glossary_summary(SCHEMA, question, selected_domain)}
 
+## 재사용 가능한 Semantic Attribute
+{build_semantic_attributes_summary(SCHEMA, question, selected_domain)}
+
 ## 사전 정의된 메트릭
 {build_metrics_summary(SCHEMA, question, selected_domain)}
 
@@ -2451,7 +2574,7 @@ def _sql_dialect_rules() -> str:
     """백엔드별 SQL 작성 주의사항. Athena(Trino)는 PostgreSQL과 방언이 다르다."""
     if DB_BACKEND == "athena":
         return (
-            "16. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
+            "18. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
             "    - 타입 캐스트는 CAST(expr AS type)만 사용 (PostgreSQL의 expr::type 금지).\n"
             "    - 실수 나눗셈은 CAST(... AS DOUBLE), 정수는 CAST(... AS INTEGER).\n"
             "    - 대소문자 무시 이름 검색은 기본적으로 LOWER(col) LIKE LOWER('%값%') 사용 (ILIKE 금지). 이름 고정·이름만·정확 일치를 명시한 경우만 %를 제거.\n"
@@ -2542,6 +2665,9 @@ def generate_sql(state: Text2SQLState) -> dict:
 ## 사전 정의된 메트릭
 {build_metrics_summary(SCHEMA, question, selected_domain)}
 
+## 재사용 가능한 Semantic Attribute
+{build_semantic_attributes_summary(SCHEMA, question, selected_domain)}
+
 ## 재사용 가능한 Semantic Query Contract
 {relevant_semantic_contracts}
 
@@ -2621,6 +2747,9 @@ def validate_sql(state: Text2SQLState) -> dict:
     # model round trip to reject the SQL.
     if issues:
         return invalid_result(issues)
+
+    if state.get("question_type") == "direct_sql":
+        return valid_result("VALID (사용자 입력 SQL 정적 검증 통과)")
 
     validation_prompt = f"""SQL 검증 전문가로서, 아래 SQL이 사용자 질문에 정확히 답하는지 검증하세요.
 
@@ -2734,9 +2863,16 @@ def generate_answer(state: Text2SQLState) -> dict:
     columns = state.get("query_columns", [])
     rows = state.get("query_rows", [])
     if not rows:
-        return {"answer": "쿼리 결과가 없습니다. 조건을 확인해주세요."}
+        lines = ["조회 결과가 0건입니다."]
+        basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
+        if basis:
+            lines.append(f"- 조회 기준: {basis}")
+        lines.append("- 기간을 넓히거나 이름·업종 등의 검색어를 줄여서 다시 시도해 보세요.")
+        return {"answer": "\n".join(lines)}
     implicit_time_basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
     fallback_answer = _deterministic_result_answer(columns, rows, implicit_time_basis)
+    if state.get("question_type") == "direct_sql":
+        return {"answer": fallback_answer}
     result_text = " | ".join(columns) + "\n" + "-" * 40 + "\n"
     for row in rows[:20]:
         result_text += " | ".join(_mask_business_numbers_for_llm(v) for v in row) + "\n"
@@ -2793,9 +2929,22 @@ def generate_answer(state: Text2SQLState) -> dict:
 
 
 def handle_error(state: Text2SQLState) -> dict:
+    failed_sql = state.get("final_sql") or state.get("generated_sql") or ""
+    direct_sql = state.get("question_type") == "direct_sql"
     return {
-        "error_message": f"SQL 생성/실행에 실패했습니다 (재시도 {state.get('retry_count', 0)}회).\n마지막 검증 결과:\n{state.get('validation_result', '알 수 없는 오류')}\n\n마지막 SQL:\n{state.get('generated_sql', '없음')}",
-        "answer": "죄송합니다. 질문에 대한 SQL을 생성하지 못했습니다. 질문을 다시 표현해주세요.",
+        "error_message": (
+            f"SQL 생성/실행에 실패했습니다 (시도 {state.get('retry_count', 0)}회).\n"
+            f"마지막 검증 결과:\n{state.get('validation_result', '알 수 없는 오류')}\n\n"
+            f"마지막 SQL:\n{failed_sql or '없음'}"
+        ),
+        "answer": (
+            "입력한 SQL을 실행하지 못했습니다. 실패 원인 분석과 SQL을 확인해 수정해 주세요."
+            if direct_sql
+            else (
+                "질문에 대한 SQL을 생성하거나 실행하지 못했습니다.\n\n"
+                "실패 원인 분석과 마지막 SQL을 확인하거나, 조회 대상과 기간을 더 구체적으로 입력해 주세요."
+            )
+        ),
     }
 
 
@@ -2803,8 +2952,33 @@ def handle_error(state: Text2SQLState) -> dict:
 # 10. 라우팅
 # ---------------------------------------------------------------------------
 
-def route_by_question_type(state: Text2SQLState) -> Literal["route_domain", "direct_answer", "reject_answer"]:
+def prepare_direct_sql(state: Text2SQLState) -> dict:
+    """Prepare user-authored SQL for the same read-only validation/execution path."""
+    sql = _extract_sql_from_llm(state.get("question", ""))
+    used_tables = _extract_schema_tables(sql)
+    selected_tables = []
+    for table in SCHEMA.get("tables", []):
+        logical = str(table.get("name") or "")
+        physical = str(table.get("physical_table") or "")
+        candidates = {logical.lower(), physical.lower(), physical.rsplit(".", 1)[-1].lower()}
+        if candidates.intersection(used_tables):
+            selected_tables.append(logical)
+    return {
+        "selected_domain": "direct_sql",
+        "selected_capability_type": "direct_sql",
+        "selected_capability_name": "사용자 입력 SQL",
+        "selected_tables": selected_tables,
+        "table_details": _table_details(selected_tables, state.get("question", "")),
+        "generated_sql": sql,
+    }
+
+
+def route_by_question_type(
+    state: Text2SQLState,
+) -> Literal["route_domain", "prepare_direct_sql", "direct_answer", "reject_answer"]:
     qtype = state.get("question_type", "need_sql")
+    if qtype == "direct_sql":
+        return "prepare_direct_sql"
     if qtype == "direct":
         return "direct_answer"
     if qtype == "reject":
@@ -2857,11 +3031,15 @@ def after_check_sql_gen_params(state: Text2SQLState) -> Literal["generate_sql", 
 def after_validate(state: Text2SQLState) -> Literal["run_query", "generate_sql", "handle_error"]:
     if state.get("is_valid", False):
         return "run_query"
+    if state.get("question_type") == "direct_sql":
+        return "handle_error"
     return "handle_error" if state.get("retry_count", 0) >= 3 else "generate_sql"
 
 
 def after_query(state: Text2SQLState) -> Literal["generate_answer", "generate_sql", "handle_error"]:
     if state.get("query_error"):
+        if state.get("question_type") == "direct_sql":
+            return "handle_error"
         return "handle_error" if state.get("retry_count", 0) >= 3 else "generate_sql"
     return "generate_answer"
 
@@ -2874,6 +3052,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(Text2SQLState)
 
     graph.add_node("classify_question", classify_question)
+    graph.add_node("prepare_direct_sql", prepare_direct_sql)
     graph.add_node("route_domain", route_domain)
     graph.add_node("select_tool", select_tool)
     graph.add_node("check_tool_params", check_tool_params)
@@ -2893,6 +3072,7 @@ def build_graph() -> StateGraph:
 
     graph.set_entry_point("classify_question")
     graph.add_conditional_edges("classify_question", route_by_question_type)
+    graph.add_edge("prepare_direct_sql", "validate_sql")
     graph.add_edge("route_domain", "select_tool")
 
     graph.add_edge("direct_answer", END)

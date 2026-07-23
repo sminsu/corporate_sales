@@ -121,7 +121,9 @@ EMBED_API_KEY = _clean_api_key(
 EMBED_TIMEOUT = float(_env("EMBED_TIMEOUT", default=str(_or(_EMBED.timeout if _EMBED else None, 60))))
 EMBED_BATCH_SIZE = max(1, int(_env("EMBED_BATCH_SIZE", "EMBEDDING_BATCH_SIZE", default="10")))
 
-EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.75"))
+# README의 "라우팅 정밀도" 권장값과 동일한 정밀도 우선 기본값. 낮추면 verified query
+# 오탐(비슷하지만 다른 의도 매칭)이 늘어나므로 recall이 필요할 때만 명시적으로 낮춘다.
+EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.86"))
 ENABLE_EMBEDDING_PRECOMPUTE = _env_bool("ENABLE_EMBEDDING_PRECOMPUTE", False)
 ENABLE_VERIFIED_QUERY_MATCHING = _env_bool("ENABLE_VERIFIED_QUERY_MATCHING", True)
 ENABLE_VERIFIED_QUERY_LLM_FALLBACK = _env_bool("ENABLE_VERIFIED_QUERY_LLM_FALLBACK", False)

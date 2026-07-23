@@ -38,7 +38,7 @@ from text2sql_agent.managed_scope import (  # noqa: E402
     parse_business_number_list,
     parse_managed_scope_upload,
 )
-from text2sql_agent.schema import SCHEMA, _extract_schema_tables  # noqa: E402
+from text2sql_agent.schema import SCHEMA, _extract_schema_tables, _is_semantic_table_visible  # noqa: E402
 from text2sql_agent.session_store import SessionOwnershipError, create_session_store  # noqa: E402
 from text2sql_agent.workflow import (  # noqa: E402
     _get_app as _get_compiled_graph,
@@ -96,6 +96,7 @@ MANAGED_SCOPE_TEMPLATE_PATH = (
 
 NODE_LABELS = {
     "classify_question": ("question_analysis", "질문 분석", "업무 범위와 질문 유형을 분류했습니다."),
+    "prepare_direct_sql": ("sql_generation", "입력 SQL 준비", "사용자가 입력한 SQL을 읽기 전용 검증 경로로 준비했습니다."),
     "route_domain": ("domain_routing", "도메인 라우팅", "질문에 맞는 업무 도메인을 선택했습니다."),
     "select_tool": ("capability_selection", "Capability 선택", "사용 가능한 Tool과 검증 쿼리 경로를 판단했습니다."),
     "check_tool_params": ("parameter_check", "파라미터 확인", "Tool 실행에 필요한 입력값을 확인했습니다."),
@@ -681,7 +682,90 @@ def _public_result_error(error: Any) -> str:
     """Hide SQL/provider diagnostics kept in state from normal API consumers."""
     if not str(error or "").strip():
         return ""
-    return "조회 처리 중 오류가 발생했습니다. 질문 조건을 확인하거나 다시 시도해 주세요."
+    return "SQL 처리에 실패했습니다. 아래 실패 원인 분석과 마지막 SQL을 확인해 주세요."
+
+
+def _public_sql_failure_reason(error: Any) -> tuple[str, str]:
+    """Classify DB/validation failures without returning raw infrastructure details."""
+    detail = str(error or "").strip()
+    lowered = detail.lower()
+    patterns = [
+        (
+            r"column_not_found|column .*does not exist|cannot be resolved|unknown column|컬럼.*(?:없|찾)",
+            "SQL에 작성한 컬럼을 찾을 수 없습니다.",
+            "테이블 상세에서 실제 컬럼명을 확인하고 별칭과 철자를 수정해 주세요.",
+        ),
+        (
+            r"table_not_found|relation .*does not exist|table .*does not exist|unknown table|스키마에 없는 테이블|테이블.*(?:없|찾)",
+            "SQL에 작성한 테이블을 찾을 수 없습니다.",
+            "테이블 탭에서 물리 테이블명과 스키마 prefix를 확인해 주세요.",
+        ),
+        (
+            r"syntax error|mismatched input|parse error|sql 파싱|구문",
+            "SQL 구문을 해석하지 못했습니다.",
+            "괄호, 쉼표, 따옴표, SELECT/FROM/GROUP BY 구문을 확인해 주세요.",
+        ),
+        (
+            r"access denied|permission denied|not authorized|권한|접근이 제한",
+            "해당 데이터에 대한 조회 권한이 없습니다.",
+            "접근 가능한 테이블인지 확인하거나 데이터 권한 담당자에게 문의해 주세요.",
+        ),
+        (
+            r"timeout|timed out|time limit|시간.*초과",
+            "SQL 실행 시간이 제한을 초과했습니다.",
+            "조회 기간, 대상 컬럼, JOIN 범위를 줄여 다시 실행해 주세요.",
+        ),
+        (
+            r"type mismatch|cannot cast|invalid cast|operator does not exist|자료형|타입",
+            "SQL의 컬럼 자료형 또는 연산 방식이 맞지 않습니다.",
+            "비교·집계 대상 컬럼의 자료형과 CAST 구문을 확인해 주세요.",
+        ),
+        (
+            r"read-only|select.*only|select 문만|읽기 전용",
+            "읽기 전용 SELECT/WITH SQL만 실행할 수 있습니다.",
+            "INSERT, UPDATE, DELETE, DDL 문을 제거하고 조회 SQL로 작성해 주세요.",
+        ),
+    ]
+    for pattern, reason, suggestion in patterns:
+        if re.search(pattern, lowered, flags=re.IGNORECASE):
+            return reason, suggestion
+    return (
+        "SQL을 검증하거나 실행하는 과정에서 오류가 발생했습니다.",
+        "아래 SQL과 선택 테이블을 확인하고 조건을 단순화해 다시 실행해 주세요.",
+    )
+
+
+def _sql_failure_details(result: dict[str, Any]) -> dict[str, Any] | None:
+    raw_error = result.get("query_error") or result.get("error_message") or result.get("validation_result")
+    if not str(raw_error or "").strip():
+        return None
+    if result.get("query_error"):
+        stage = "sql_execution"
+        stage_label = "SQL 실행"
+        analysis_source = result.get("query_error")
+    elif result.get("generated_sql") or result.get("final_sql"):
+        stage = "sql_validation"
+        stage_label = "SQL 검증"
+        analysis_source = result.get("validation_result") or raw_error
+    else:
+        stage = "sql_generation"
+        stage_label = "SQL 생성"
+        analysis_source = raw_error
+    reason, suggestion = _public_sql_failure_reason(analysis_source)
+    validation_summary = ""
+    if not result.get("query_error"):
+        validation_summary = " ".join(str(result.get("validation_result") or "").split())[:1200]
+    return {
+        "stage": stage,
+        "stage_label": stage_label,
+        "reason": reason,
+        "suggestion": suggestion,
+        "retry_count": int(result.get("retry_count") or 0),
+        "selected_domain": str(result.get("selected_domain") or ""),
+        "selected_tables": list(result.get("selected_tables") or []),
+        "validation_summary": validation_summary,
+        "sql": str(result.get("final_sql") or result.get("generated_sql") or ""),
+    }
 
 
 def _get_or_create_session(session_id: str | None, user_id: str = "ui", agent_name: str = "corporate_sales") -> dict[str, Any]:
@@ -1312,7 +1396,10 @@ def _result_payload(
         documents = _documents_from_result(result, top_k, source_override)
         continuation = None
 
-    error = _public_result_error(result.get("error_message", "") or result.get("query_error", ""))
+    result_error = result.get("error_message", "") or result.get("query_error", "")
+    error = _public_result_error(result_error)
+    failure_details = _sql_failure_details(result) if error else None
+    result_sql = result.get("final_sql", "") or (result.get("generated_sql", "") if error else "")
     excel_file = _register_file(result.get("bad_debt_excel_path", ""), session=session)
     data = {
         "answer": answer,
@@ -1331,11 +1418,12 @@ def _result_payload(
         "selected_tool": result.get("selected_tool", ""),
         "matched_query_name": result.get("matched_query_name", ""),
         "selected_tables": result.get("selected_tables", []),
-        "sql": result.get("final_sql", ""),
+        "sql": result_sql,
         "columns": result.get("query_columns", []),
         "rows": result.get("query_rows", []),
         "result_meta": _result_meta(result, source_override),
         "error": error,
+        "failure_details": failure_details,
         "excel_file": excel_file,
         "suggestions": result.get("suggestions", []),
         "original_answer": result.get("original_answer", result.get("answer", "")),
@@ -1359,7 +1447,9 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
         "assistant",
         data.get("answer", ""),
         message_id=message_id,
-        status=data.get("status"),
+        status="error" if data.get("error") else data.get("status"),
+        error=data.get("error"),
+        failure_details=data.get("failure_details"),
         missing_params=data.get("missing_params"),
         continuation=data.get("continuation"),
         result_id=data.get("result_id"),
@@ -1401,7 +1491,16 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
     answer = result.get("answer", "") or result.get("error_message", "") or (fallback_message or {}).get("text", "")
     columns = result.get("query_columns", []) or (fallback_message or {}).get("columns", [])
     rows = result.get("query_rows", []) or (fallback_message or {}).get("rows", [])
-    sql = result.get("final_sql", "") or (fallback_message or {}).get("sql", "")
+    sql = (
+        result.get("final_sql", "")
+        or (result.get("generated_sql", "") if error else "")
+        or (fallback_message or {}).get("sql", "")
+    )
+    failure_details = (
+        _sql_failure_details(result)
+        if error and result
+        else (fallback_message or {}).get("failure_details")
+    )
 
     data = {
         "answer": answer,
@@ -1425,6 +1524,7 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "rows": rows,
         "result_meta": _result_meta(result) if result else (fallback_message or {}).get("result_meta", {}),
         "error": error,
+        "failure_details": failure_details,
         "excel_file": _register_file(result.get("bad_debt_excel_path", ""), session=session),
         "suggestions": result.get("suggestions") or _suggest_followups(result),
         "original_answer": result.get("original_answer", result.get("answer", "")),
@@ -1469,6 +1569,7 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
 _NEXT_PROGRESS_STEP = {
     "": "classify_question",
     "classify_question": "route_domain",
+    "prepare_direct_sql": "validate_sql",
     "route_domain": "select_tool",
     "select_tool": "match_verified_query",
     "check_tool_params": "execute_tool",
@@ -2260,6 +2361,32 @@ def examples():
             "2025년 12월 말 기준 연체 회원 수를 알려줘",
             "2025년 12월 말 기준 여신한도가 큰 기업 상위 10개를 보여줘",
         ]
+    }
+
+
+@app.get("/api/tables")
+def table_catalog():
+    tables = []
+    for table in SCHEMA.get("tables", []):
+        if not _is_semantic_table_visible(table):
+            continue
+        name = str(table.get("name") or "").strip()
+        if not name:
+            continue
+        tables.append(
+            {
+                "name": name,
+                "physical_table": str(table.get("physical_table") or name).strip(),
+                "korean_name": str(table.get("korean_name") or name).strip(),
+                "description": " ".join(str(table.get("description") or "").split()),
+                "grain": " ".join(str(table.get("grain") or "").split()),
+            }
+        )
+    metadata = SCHEMA.get("semantic_layer_metadata") or {}
+    return {
+        "count": len(tables),
+        "semantic_layer_version": str(metadata.get("version") or ""),
+        "tables": tables,
     }
 
 

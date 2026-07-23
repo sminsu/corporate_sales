@@ -344,6 +344,172 @@ def _compact_text(value: object) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣_]", "", str(value or "").lower())
 
 
+def semantic_attribute_candidates(
+    schema: dict,
+    question: str,
+    domain_name: str = "",
+    max_count: int = 6,
+) -> list[dict]:
+    """Return reusable semantic attributes relevant to the question.
+
+    Attributes model business roles such as merchant owner, corporate customer,
+    or payment institution independently from any one query template.  This
+    keeps physical-column selection and code-value resolution in the semantic
+    layer while returning only a small prompt context for local models.
+    """
+    q_compact = _compact_text(question)
+    scored: list[tuple[int, int, int, dict]] = []
+    for position, attribute in enumerate(schema.get("semantic_attributes", [])):
+        domains = attribute.get("domains", attribute.get("domain", []))
+        if isinstance(domains, str):
+            domains = [domains]
+        if domain_name and domains and domain_name not in domains:
+            continue
+        terms = [
+            attribute.get("name", ""),
+            attribute.get("korean_name", ""),
+            *attribute.get("aliases", []),
+        ]
+        exact = max(
+            (
+                len(compact)
+                for term in terms
+                if (compact := _compact_text(term)) and len(compact) >= 2 and compact in q_compact
+            ),
+            default=0,
+        )
+        overlap, specific = _retrieval_overlap(
+            question,
+            _join_texts(
+                terms,
+                attribute.get("business_definition"),
+                attribute.get("source_mappings", []),
+                attribute.get("value_semantics", {}),
+                attribute.get("semantic_cautions", []),
+            ),
+        )
+        value_hit = 0
+        for raw_value in (attribute.get("value_semantics") or {}).values():
+            value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
+            value_terms = [
+                value_info.get("label", ""),
+                *value_info.get("aliases", []),
+            ]
+            value_hit = max(
+                value_hit,
+                max(
+                    (
+                        len(compact)
+                        for term in value_terms
+                        if (compact := _compact_text(term))
+                        and len(compact) >= 2
+                        and compact in q_compact
+                    ),
+                    default=0,
+                ),
+            )
+        if exact or value_hit or overlap >= 2 or specific:
+            scored.append((max(exact, value_hit), overlap, -position, attribute))
+    scored.sort(key=lambda item: item[:3], reverse=True)
+    return [attribute for _, _, _, attribute in scored[: max(0, max_count)]]
+
+
+def resolve_semantic_attribute_value(
+    schema: dict,
+    attribute_or_parameter: str,
+    question: str,
+) -> str:
+    """Resolve a code value from a semantic attribute's labels and aliases."""
+    q_compact = _compact_text(question)
+    matches: list[tuple[int, str]] = []
+    for attribute in schema.get("semantic_attributes", []):
+        names = {
+            str(attribute.get("name") or ""),
+            str(attribute.get("parameter_name") or ""),
+        }
+        if attribute_or_parameter not in names:
+            continue
+        for code, raw_value in (attribute.get("value_semantics") or {}).items():
+            value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
+            terms = [value_info.get("label", ""), *value_info.get("aliases", [])]
+            for term in terms:
+                compact = _compact_text(term)
+                if compact and len(compact) >= 2 and compact in q_compact:
+                    matches.append((len(compact), str(code)))
+    return max(matches)[1] if matches else ""
+
+
+def build_semantic_attributes_summary(
+    schema: dict,
+    question: str = "",
+    domain_name: str = "",
+    max_count: int = 6,
+) -> str:
+    """Render a bounded question-specific semantic attribute context."""
+    if question:
+        attributes = semantic_attribute_candidates(
+            schema,
+            question,
+            domain_name=domain_name,
+            max_count=max_count,
+        )
+        index = {
+            str(attribute.get("name") or ""): attribute
+            for attribute in schema.get("semantic_attributes", [])
+        }
+        bound = []
+        for contract in semantic_query_contract_candidates(
+            schema,
+            question,
+            domain_name=domain_name,
+            max_count=2,
+        ):
+            for name in contract.get("semantic_attributes", []):
+                attribute = index.get(str(name))
+                if attribute and attribute not in bound:
+                    bound.append(attribute)
+        attributes = (bound + [item for item in attributes if item not in bound])[: max(0, max_count)]
+    else:
+        attributes = list(schema.get("semantic_attributes", []))[: max(0, max_count)]
+    if not attributes:
+        return "(질문과 직접 관련된 semantic attribute 없음)"
+
+    lines = []
+    for attribute in attributes:
+        name = attribute.get("korean_name") or attribute.get("name") or ""
+        lines.append(f"- **{name}**: {attribute.get('business_definition', '')}")
+        if attribute.get("aliases"):
+            lines.append(
+                "  aliases: [" + ", ".join(str(value) for value in attribute.get("aliases", [])) + "]"
+            )
+        if attribute.get("parameter_name"):
+            lines.append(f"  parameter_name: {attribute.get('parameter_name')}")
+        mappings = attribute.get("source_mappings", [])
+        if mappings:
+            lines.append("  source_mappings:")
+            for mapping in mappings[:8]:
+                table = mapping.get("table", "")
+                columns = mapping.get("columns", mapping.get("column", []))
+                if isinstance(columns, str):
+                    columns = [columns]
+                role = mapping.get("role", "")
+                role_note = f", role={role}" if role else ""
+                lines.append(f"    - {table}: {', '.join(str(value) for value in columns)}{role_note}")
+        if attribute.get("value_semantics"):
+            lines.append(
+                "  value_semantics: "
+                + json.dumps(attribute.get("value_semantics"), ensure_ascii=False)
+            )
+        if attribute.get("filter_expression"):
+            lines.append(f"  filter_expression: {attribute.get('filter_expression')}")
+        if attribute.get("semantic_cautions"):
+            lines.append(
+                "  semantic_cautions: "
+                + "; ".join(str(value) for value in attribute.get("semantic_cautions", []))
+            )
+    return "\n".join(lines)
+
+
 def _retrieval_overlap(question: str, evidence: str) -> tuple[int, bool]:
     """Return semantic token overlap and whether it contains a specific hit.
 
@@ -442,7 +608,7 @@ def _format_query_reference(ref: dict) -> str:
     return "\n".join(lines)
 
 
-def _semantic_query_contract_score(question: str, contract: dict) -> int:
+def _semantic_query_contract_score(schema: dict, question: str, contract: dict) -> int:
     """Score a compositional semantic contract using declarative phrase groups."""
     compact = _compact_text(question)
     match = contract.get("match") if isinstance(contract.get("match"), dict) else {}
@@ -472,6 +638,11 @@ def _semantic_query_contract_score(question: str, contract: dict) -> int:
         if hits:
             score += 3 + max(len(_compact_text(value)) for value in hits)
 
+    for attribute_name in match.get("required_attribute_values", []):
+        if not resolve_semantic_attribute_value(schema, str(attribute_name), question):
+            return 0
+        score += 18
+
     for example in contract.get("examples", []):
         normalized = _compact_text(example)
         if len(normalized) >= 4 and normalized in compact:
@@ -495,7 +666,7 @@ def semantic_query_contract_candidates(
             continue
         if routing_only and str(contract.get("routing_strength") or "medium").lower() != "high":
             continue
-        score = _semantic_query_contract_score(question, contract)
+        score = _semantic_query_contract_score(schema, question, contract)
         if score > 0:
             scored.append((score, -position, contract))
     scored.sort(key=lambda item: item[:2], reverse=True)
@@ -513,6 +684,7 @@ def _format_semantic_query_contract(contract: dict) -> str:
         ("metric_names", "canonical_metrics"),
         ("result_grain", "result_grain"),
         ("dimensions", "dimensions"),
+        ("semantic_attributes", "semantic_attributes"),
         ("entity_binding", "entity_binding"),
         ("name_filter", "name_filter"),
         ("time_policy", "time_policy"),
@@ -930,6 +1102,23 @@ def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
                 contract.get("time_policy", {}),
             )
         )
+    attribute_texts = []
+    for attribute in schema.get("semantic_attributes", []):
+        domains = attribute.get("domains", attribute.get("domain", []))
+        if isinstance(domains, str):
+            domains = [domains]
+        if domains and domain_name not in domains:
+            continue
+        attribute_texts.append(
+            _join_texts(
+                attribute.get("name"),
+                attribute.get("korean_name"),
+                attribute.get("aliases", []),
+                attribute.get("business_definition"),
+                attribute.get("source_mappings", []),
+                attribute.get("value_semantics", {}),
+            )
+        )
     return _join_texts(
         domain.get("name"),
         domain.get("business_scope"),
@@ -939,6 +1128,7 @@ def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
         metric_texts,
         entity_texts,
         contract_texts,
+        attribute_texts,
     )
 
 

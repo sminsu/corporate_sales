@@ -511,6 +511,8 @@ def _get_source_label(result: dict) -> str:
         return f"Tool: {tool}"
     elif matched:
         return f"검증된 쿼리: {matched}"
+    elif result.get("question_type") == "direct_sql":
+        return "사용자 SQL 실행"
     elif result.get("question_type") == "direct":
         return "직접 답변"
     else:

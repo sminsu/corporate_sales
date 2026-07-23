@@ -7,10 +7,6 @@ from .sql_builders import (
     _tool_sql_corporate_check_card_only_high_monthly_avg,
     _tool_sql_merchant_corporate_sales_target_no_corporate_card,
     _tool_sql_corporate_limit_low_utilization_members,
-    _tool_sql_new_sales_targets_usage_amount_detail,
-    _tool_sql_managed_corporate_usage_trend_monitoring,
-    _tool_sql_managed_corporate_delinquency_current,
-    _tool_sql_managed_corporate_limit_down_monitoring,
 )
 
 def _tool_fn_verified_query(sql_query_name: str, **kwargs):
