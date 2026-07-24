@@ -92,11 +92,6 @@ REFERENCE_ROUTING_CASES = [
 
 REFERENCE_VQ_CASES = list(zip(
     [
-        "corporate_card_active_no_usage_members",
-        "corporate_card_churned_after_usage_members",
-        "corporate_check_card_only_high_monthly_avg",
-        "merchant_corporate_sales_target_no_corporate_card",
-        "corporate_limit_low_utilization_members",
         "corporate_target_industry_usage",
         "managed_company_usage_anomalies",
         "managed_company_delinquency",
@@ -105,8 +100,36 @@ REFERENCE_VQ_CASES = list(zip(
         "brand_merchants_with_corporate_card",
         "merchant_detail_by_name",
     ],
-    [question for question, _, _ in REFERENCE_ROUTING_CASES],
+    [question for question, _, _ in REFERENCE_ROUTING_CASES[5:]],
 ))
+
+SEMANTIC_GENERATION_CASES = [
+    (
+        "corporate_card_active_without_recent_usage",
+        "2026년 4월 기준 기업카드는 살아 있지만 6개월 동안 한 번도 쓰지 않은 회사 목록",
+        {"tbdaa1d12"},
+    ),
+    (
+        "corporate_card_churn_after_usage",
+        "최근 반년 내 기업카드 결제는 있었는데 2026년 4월 현재 유효 카드가 없는 법인",
+        {"tbdaa1d12"},
+    ),
+    (
+        "corporate_check_card_only_high_average",
+        "2026년 4월 현재 신용카드 없이 기업 체크카드만 갖고 있고 올해 월평균 5천만원 넘게 쓴 기업",
+        {"tbdaa1d12"},
+    ),
+    (
+        "high_sales_corporate_merchant_without_corporate_card",
+        "2026년 4월 월매출 1억 넘는 정상 법인가맹점 가운데 기업카드 없는 곳",
+        {"tmdaa5e11", "tmdaaus01"},
+    ),
+    (
+        "corporate_card_low_limit_utilization",
+        "2026년 4월 기업신용카드를 가진 고객 중 총한도 2천만원 이상, 사용률 50% 아래인 곳",
+        {"tbdaa1d12"},
+    ),
+]
 
 
 def _sample_vq_params(query: dict) -> dict:
@@ -353,6 +376,68 @@ def test_reference_questions_match_verified_query_without_llm(expected_vq: str, 
 
     assert matched is not None, question
     assert matched["matched_query_name"] == expected_vq
+
+
+@pytest.mark.parametrize(("expected_contract", "question", "required_tables"), SEMANTIC_GENERATION_CASES)
+def test_reference_paraphrases_use_semantic_generation_without_verified_query(
+    expected_contract: str,
+    question: str,
+    required_tables: set[str],
+) -> None:
+    contracts = schema.semantic_query_contract_candidates(schema.SCHEMA, question, max_count=1)
+    selection = workflow.select_tool({"question": question, "domain_context": ""})
+
+    assert contracts and contracts[0]["name"] == expected_contract
+    assert contracts[0]["execution_mode"] == "semantic_generation"
+    assert selection["selected_capability_type"] == "semantic_generation"
+    assert selection["selected_capability_name"] == expected_contract
+    assert selection["matched_query_name"] == ""
+    assert workflow._reference_domain_by_rule(question) == "corporate_sales_targeting"
+    assert required_tables <= set(workflow._rule_rank_tables(question))
+
+
+@pytest.mark.parametrize("question", [question for question, _, _ in REFERENCE_ROUTING_CASES[:5]])
+def test_reference_sql_is_not_runtime_verified_query(question: str) -> None:
+    selection = workflow.select_tool({"question": question, "domain_context": ""})
+
+    assert workflow._select_verified_query_capability(question, {}) is None
+    assert selection["selected_capability_type"] == "semantic_generation"
+    assert selection["matched_query_name"] == ""
+
+
+def test_check_card_only_query_requires_current_check_card_holding() -> None:
+    query = next(
+        item
+        for item in schema.VERIFIED_QUERIES
+        if item["name"] == "corporate_check_card_only_high_monthly_avg"
+    )
+    sql = query["sql"]
+
+    assert "current_snapshot AS" in sql
+    assert 'COALESCE(c."유효기업신용카드수", 0) = 0' in sql
+    assert 'COALESCE(c."유효기업체크카드수", 0) > 0' in sql
+    assert '"현재유효기업체크카드수"' in sql
+
+
+def test_athena_contract_explicitly_rejects_oracle_sas_wrappers() -> None:
+    rules = " ".join(schema.SCHEMA["sql_generation_contract"]["athena_rules"])
+
+    assert "CONNECTION TO ORACLE" in rules
+    assert "NVL" in rules and "COALESCE" in rules
+    assert "ROW_NUMBER()" in rules
+
+
+def test_table_metadata_question_uses_semantic_layer_without_llm() -> None:
+    question = "tbdaa1d12 테이블의 grain, 기본키와 기준년월일 컬럼을 설명해줘"
+
+    assert workflow.classify_question({"question": question})["question_type"] == "direct"
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("model unavailable")):
+        answer = workflow.direct_answer({"question": question, "selected_domain": ""})["answer"]
+
+    assert "tbdaa1d12" in answer
+    assert "grain:" in answer
+    assert "primary_key:" in answer
+    assert "기준년월일" in answer
 
 
 def test_restricted_tables_and_columns_never_enter_semantic_prompts() -> None:

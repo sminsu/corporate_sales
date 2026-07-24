@@ -26,6 +26,7 @@ from .db import execute_sql, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
 from .managed_scope import ManagedScopeParseError, parse_business_number_list
+from .query_frame import build_result_scope, query_frame_prompt
 from .schema import (
     SCHEMA,
     VERIFIED_QUERIES,
@@ -65,6 +66,7 @@ VQ_EMBEDDINGS: list[list[float]] = []
 DOMAIN_EMBEDDINGS_AVAILABLE = False
 DOMAIN_EMBEDDINGS: dict[str, list[float]] = {}
 _EMBEDDINGS_INITIALIZED = False
+_DISPLAY_ROW_LIMIT = 100
 
 
 def _coerce_llm_text(value: object) -> str:
@@ -265,6 +267,8 @@ def classify_question(state: Text2SQLState) -> dict:
     question = state["question"]
     if _looks_like_direct_sql(question):
         return {"question_type": "direct_sql"}
+    if _looks_like_schema_question(question):
+        return {"question_type": "direct"}
     if _rule_classify_question(question):
         return {"question_type": "need_sql"}
     domain_lines = []
@@ -321,6 +325,20 @@ def _looks_like_direct_sql(question: str) -> bool:
     """Recognize a user-authored read query without treating surrounding prose as SQL."""
     stripped = _strip_llm_code_fence(question)
     return bool(re.match(r"^\s*(?:SELECT|WITH)\b", stripped, flags=re.IGNORECASE))
+
+
+def _looks_like_schema_question(question: str) -> bool:
+    """Recognize metadata questions that the semantic layer can answer directly."""
+    text = question or ""
+    return bool(
+        re.search(
+            r"(?:어느|어떤)\s*테이블|"
+            r"(?:테이블|컬럼|스키마).{0,16}(?:구조|정의|설명|목록|용도|의미|자료형|데이터\s*타입|알려|뭐|무엇)|"
+            r"(?:grain|그레인|primary\s*key|기본키|주키|PK)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _rule_classify_question(question: str) -> bool:
@@ -1505,6 +1523,11 @@ def select_tool(state: Text2SQLState) -> dict:
                 f"{details or '- 필요한 원천 컬럼 또는 코드 의미가 정의되지 않았습니다.'}"
             )
             return result
+        if str(contract.get("execution_mode") or "").lower() == "semantic_generation":
+            result = _empty_capability_selection()
+            result["selected_capability_type"] = "semantic_generation"
+            result["selected_capability_name"] = str(contract.get("name") or "")
+            return result
     # An exact/rule VQ is more specific than a broad tag-based tool.  In
     # particular, "관리기업 한도 감액" must not be captured by the generic
     # low-utilization tool simply because both mention 기업 and 한도.
@@ -1557,12 +1580,20 @@ def execute_tool(state: Text2SQLState) -> dict:
     try:
         result = tool["fn"](params)
         if isinstance(result, dict) and result.get("is_complete"):
+            final_sql = prepare_sql_for_backend(
+                _apply_name_filter_mode(state.get("question", ""), result.get("sql", ""))
+            )
+            rows = list(result.get("rows", []) or [])
+            visible_rows = rows[:_DISPLAY_ROW_LIMIT]
             return {
-                "final_sql": prepare_sql_for_backend(
-                    _apply_name_filter_mode(state.get("question", ""), result.get("sql", ""))
-                ),
+                "final_sql": final_sql,
                 "query_columns": result.get("columns", []),
-                "query_rows": result.get("rows", []),
+                "query_rows": visible_rows,
+                "result_scope": build_result_scope(
+                    final_sql,
+                    fetched_row_count=len(rows),
+                    displayed_row_count=len(visible_rows),
+                ),
                 "answer": result.get("answer", ""),
                 "bad_debt_excel_path": result.get("excel_path", ""),
                 "tool_completed": True,
@@ -1588,7 +1619,18 @@ def run_tool_query(state: Text2SQLState) -> dict:
             "selected_tool": "",
             "final_sql": prepared_sql,
         }
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": prepared_sql,
+        "result_scope": build_result_scope(
+            prepared_sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+        ),
+    }
 
 
 def _match_vq_by_embedding(question: str) -> dict | None:
@@ -1616,6 +1658,8 @@ def _match_vq_by_embedding(question: str) -> dict | None:
 
 def _verified_query_matches_intent(question: str, matched: dict) -> bool:
     """Reject broad semantic matches when the user's metric intent differs."""
+    if not _verified_query_is_executable(matched):
+        return False
     question_text = question or ""
     matched_text = " ".join(
         str(matched.get(key, ""))
@@ -1658,6 +1702,11 @@ def _verified_query_matches_intent(question: str, matched: dict) -> bool:
             or re.search(r"COUNT\s*\(\s*DISTINCT\s+[^)]*가맹점번호", matched_text, re.IGNORECASE)
         )
     return True
+
+
+def _verified_query_is_executable(query: dict) -> bool:
+    """Keep migration/reference SQL available as documentation, not runtime templates."""
+    return str(query.get("runtime_mode") or "executable").lower() != "reference_only"
 
 
 def _semantic_contract_bindings_satisfied(question: str, contract: dict, vq: dict) -> bool:
@@ -1739,6 +1788,7 @@ def _rank_vq_candidate_scores(question: str) -> list[tuple[int, dict]]:
     scored = [
         (score, vq)
         for vq in VERIFIED_QUERIES
+        if _verified_query_is_executable(vq)
         if (score := _score_vq_candidate(question, vq)) >= VERIFIED_QUERY_MIN_LEXICAL_SCORE
     ]
     scored.sort(key=lambda item: (item[0], item[1].get("name", "")), reverse=True)
@@ -1819,6 +1869,9 @@ def _match_vq_by_llm(question: str) -> dict:
 
 def _select_verified_query_capability(question: str, state: Text2SQLState | dict) -> dict | None:
     if not ENABLE_VERIFIED_QUERY_MATCHING or state.get("skip_verified_query_matching"):
+        return None
+    contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    if contracts and str(contracts[0].get("execution_mode") or "").lower() == "semantic_generation":
         return None
 
     result = _match_vq_by_semantic_contract(question)
@@ -1981,14 +2034,31 @@ def run_matched_query(state: Text2SQLState) -> dict:
             "matched_query_name": "",
             "final_sql": prepared_sql,
         }
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": prepared_sql,
+        "result_scope": build_result_scope(
+            prepared_sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+        ),
+    }
 
 
 def direct_answer(state: Text2SQLState) -> dict:
     question = state["question"]
     selected_domain = state.get("selected_domain", "")
     glossary = build_glossary_summary(SCHEMA, question, selected_domain)
-    table_summary = _compact_table_catalog(_rule_rank_tables(question))
+    rule_tables = _rule_rank_tables(question)
+    schema_question = _looks_like_schema_question(question)
+    table_summary = (
+        _table_details(rule_tables, question, max_columns=24, max_total_columns=48)
+        if schema_question and rule_tables
+        else _compact_table_catalog(rule_tables)
+    )
     metrics = build_metrics_summary(SCHEMA, question, selected_domain)
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     references = find_relevant_references(SCHEMA, question, domain_name=selected_domain)
@@ -2023,6 +2093,8 @@ def direct_answer(state: Text2SQLState) -> dict:
         answer = ""
     if answer:
         return {"answer": answer}
+    if schema_question and table_summary and "사용 가능한 테이블 없음" not in table_summary:
+        return {"answer": table_summary}
 
     q_compact = re.sub(r"\s+", "", question.lower())
     for glossary_item in SCHEMA.get("glossary", []):
@@ -2070,6 +2142,20 @@ def _phrase_in_question(question_compact: str, phrase: object) -> bool:
     return len(normalized) >= 2 and normalized in question_compact
 
 
+def _contract_source_tables(question: str, contract: dict) -> list[str]:
+    policy = contract.get("source_table_policy")
+    if not isinstance(policy, dict):
+        return list(contract.get("source_tables", []))
+
+    q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
+    current_snapshot_terms = policy.get("current_snapshot_when", [])
+    use_current_snapshot = any(
+        _phrase_in_question(q_compact, term) for term in current_snapshot_terms
+    )
+    key = "current_snapshot" if use_current_snapshot else "period_snapshot"
+    return list(policy.get(key) or policy.get("default") or contract.get("source_tables", []))
+
+
 def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
     """Rank schema tables using explicit semantic-layer evidence only."""
     q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
@@ -2078,7 +2164,7 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         if str(contract.get("table_selection_mode") or "").lower() != "authoritative":
             continue
         selected = []
-        for table_name in contract.get("source_tables", []):
+        for table_name in _contract_source_tables(question, contract):
             name = str(table_name or "").rsplit(".", 1)[-1]
             if name and name not in selected:
                 selected.append(name)
@@ -2105,7 +2191,7 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
             add(mapping.get("table"), 18)
 
     for contract in matched_contracts:
-        for table_name in contract.get("source_tables", []):
+        for table_name in _contract_source_tables(question, contract):
             add(table_name, 28)
 
     references: list[tuple[int, int, dict]] = []
@@ -2549,6 +2635,9 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
 
     question = state["question"]
     needed = _missing_ambiguous_target_params(question)
+    query_frame = state.get("query_frame") or {}
+    if needed and query_frame.get("entities"):
+        needed = []
 
     if needed:
         return {
@@ -2591,20 +2680,24 @@ def _multiturn_sql_context(state: Text2SQLState | dict) -> str:
     previous_sql = str(state.get("previous_sql") or "").strip()
     previous_answer = str(state.get("previous_answer") or "").strip()
     followup_question = str(state.get("followup_question") or "").strip()
-    if not any((previous_question, previous_sql, previous_answer, followup_question)):
+    query_frame = state.get("query_frame") or {}
+    if not any((previous_question, previous_sql, previous_answer, followup_question, query_frame)):
         return ""
     return """## 멀티턴 문맥
 - 이전 질문: {previous_question}
 - 실제 후속 질문: {followup_question}
 - 이전 답변 요약: {previous_answer}
+- 구조화된 조회 상태:
+{query_frame}
 - 이전 실행 SQL:
 {previous_sql}
 
-이전 SQL은 엔티티/필터/집계 기준을 이어받기 위한 참고입니다. 실제 후속 질문에서 변경한 기간·정렬·비교 조건을 우선 적용하고, 새 질문에 없는 엔티티 조건은 유지하세요.
+구조화된 조회 상태를 조건 상속의 기준으로 사용하세요. 이전 SQL은 보조 참고입니다. 실제 후속 질문에서 변경한 기간·지표·정렬·비교 조건을 우선 적용하고, 새 질문에 없는 대상 조건은 유지하세요. "소스 재탐색 필요: 예"이면 이전 도메인·테이블은 상속하지 말고 현재 도메인 라우팅과 테이블 상세를 사용하세요.
 """.format(
         previous_question=previous_question[:1000] or "(없음)",
         followup_question=followup_question[:1000] or "(없음)",
         previous_answer=previous_answer[:1200] or "(없음)",
+        query_frame=query_frame_prompt(query_frame),
         previous_sql=previous_sql[:5000] or "(없음)",
     )
 
@@ -2710,6 +2803,30 @@ SQL:"""
     return {"generated_sql": sql}
 
 
+def _validate_required_semantic_tables(
+    question: str,
+    sql: str,
+    selected_tables: list[str],
+) -> list[str]:
+    contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    if not contracts or not contracts[0].get("require_all_selected_tables"):
+        return []
+    used_tables = _extract_schema_tables(sql)
+    required_tables = {
+        str(table).rsplit(".", 1)[-1].lower()
+        for table in selected_tables
+        if table
+    }
+    missing = sorted(required_tables - used_tables)
+    if not missing:
+        return []
+    return [
+        "Semantic Query Contract 필수 테이블 누락: "
+        + ", ".join(missing)
+        + ". 선택된 현재/과거 기업규모 원천과 실적 테이블을 모두 사용하세요."
+    ]
+
+
 def validate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
     sql = _apply_recent_month_sql_fix(question, state["generated_sql"])
@@ -2717,6 +2834,7 @@ def validate_sql(state: Text2SQLState) -> dict:
     sql = prepare_sql_for_backend(sql)
     selected_tables = state["selected_tables"]
     issues = _validate_sql_against_schema(sql, selected_tables)
+    issues.extend(_validate_required_semantic_tables(question, sql, selected_tables))
     issues.extend(_validate_recent_month_semantics(question, sql))
     implicit_time_basis = _implicit_time_basis_note(question, sql)
     current_ym = _current_ym()
@@ -2811,7 +2929,18 @@ def run_query(state: Text2SQLState) -> dict:
             "retry_count": retry,
             "final_sql": prepared_sql,
         }
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": prepared_sql,
+        "result_scope": build_result_scope(
+            prepared_sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+        ),
+    }
 
 
 def _markdown_cell(value: object, max_length: int = 80) -> str:
@@ -3106,6 +3235,7 @@ def _new_initial_state(question: str) -> Text2SQLState:
     return {
         "question": question, "question_type": "",
         "previous_question": "", "previous_sql": "", "previous_answer": "", "followup_question": "",
+        "query_frame": {},
         "selected_domain": "", "domain_candidates": [], "domain_routing_trace": "", "domain_context": "",
         "selected_tool": "", "tool_params": {}, "tool_completed": False, "skip_tool_selection": False,
         "selected_capability_type": "", "selected_capability_name": "",
@@ -3115,7 +3245,7 @@ def _new_initial_state(question: str) -> Text2SQLState:
         "selected_tables": [], "table_details": "",
         "generated_sql": "", "validation_result": "", "is_valid": False, "retry_count": 0, "final_sql": "",
         "implicit_time_basis": "",
-        "query_columns": [], "query_rows": [], "query_error": "",
+        "query_columns": [], "query_rows": [], "query_error": "", "result_scope": {},
         "answer": "", "error_message": "",
         "bad_debt_excel_path": "",
     }

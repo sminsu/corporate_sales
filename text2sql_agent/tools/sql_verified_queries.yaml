@@ -1,5 +1,6 @@
 verified_queries:
 - name: corporate_card_active_no_usage_members
+  runtime_mode: reference_only
   question: KB국민 기업카드 보유회원 중 현재 시점 기준 6개월 무실적인 기업회원 명단을 알려줘
   description: 문서화된 기업고객 일별 스냅샷(tbdaa1d12)에서 기준년월일로 월을 파생하고 고객별 월 최신행만 사용해, 기준월 현재 유효 기업카드를 보유하면서 최근 N개월 신용·체크 이용금액이 모두 0인 기업을 조회합니다.
   sql: |
@@ -113,6 +114,7 @@ verified_queries:
   - Athena
   - SAS참조
 - name: corporate_card_churned_after_usage_members
+  runtime_mode: reference_only
   question: KB국민 기업카드를 과거 이용했지만 현재 탈퇴 또는 해지한 기업회원 명단을 알려줘
   description: tbdaa1d12의 고객별 월 최신행을 기준으로 최근 N개월 이용 이력이 있으나 기준월 유효 기업 신용·체크카드 수가 0인 기업을 조회합니다. 유효카드 수 0은 탈퇴·해지의 분석용 대리조건입니다.
   sql: |
@@ -244,8 +246,9 @@ verified_queries:
   - Athena
   - SAS참조
 - name: corporate_check_card_only_high_monthly_avg
+  runtime_mode: reference_only
   question: KB국민 기업 체크카드만 보유하고 이용하는 기업회원 중 월 평균 5천만원 이상 이용 기업 명단을 알려줘
-  description: tbdaa1d12의 고객별 월 최신행을 기준으로 연초부터 기준월까지 신용카드 보유·이용은 없고 체크카드를 보유·이용한 기업의 달력 월수 기준 월평균 체크 이용금액을 계산합니다.
+  description: tbdaa1d12의 고객별 월 최신행을 기준으로, 기준월 현재 신용카드는 없고 체크카드는 보유하며 연초부터 기준월까지 신용카드 보유·이용 없이 체크카드를 이용한 기업의 달력 월수 기준 월평균 체크 이용금액을 계산합니다.
   sql: |
     WITH params AS (
       SELECT
@@ -298,21 +301,40 @@ verified_queries:
       FROM ranked r
       WHERE r.rn = 1
     ),
-    agg AS (
+    current_snapshot AS (
       SELECT
         m."고객식별자",
-        MAX(m."사업자등록번호") AS "사업자등록번호",
-        MAX(m."기업명") AS "기업명",
+        m."사업자등록번호",
+        m."기업명",
+        m."유효기업신용카드수",
+        m."유효기업체크카드수"
+      FROM monthly m
+      CROSS JOIN params p
+      WHERE m."기준년월" = p."기준년월"
+    ),
+    agg AS (
+      SELECT
+        c."고객식별자",
+        c."사업자등록번호",
+        c."기업명",
+        c."유효기업체크카드수" AS "현재유효기업체크카드수",
         SUM(COALESCE(m."금월체크카드이용금액", 0)) AS "기간총체크이용금액",
         COUNT(DISTINCT m."기준년월") AS "데이터보유월수",
         MAX(p."평균산정월수") AS "평균산정월수",
         SUM(COALESCE(m."금월체크카드이용금액", 0))
           / NULLIF(CAST(MAX(p."평균산정월수") AS DOUBLE), 0.0) AS "월평균체크이용금액"
-      FROM monthly m
+      FROM current_snapshot c
+      JOIN monthly m
+        ON c."고객식별자" = m."고객식별자"
       CROSS JOIN params p
-      GROUP BY m."고객식별자"
+      WHERE COALESCE(c."유효기업신용카드수", 0) = 0
+        AND COALESCE(c."유효기업체크카드수", 0) > 0
+      GROUP BY
+        c."고객식별자",
+        c."사업자등록번호",
+        c."기업명",
+        c."유효기업체크카드수"
       HAVING MAX(COALESCE(m."유효기업신용카드수", 0)) = 0
-        AND MAX(COALESCE(m."유효기업체크카드수", 0)) > 0
         AND SUM(COALESCE(m."금월신용카드이용금액", 0)) = 0
         AND SUM(COALESCE(m."금월체크카드이용금액", 0)) > 0
     )
@@ -320,6 +342,7 @@ verified_queries:
       a."고객식별자",
       a."사업자등록번호",
       a."기업명",
+      a."현재유효기업체크카드수",
       a."기간총체크이용금액",
       a."데이터보유월수",
       a."평균산정월수",
@@ -357,6 +380,7 @@ verified_queries:
   - Athena
   - SAS참조
 - name: merchant_corporate_sales_target_no_corporate_card
+  runtime_mode: reference_only
   question: 당사 가맹점 중 월 매출액 1억원 이상이고 법인사업자이며 KB국민 기업카드를 보유하지 않은 기업회원 명단을 알려줘
   description: 가맹점 월말 풍성화(tmdaaus01)를 월·가맹점별 최신행으로 축소하고 월가맹점실적(tmdaa5e11)의 일시불·할부 매출금액과 결합해, 월 매출 기준을 충족하는 법인사업자 중 유효 기업카드가 없는 영업대상을 조회합니다.
   sql: |
@@ -463,6 +487,7 @@ verified_queries:
   - Athena
   - SAS참조
 - name: corporate_limit_low_utilization_members
+  runtime_mode: reference_only
   question: KB국민 기업카드 보유회원 중 한도 2천만원 이상이고 한도 소진율 50% 미만인 기업회원 명단을 알려줘
   description: tbdaa1d12에서 기준월 고객별 최신 일별 스냅샷을 선택한 뒤 유효 기업신용카드 보유, 총한도 하한, 한도소진율 상한 조건을 적용합니다. 한도소진율은 1 - 잔여한도/총한도입니다.
   sql: |

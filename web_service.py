@@ -38,6 +38,11 @@ from text2sql_agent.managed_scope import (  # noqa: E402
     parse_business_number_list,
     parse_managed_scope_upload,
 )
+from text2sql_agent.query_frame import (  # noqa: E402
+    build_query_frame,
+    ensure_query_frame,
+    infer_result_scope,
+)
 from text2sql_agent.schema import SCHEMA, _extract_schema_tables, _is_semantic_table_visible  # noqa: E402
 from text2sql_agent.session_store import SessionOwnershipError, create_session_store  # noqa: E402
 from text2sql_agent.workflow import (  # noqa: E402
@@ -1154,7 +1159,7 @@ def _result_data_sources(result: dict[str, Any]) -> list[str]:
 def _result_meta(result: dict[str, Any], source_override: str | None = None) -> dict[str, Any]:
     rows = result.get("query_rows", []) or []
     local_scope = result.get("local_result_scope", {}) or {}
-    scope_input_rows = int(local_scope.get("input_rows") or 0)
+    result_scope = infer_result_scope(result)
     sql_tables = _table_names_from_sql(result.get("final_sql", ""))
     planned_tables = list(result.get("selected_tables", []) or [])
     return {
@@ -1164,8 +1169,11 @@ def _result_meta(result: dict[str, Any], source_override: str | None = None) -> 
         "planned_data_sources": planned_tables,
         "conditions": _result_conditions(result),
         "displayed_rows": len(rows),
-        "display_row_limit": 100,
-        "rows_may_be_limited": len(rows) >= 100 or scope_input_rows >= 100,
+        "display_row_limit": int(result_scope.get("display_limit") or 100),
+        "rows_may_be_limited": not bool(result_scope.get("is_complete", True)),
+        "result_complete": bool(result_scope.get("is_complete", True)),
+        "completeness_reason": str(result_scope.get("reason") or ""),
+        "result_scope": result_scope,
         "selected_domain": result.get("selected_domain", ""),
         "selected_tool": result.get("selected_tool", ""),
         "matched_query_name": result.get("matched_query_name", ""),
@@ -1389,6 +1397,12 @@ def _result_payload(
     else:
         status = "complete"
         result_id = uuid.uuid4().hex
+        result["result_scope"] = infer_result_scope(result)
+        result["query_frame"] = build_query_frame(
+            result,
+            previous_frame=result.get("query_frame") or None,
+            last_question=str(result.get("followup_question") or ""),
+        )
         result["suggestions"] = _suggest_followups(result)
         _SESSION_STORE.save_result(result_id, session, dict(result))
         _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
@@ -1421,6 +1435,8 @@ def _result_payload(
         "sql": result_sql,
         "columns": result.get("query_columns", []),
         "rows": result.get("query_rows", []),
+        "query_frame": result.get("query_frame", {}),
+        "result_scope": result.get("result_scope", {}),
         "result_meta": _result_meta(result, source_override),
         "error": error,
         "failure_details": failure_details,
@@ -1429,6 +1445,7 @@ def _result_payload(
         "original_answer": result.get("original_answer", result.get("answer", "")),
         "analysis_history": result.get("analysis_history", []),
         "followup_mode": result.get("followup_mode", ""),
+        "followup_route": result.get("followup_route", {}),
         "followup_operations": result.get("followup_operations", []),
         "chart": result.get("chart"),
         "parent_result_id": result.get("parent_result_id", ""),
@@ -1458,7 +1475,10 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
         columns=data.get("columns"),
         rows=data.get("rows"),
         result_meta=data.get("result_meta"),
+        query_frame=data.get("query_frame"),
+        result_scope=data.get("result_scope"),
         followup_mode=data.get("followup_mode"),
+        followup_route=data.get("followup_route"),
         followup_operations=data.get("followup_operations"),
         chart=data.get("chart"),
         row_count=len(data.get("rows", []) or []),
@@ -1522,6 +1542,8 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "sql": sql,
         "columns": columns,
         "rows": rows,
+        "query_frame": result.get("query_frame", {}),
+        "result_scope": result.get("result_scope", {}),
         "result_meta": _result_meta(result) if result else (fallback_message or {}).get("result_meta", {}),
         "error": error,
         "failure_details": failure_details,
@@ -1530,6 +1552,7 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "original_answer": result.get("original_answer", result.get("answer", "")),
         "analysis_history": result.get("analysis_history", []),
         "followup_mode": result.get("followup_mode", ""),
+        "followup_route": result.get("followup_route", {}),
         "followup_operations": result.get("followup_operations", []),
         "chart": result.get("chart") or (fallback_message or {}).get("chart"),
         "parent_result_id": result.get("parent_result_id", ""),
@@ -1900,14 +1923,29 @@ def _table_details_for_names(table_names: list[str]) -> str:
     return _bounded_table_details(table_names)
 
 
-def _followup_query_state(base_result: dict[str, Any], question: str) -> dict[str, Any]:
+def _followup_query_state(
+    base_result: dict[str, Any],
+    question: str,
+    followup_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # Keep the actual follow-up as the main question.  Passing a synthetic,
     # multi-page question made compact models repeat instructions or miss the
     # changed period.  The workflow now has explicit bounded context fields.
+    frame = ensure_query_frame(base_result)
+    plan = followup_plan or plan_followup(
+        question,
+        base_result.get("query_columns", []),
+        base_result.get("query_rows", []),
+        query_frame=frame,
+        result_scope=frame.get("result_scope"),
+    )
+    mode = str(plan.get("mode") or "")
+    reroute_sources = mode.startswith("new_sql")
     state = agent._new_initial_state(question)
     state["question_type"] = "need_sql"
     state["skip_tool_selection"] = True
     state["skip_verified_query_matching"] = True
+    state["query_frame"] = plan.get("next_query_frame") or frame
     history = list(base_result.get("analysis_history") or [])
     previous_turn = history[-1] if history else {}
     state["previous_question"] = str(
@@ -1919,15 +1957,16 @@ def _followup_query_state(base_result: dict[str, Any], question: str) -> dict[st
     state["previous_sql"] = str(base_result.get("final_sql") or "")
     state["previous_answer"] = str(base_result.get("answer") or "")
     state["followup_question"] = question
-    state["selected_domain"] = base_result.get("selected_domain", "")
-    state["domain_candidates"] = base_result.get("domain_candidates", [])
-    state["domain_routing_trace"] = base_result.get("domain_routing_trace", "")
-    state["domain_context"] = base_result.get("domain_context", "")
+    if not reroute_sources:
+        state["selected_domain"] = base_result.get("selected_domain", "")
+        state["domain_candidates"] = base_result.get("domain_candidates", [])
+        state["domain_routing_trace"] = base_result.get("domain_routing_trace", "")
+        state["domain_context"] = base_result.get("domain_context", "")
 
-    selected_tables = base_result.get("selected_tables") or _table_names_from_sql(base_result.get("final_sql", ""))
-    if selected_tables:
-        state["selected_tables"] = selected_tables
-        state["table_details"] = base_result.get("table_details", "") or _table_details_for_names(selected_tables)
+        selected_tables = base_result.get("selected_tables") or _table_names_from_sql(base_result.get("final_sql", ""))
+        if selected_tables:
+            state["selected_tables"] = selected_tables
+            state["table_details"] = base_result.get("table_details", "") or _table_details_for_names(selected_tables)
     return state
 
 
@@ -2039,7 +2078,16 @@ def _chart_followup_answer(chart: dict[str, Any] | None) -> str:
     )
 
 
-def _finalize_followup_result(base_result: dict[str, Any], question: str, followup_result: dict[str, Any], answer: str, mode: str, source: str) -> dict[str, Any]:
+def _finalize_followup_result(
+    base_result: dict[str, Any],
+    question: str,
+    followup_result: dict[str, Any],
+    answer: str,
+    mode: str,
+    source: str,
+    followup_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan = followup_plan or {}
     history = list(base_result.get("analysis_history", []))
     uses_sql = mode.startswith("rewrite_sql") or mode.startswith("new_sql") or mode == "query"
     history.append(
@@ -2054,6 +2102,8 @@ def _finalize_followup_result(base_result: dict[str, Any], question: str, follow
             "source": source,
             "operations": _jsonable(followup_result.get("followup_operations", [])),
             "has_chart": bool(followup_result.get("chart")),
+            "route_reason": str(plan.get("route_reason") or ""),
+            "result_complete": bool(infer_result_scope(followup_result).get("is_complete", True)),
         }
     )
     followup_result.update(
@@ -2064,8 +2114,22 @@ def _finalize_followup_result(base_result: dict[str, Any], question: str, follow
             "followup_question": question,
             "analysis_history": history,
             "followup_mode": mode,
+            "followup_route": {
+                "mode": mode,
+                "reason": str(plan.get("route_reason") or ""),
+                "confidence": str(plan.get("route_confidence") or ""),
+                "requested_metrics": list(plan.get("requested_metrics") or []),
+                "new_metrics": list(plan.get("new_metrics") or []),
+            },
             "error_message": "",
         }
+    )
+    previous_frame = plan.get("next_query_frame") or ensure_query_frame(base_result)
+    followup_result["result_scope"] = infer_result_scope(followup_result)
+    followup_result["query_frame"] = build_query_frame(
+        followup_result,
+        previous_frame=previous_frame,
+        last_question=question,
     )
     return followup_result
 
@@ -2090,22 +2154,28 @@ def _stream_followup(
 
     yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다.", "query": req.question})
     try:
+        base_frame = ensure_query_frame(base_result)
         with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
             followup_plan = plan_followup(
                 req.question,
                 base_result.get("query_columns", []),
                 base_result.get("query_rows", []),
+                query_frame=base_frame,
+                result_scope=base_frame.get("result_scope"),
             )
             intent = str(followup_plan["mode"])
 
         if followup_plan["requires_sql"]:
             sql_intent = "new_sql" if intent.startswith("new_sql") else "rewrite_sql"
             wants_chart = bool(followup_plan["visualize"])
-            route_message = "후속 요청에 새 데이터가 필요해 SQL을 새로 실행합니다." if sql_intent == "new_sql" else "기간·대상·조회 조건이 달라져 기존 SQL을 재작성합니다."
+            if followup_plan.get("route_reason") == "incomplete_result_requires_sql":
+                route_message = "직전 결과가 일부 범위이므로 정확한 상위 N·집계를 위해 SQL을 다시 실행합니다."
+            else:
+                route_message = "후속 요청에 새 데이터가 필요해 도메인과 테이블을 다시 선택합니다." if sql_intent == "new_sql" else "기간·대상·조회 조건이 달라져 기존 SQL을 재작성합니다."
             if wants_chart:
                 route_message += " 조회가 끝나면 새 결과로 차트도 생성합니다."
             yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message, "query": req.question})
-            state = _followup_query_state(base_result, req.question)
+            state = _followup_query_state(base_result, req.question, followup_plan)
             compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
             followup_result = dict(state)
             for node_name, result in _stream_graph(
@@ -2133,7 +2203,7 @@ def _stream_followup(
                 followup_result.pop("chart", None)
             followup_result["followup_operations"] = ["SQL 재조회"] + (["차트 생성"] if chart else [])
             source = "후속 SQL + 시각화" if chart else "후속 SQL"
-            final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, source, followup_plan)
         elif intent in {"transform", "transform_visualization"}:
             transform = followup_plan["transform"]
             wants_chart = bool(followup_plan["visualize"])
@@ -2161,7 +2231,7 @@ def _stream_followup(
                 local_result.pop("chart", None)
             answer = _local_followup_answer(transform, chart)
             source = "기존 결과 재가공 + 시각화" if chart else "기존 결과 재가공"
-            final_result = _finalize_followup_result(base_result, req.question, local_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, local_result, answer, intent, source, followup_plan)
         elif intent == "visualization":
             yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "직전 결과만 사용해 차트를 생성합니다. SQL은 다시 실행하지 않습니다.", "query": req.question})
             yield _sse("progress", {"step": "generate_answer", "title": "차트 생성", "message": "숫자·범주·시간 컬럼을 판별해 차트 데이터를 구성합니다.", "query": req.question})
@@ -2175,7 +2245,7 @@ def _stream_followup(
                 visual_result["followup_operations"] = []
             answer = _chart_followup_answer(chart)
             source = "기존 결과 시각화"
-            final_result = _finalize_followup_result(base_result, req.question, visual_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, visual_result, answer, intent, source, followup_plan)
         else:
             source = "기존 결과 분석"
             yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 직전 결과 설명·분석으로 분류했습니다. SQL은 다시 실행하지 않습니다.", "query": req.question})
@@ -2185,7 +2255,7 @@ def _stream_followup(
             analysis_result = dict(base_result)
             analysis_result.pop("chart", None)
             analysis_result["followup_operations"] = []
-            final_result = _finalize_followup_result(base_result, req.question, analysis_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, analysis_result, answer, intent, source, followup_plan)
         final_result["parent_result_id"] = req.result_id
         data = _result_payload(final_result, session, message_id, 10, source_override=source)
         data = _finalize_assistant_message(session, data, message_id)

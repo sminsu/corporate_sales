@@ -116,7 +116,7 @@ def test_all_safe_paths_have_valid_endpoints_and_quoted_korean_join_columns() ->
             if name:
                 tables[str(name)] = table
 
-    assert len(paths) == 35
+    assert len(paths) == 37
     assert len({path["name"] for path in paths}) == len(paths)
 
     issues = []
@@ -195,6 +195,39 @@ def test_snapshot_dedup_overlap_and_monthly_sales_policies_are_explicit() -> Non
     assert "가맹점일시불매출금액" in formula
     assert "가맹점할부매출금액" in formula
     assert "금년가맹점신용판매매출금액" in monthly_sales["forbidden_as_monthly_sales"]
+
+
+def test_customer_month_enterprise_size_join_requires_dedup_on_both_sides() -> None:
+    customer_month = _raw_table("tmdaa1d01")
+    dedup = customer_month["aggregation_policy"]["snapshot_deduplication"]
+
+    assert dedup["partition_by"] == ["기준년월", "고객식별자"]
+    assert dedup["source_grain"] == "기준년월 × 고객식별자 × 고객관리번호"
+    assert 'COUNT(DISTINCT "기업규모구분코드") = 1' == dedup["consistency_guard"]
+    assert dedup["canonical_value"] == 'MAX("기업규모구분코드")'
+
+    path = next(
+        item
+        for item in RAW_SEMANTIC["semantic_join_graph"]["safe_paths"]
+        if item["name"] == "customer_monthly_snapshot_to_card_monthly_performance"
+    )
+    assert path["from_table"] == "tmdaa1d01"
+    assert path["to_table"] == "tmdaa3e16"
+    assert path["join_type"] == "one_to_many_after_customer_month_dedup"
+    assert 'tmdaa1d01."기준년월" = tmdaa3e16."기준년월"' in path["sql"]
+    assert 'tmdaa1d01."고객식별자" = tmdaa3e16."고객식별자"' in path["sql"]
+    assert "고객×월 이용금액 1행" in path["caution"]
+
+    current_path = next(
+        item
+        for item in RAW_SEMANTIC["semantic_join_graph"]["safe_paths"]
+        if item["name"] == "customer_to_card_monthly_performance"
+    )
+    assert current_path["from_table"] == "tbdaaat01"
+    assert current_path["to_table"] == "tmdaa3e16"
+    assert current_path["join_type"] == "one_to_many_after_customer_dedup"
+    assert 'tbdaaat01."고객식별자" = tmdaa3e16."고객식별자"' == current_path["sql"]
+    assert "고객별 기업규모구분코드가 하나로 일치" in current_path["caution"]
 
 
 def test_snapshot_canonical_metrics_require_time_and_scope_filters() -> None:

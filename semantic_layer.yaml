@@ -18,7 +18,7 @@
 # =============================================================================
 
 semantic_layer_metadata:
-  version: "2026-07-23.1"
+  version: "2026-07-24.5"
   sql_dialect: athena_engine_v3
   target_models: [gemma4, gpt-oss]
   sources:
@@ -570,6 +570,8 @@ tables:
       - name: 기업규모구분코드
         data_type: VARCHAR
         description: 기업규모구분은 동산, 부동산, 부채, 인원 등에 의하여 기업을 구분한 것이며 대기업, 중소기업, 중소기업간주 등이 있다.
+        synonyms: [기업규모, 기업규모코드, 대기업구분]
+        codebook_ref: enterprise_size
       - name: 업종구분코드
         data_type: VARCHAR
         description: 사업자가 영위하는 사업의 종류를 의미한다.
@@ -5559,6 +5561,8 @@ tables:
       - name: 기업규모구분코드
         data_type: VARCHAR
         description: 기업규모구분은 동산, 부동산, 부채, 인원 등에 의하여 기업을 구분한 것이며 대기업, 중소기업, 중소기업간주 등이 있다.
+        synonyms: [기업규모, 기업규모코드, 대기업구분]
+        codebook_ref: enterprise_size
       - name: 자택도로명우편보조번호
         data_type: VARCHAR
         description: MFX월고객정보기본시점정보의고객 자택주소 도로명우편보조번호
@@ -5740,6 +5744,13 @@ tables:
       deduplicate_before_aggregation: true
       aggregate_across_time: flow_measures_only
       default_measure_behavior: semi_additive_latest_snapshot
+      snapshot_deduplication:
+        target_grain: 기준년월 × 고객식별자
+        partition_by: [기준년월, 고객식별자]
+        source_grain: 기준년월 × 고객식별자 × 고객관리번호
+        consistency_guard: COUNT(DISTINCT "기업규모구분코드") = 1
+        canonical_value: MAX("기업규모구분코드")
+        keep: 기업규모구분코드가 고객×월 내에서 하나로 일치하는 행만 1건으로 축소
   - name: tmdaa3e16
     physical_table: tmdaa3e16
     korean_name: 카드월실적
@@ -8597,6 +8608,8 @@ sql_generation_contract:
     - 컬럼 원천 정의와 구조화된 value semantics
   athena_rules:
     - SELECT 또는 WITH로 시작하는 단일 읽기 전용 SQL만 반환한다.
+    - SAS/Oracle의 CREATE TABLE, CONNECTION TO ORACLE, 바깥 SELECT * 래퍼는 만들지 않고 Athena에서 실행할 내부 SELECT/WITH만 반환한다.
+    - Oracle NVL은 COALESCE로, 분석 순번은 ROW_NUMBER() OVER (...)로 표현한다.
     - 한글·비ASCII 식별자와 alias는 큰따옴표로 감싼다.
     - CAST(expr AS type), LOWER(col) LIKE LOWER(pattern), DATE_PARSE/DATE_ADD/DATE_FORMAT 등 Athena engine v3 문법을 사용한다.
     - Glue partition metadata가 선언되지 않은 year/month 컬럼은 만들지 않는다.
@@ -8648,8 +8661,8 @@ canonical_domains:
     default_filters: []
   - name: card_usage
     business_scope: "법인카드의 국내·해외 이용금액, 거래건수와 월별 사용 추이 분석"
-    keywords: [카드이용, 카드사용, 이용금액, 사용액, 국내이용, 해외이용, 전표, 카드매출, 월별, 전월대비, 증감률]
-    primary_entities: [domestic_sales, overseas_sales, card_monthly_performance, member_card]
+    keywords: [카드이용, 카드사용, 이용금액, 사용액, 국내이용, 해외이용, 전표, 카드매출, 월별, 전월대비, 증감률, 대기업, 중소기업, 영세기업, 공공기업, 기업규모]
+    primary_entities: [domestic_sales, overseas_sales, card_monthly_performance, member_card, customer_monthly_snapshot]
     preferred_metrics: [카드매출금액, 매출건수, 해외매출금액, 카드별월이용금액, 법인카드월이용금액, 법인카드월전월대비증감률]
     default_fact_table: tbdaabt30
     default_time_dimension: 기준년월
@@ -8664,7 +8677,7 @@ canonical_domains:
     default_filters: []
   - name: customer_card_portfolio
     business_scope: "기업고객·회원·보유카드의 규모, 상태, 상품과 신규 발급 현황 분석"
-    keywords: [기업고객, 법인고객, 회원, 보유카드, 유효카드, 카드수, 발급, 신규회원, 카드상품]
+    keywords: [기업고객, 법인고객, 회원, 보유카드, 유효카드, 카드수, 발급, 신규회원, 카드상품, 대기업, 중소기업, 영세기업, 공공기업, 기업규모]
     primary_entities: [customer, member, member_card, product, customer_monthly_snapshot]
     preferred_metrics: [회원수, 유효신용카드수]
     default_fact_table: tbdaaat03
@@ -8741,9 +8754,9 @@ semantic_entities:
     korean_name: 고객월스냅샷
     physical_table: tmdaa1d01
     grain: 기준년월 × 고객식별자 × 고객관리번호
-    canonical_dimensions: [기준년월, 고객식별자, 고객관리번호]
+    canonical_dimensions: [기준년월, 고객식별자, 고객관리번호, 기업규모구분코드]
     canonical_facts: []
-    use_when: [고객 속성의 월별 시점 비교가 필요할 때]
+    use_when: [고객 속성의 월별 시점 비교가 필요할 때, 월별 기업규모로 카드 이용실적을 제한할 때]
   - name: merchant
     korean_name: 가맹점
     physical_table: tbdaadt01
@@ -8958,6 +8971,33 @@ semantic_attributes:
     semantic_cautions:
       - 가맹점주 인원은 대표고객식별자 IS NOT NULL 후 COUNT(DISTINCT 대표고객식별자)를 사용한다.
       - 가맹점주가 운영하는 기업의 매출·카드·리스크를 묻는 경우 사람 수가 아니므로 대표고객식별자로 집계하지 않는다.
+  - name: enterprise_size
+    korean_name: 기업규모
+    domains: [card_usage, customer_card_portfolio]
+    business_definition: 고객의 기업규모를 대기업·중소기업·영세기업·공공기업 등으로 분류하는 코드 속성
+    aliases: [기업규모, 기업규모구분, 대기업, 중소기업, 중소기업간주, 영세기업, 공공기업]
+    parameter_name: 기업규모구분코드
+    codebook_status: verified
+    value_semantics:
+      '0': 기업규모산정미대상
+      '1': 대기업
+      '2': 중소기업
+      '3': 중소기업간주
+      '4': 외부감사대상 중소기업
+      '5': 외부감사비대상 중소기업
+      '6': 영세기업
+      '7': 공공기업
+      '8': 가계
+      '9': 기타
+    value_semantics_provenance: user_provided_business_codebook
+    source_mappings:
+      - {entity: customer, table: tbdaaat01, column: 기업규모구분코드, role: current_enterprise_size_code}
+      - {entity: customer_monthly_snapshot, table: tmdaa1d01, column: 기업규모구분코드, role: monthly_enterprise_size_code}
+    semantic_cautions:
+      - 기간 집계에는 현재 고객 마스터가 아니라 동일 기준년월의 tmdaa1d01 기업규모구분코드를 사용한다.
+      - 연도와 무관하게 기간별 분석은 동일 기준년월의 tmdaa1d01을 사용하고, 현재 기준 기업 목록이나 현재 기업규모를 명시한 분석만 tbdaaat01을 사용한다.
+      - 여러 기업규모를 함께 요청하면 해당 코드들을 IN 조건으로 적용하고 기업규모별로 구분하여 집계한다.
+      - 고객×월에 기업규모구분코드가 둘 이상이면 임의 대표값을 고르지 않고 해당 고객월을 제외하거나 데이터 품질 예외로 보고한다.
   - name: corporate_card_holding
     korean_name: 유효 기업카드 보유
     domains: [corporate_sales_targeting, merchant_sales]
@@ -9199,6 +9239,256 @@ canonical_metrics:
     aggregation_behavior: first_event_then_distinct_count
 
 semantic_query_contracts:
+  - name: current_enterprise_size_customer_list
+    domain: customer_card_portfolio
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 현재 고객 마스터에서 질문에 지정된 기업규모 코드에 해당하는 기업고객 목록을 반환한다.
+    match:
+      required:
+        - [명단, 목록, 리스트, 고객, 회사, 업체, 찾아, 보여, 알려]
+      excluded: [기업카드, 법인카드, 보유카드, 카드수, 발급, 카드이용, 카드사용, 이용금액, 사용금액, 사용액, 가맹점매출, 작년, 지난해, 전년도, 월별]
+      required_attribute_values: [enterprise_size]
+    examples:
+      - 대기업 고객 목록 보여줘
+      - 중소기업 회사 명단 알려줘
+      - 공공기업 고객을 찾아줘
+    source_tables: [tbdaaat01]
+    semantic_attributes: [enterprise_size]
+    result_grain: 고객식별자 × 고객관리번호
+    dimensions: [고객식별자, 고객관리번호, 본사사업자등록번호, 기업규모구분코드]
+    filters:
+      - tbdaaat01.개인기업구분코드 = '2'
+      - tbdaaat01.기업규모구분코드 = 질문의 기업규모 표현을 enterprise_size.value_semantics로 해석한 코드값
+      - 여러 기업규모를 요청하면 해당 코드들을 IN 조건으로 적용
+  - name: corporate_card_active_without_recent_usage
+    domain: corporate_sales_targeting
+    reference_query: corporate_card_active_no_usage_members
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 기준월 현재 유효 기업카드를 보유하지만 최근 지정 개월 동안 신용·체크 이용이 전혀 없는 기업회원 명단을 반환한다.
+    match:
+      required:
+        - [기업카드, 법인카드]
+        - [보유, 유효, 살아 있지만, 살아있는]
+        - [무실적, 미이용, 이용이 없는, 이용 없는, 사용이 없는, 사용 없는, 한 번도 쓰지 않은, 쓰지 않은]
+      optional:
+        - [최근, 6개월, 반년, 명단, 목록]
+      excluded: [탈회, 탈퇴, 해지, 미보유, 소진율]
+    examples:
+      - 2026년 4월 기준 기업카드는 살아 있지만 6개월 동안 한 번도 쓰지 않은 회사 목록
+    source_tables: [tbdaa1d12]
+    metric_names: [기업월카드이용금액, 기업유효카드수]
+    result_grain: 고객식별자 1행
+    dimensions: [고객식별자, 사업자등록번호, 기업명]
+    time_policy:
+      current_snapshot: 기준월 고객별 최신 기준년월일 1건
+      usage_window: 기준월 포함 최근 N개월의 고객×월 최신행
+    deduplication:
+      snapshot: 고객식별자×SUBSTR(기준년월일,1,6)별 기준년월일 DESC ROW_NUMBER() = 1
+    filters:
+      - 현재 유효기업신용카드수 + 유효기업체크카드수 > 0
+      - 조회기간 신용카드이용금액 + 체크카드이용금액 > 0인 월이 없음
+  - name: corporate_card_churn_after_usage
+    domain: corporate_sales_targeting
+    reference_query: corporate_card_churned_after_usage_members
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 최근 지정 기간에 기업카드 이용 이력이 있으나 기준월 현재 유효 기업카드 수가 0인 이탈 후보 기업회원 명단을 반환한다.
+    match:
+      required:
+        - [기업카드, 법인카드]
+        - [이용하였, 과거 이용, 이용했, 결제는 있었, 사용했, 사용 이력, 이용 이력]
+        - [탈회, 탈퇴, 해지, 현재 유효 카드가 없는, 현재 카드가 없는, 지금 기업카드가 없는, 카드수 0]
+      optional:
+        - [최근, 6개월, 반년, 이탈, 명단, 목록]
+      excluded: [무실적, 소진율]
+    examples:
+      - 최근 반년 내 기업카드 결제는 있었는데 2026년 4월 현재 유효 카드가 없는 법인
+    source_tables: [tbdaa1d12]
+    metric_names: [기업월카드이용금액, 기업유효카드수]
+    result_grain: 고객식별자 1행
+    dimensions: [고객식별자, 사업자등록번호, 기업명, 마지막이용월]
+    time_policy:
+      current_snapshot: 기준월 고객별 최신 기준년월일 1건
+      usage_window: 기준월 포함 최근 N개월의 고객×월 최신행
+    ambiguity_policy:
+      - 유효카드 수 0은 실제 탈회·해지 상태가 아니라 영업분석용 대리조건으로 표시한다.
+  - name: corporate_check_card_only_high_average
+    domain: corporate_sales_targeting
+    reference_query: corporate_check_card_only_high_monthly_avg
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 기준월 현재 기업 체크카드만 보유하고 연초부터 기준월까지 신용카드 이용 없이 체크카드를 이용한 기업 중 달력 월평균 기준을 충족하는 명단을 반환한다.
+    match:
+      required:
+        - [기업 체크카드, 법인 체크카드, 체크카드]
+        - [체크카드만, 신용카드 없이, 신용카드 미보유, 신용카드가 없는]
+        - [월평균, 월 평균]
+        - [이용, 사용, 쓴 기업, 사용한 기업]
+      optional:
+        - [고액, 5천만원, 교차판매, 명단, 목록]
+      excluded: [개인 체크카드]
+    examples:
+      - 2026년 4월 현재 신용카드 없이 기업 체크카드만 갖고 있고 올해 월평균 5천만원 넘게 쓴 기업
+    source_tables: [tbdaa1d12]
+    metric_names: [기업월카드이용금액, 기업유효카드수]
+    result_grain: 고객식별자 1행
+    dimensions: [고객식별자, 사업자등록번호, 기업명]
+    time_policy:
+      current_snapshot: 기준월 고객별 최신 기준년월일 1건
+      average_window: 해당 연도 1월부터 기준월까지
+      denominator: 누락월을 0으로 포함하는 기준월의 달력 월 번호
+    filters:
+      - 기준월 유효기업신용카드수 = 0
+      - 기준월 유효기업체크카드수 > 0
+      - 기간 내 신용카드 보유와 이용이 모두 없음
+      - 기간 내 체크카드 이용금액 > 0
+  - name: high_sales_corporate_merchant_without_corporate_card
+    domain: corporate_sales_targeting
+    reference_query: merchant_corporate_sales_target_no_corporate_card
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 기준월 월매출 하한을 충족하는 정상 법인 가맹점 중 유효 기업 신용·체크카드가 모두 없는 기업 영업대상을 반환한다.
+    match:
+      required:
+        - [가맹점, 법인가맹점, 법인 가맹점]
+        - [월매출, 월 매출, 월매출액, 월 매출액]
+        - [법인사업자, 법인 사업자, 법인가맹점, 법인 가맹점]
+        - [기업카드를 보유하고 있지 않은, 기업카드 미보유, 기업카드가 없는, 기업카드 없는, 법인카드를 보유하지 않은, 법인카드 미보유, 법인카드가 없는]
+      optional:
+        - [정상, 영업대상, 1억원, 명단, 목록]
+      excluded: [개인사업자]
+    examples:
+      - 2026년 4월 월매출 1억 넘는 정상 법인가맹점 가운데 기업카드 없는 곳
+    source_tables: [tmdaa5e11, tmdaaus01]
+    metric_names: [가맹점월매출금액, 기업유효카드수]
+    result_grain: 가맹점번호 1행
+    dimensions: [고객식별자, 사업자등록번호, 가맹점번호, 가맹점명]
+    calculation:
+      monthly_sales: COALESCE(가맹점일시불매출금액, 0) + COALESCE(가맹점할부매출금액, 0)
+    ambiguity_policy:
+      - 가맹점총지급금액은 정산·지급 대리값이므로 월매출로 사용하지 않는다.
+  - name: corporate_card_low_limit_utilization
+    domain: corporate_sales_targeting
+    reference_query: corporate_limit_low_utilization_members
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 기준월 현재 기업 신용카드를 보유한 고객 중 총한도 하한 이상이고 한도소진율 상한 미만인 기업회원 명단을 반환한다.
+    match:
+      required:
+        - [기업카드, 법인카드, 기업신용카드, 기업 신용카드]
+        - [한도]
+        - [소진율, 사용률, 한도사용률, 한도 사용률]
+        - [미만, 이하, 아래, 낮은, 여유가 큰]
+      optional:
+        - [2천만원, 50%, 명단, 목록, 영업대상]
+      excluded: [초과, 이상인 소진율]
+    examples:
+      - 2026년 4월 기업신용카드를 가진 고객 중 총한도 2천만원 이상, 사용률 50% 아래인 곳
+    source_tables: [tbdaa1d12]
+    metric_names: [기업한도소진율, 기업유효카드수]
+    result_grain: 고객식별자 1행
+    dimensions: [고객식별자, 사업자등록번호, 기업명]
+    calculation:
+      limit_utilization: 1.0 - 기업총잔여한도금액 / NULLIF(기업총한도금액, 0)
+    filters:
+      - 기준월 고객별 최신 기준년월일 1건
+      - 유효기업신용카드수 > 0
+      - 기업총한도금액 > 0
+  - name: enterprise_size_corporate_card_usage
+    domain: card_usage
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 요청 기간의 월별 고객 기업규모를 질문의 코드북 값으로 판정하고, 같은 고객×월의 법인카드 이용금액을 합산한다.
+    match:
+      required:
+        - [기업카드, 법인카드]
+        - [이용금액, 사용금액, 사용액, 이용액]
+      optional:
+        - [합계, 총액, 뽑아줘, 조회, 알려줘]
+        - [작년, 지난해, 전년도, 올해, 금년, 최근, 기간]
+      excluded: [가맹점 매출, 가맹점매출]
+      required_attribute_values: [enterprise_size]
+    examples:
+      - 작년 대기업 기업카드 이용금액 뽑아줘
+      - 작년 중소기업 기업카드 이용금액 뽑아줘
+      - 지난해 공공기업 법인카드 사용액 합계를 알려줘
+      - 지난해 대기업의 법인카드 사용액 합계를 알려줘
+    source_tables: [tbdaaat01, tmdaa1d01, tmdaa3e16]
+    source_table_policy:
+      current_snapshot: [tbdaaat01, tmdaa3e16]
+      period_snapshot: [tmdaa1d01, tmdaa3e16]
+      default: [tmdaa1d01, tmdaa3e16]
+      current_snapshot_when: [현재 기준, 현재시점, 현재 시점, 현시점, 현 시점, 지금 기준, 현재 기업규모, 현재 대기업, 현재 중소기업, 현재 공공기업, 현재 영세기업]
+      rule: 연도가 올해인지와 무관하게 기간 이용금액은 각 이용월 고객스냅샷의 기업규모를 사용한다. 현재 기준 또는 현시점 기업규모를 명시한 경우에만 현재 고객 마스터를 사용하며, 두 규모 원천을 같은 기간에 중복 적용하지 않는다.
+    require_all_selected_tables: true
+    sql_shape:
+      current_snapshot:
+        - current_customer_size CTE에서 tbdaaat01을 고객식별자별로 축소하고 HAVING COUNT(DISTINCT 기업규모구분코드) = 1을 적용
+        - card_customer_month CTE에서 tmdaa3e16을 기준년월×고객식별자별 이용금액으로 먼저 합산
+        - 두 CTE를 고객식별자로 JOIN한 뒤 질문의 기업규모 코드로 필터
+      period_snapshot:
+        - customer_month_size CTE에서 tmdaa1d01을 기준년월×고객식별자별로 축소
+        - card_customer_month CTE에서 tmdaa3e16을 기준년월×고객식별자별 이용금액으로 먼저 합산
+        - 두 CTE를 기준년월과 고객식별자로 JOIN
+    metric_names: [법인카드월이용금액]
+    semantic_attributes: [enterprise_size]
+    result_grain: 요청 기간 × 요청 기업규모
+    dimensions: [조회시작월, 조회종료월, 기업규모구분코드, 기업규모명]
+    time_policy:
+      explicit_period: 질문에 지정된 연월 범위를 사용
+      last_year: 현재 연도 직전 달력연도의 01월부터 12월
+      when_missing: 기간이 없으면 조회기간을 확인
+      current_date_example: 2026년 실행 시 202501부터 202512
+      temporal_attribute_rule: 일반 기간 질의는 이용이 발생한 각 기준년월의 tmdaa1d01 기업규모를 적용하고, 질문이 현재 기준 또는 현시점 기업규모를 명시한 경우에만 tbdaaat01의 현재 기업규모를 적용
+    deduplication:
+      current_customer_size:
+        source_grain: tbdaaat01 고객식별자 × 고객관리번호
+        target_grain: 고객식별자
+        group_by: [고객식별자]
+        consistency_guard: COUNT(DISTINCT 기업규모구분코드) = 1
+        selected_value: MAX(기업규모구분코드)
+      customer_month_size:
+        source_grain: tmdaa1d01 기준년월 × 고객식별자 × 고객관리번호
+        target_grain: 기준년월 × 고객식별자
+        group_by: [기준년월, 고객식별자]
+        consistency_guard: COUNT(DISTINCT 기업규모구분코드) = 1
+        selected_value: MAX(기업규모구분코드)
+      card_customer_month:
+        source_grain: tmdaa3e16 기준년월 × 회원일련번호 × 카드구분키번호
+        target_grain: 기준년월 × 고객식별자
+        group_by: [기준년월, 고객식별자]
+        calculation: SUM(COALESCE(금월이용합계금액, 0))
+      join_order: 선택된 기업규모 원천과 카드 고객×월 이용금액을 각각 목표 grain으로 먼저 축소한 뒤 고객식별자로 JOIN
+    filters:
+      - tmdaa3e16.개인기업구분코드 = '2'
+      - 일반 기간 질의는 customer_month_size.기업규모구분코드, 현재 기준 질의는 current_customer_size.기업규모구분코드를 질문의 enterprise_size 코드값으로 필터
+      - 대기업은 기업규모구분코드 = '1'
+      - 여러 기업규모를 요청하면 해당 코드들을 IN 조건으로 적용
+      - 두 CTE의 기준년월이 요청 기간 사이
+    calculation:
+      annual_usage_amount: SUM(카드고객월이용금액)
+    result_fields: [조회시작월, 조회종료월, 기업규모구분코드, 기업규모명, 기업카드이용금액]
+    ambiguity_policy:
+      - 올해 또는 특정 연도라는 이유만으로 tbdaaat01을 선택하지 않는다. 현재 기준 또는 현시점 기업규모를 명시하지 않은 기간 질의는 tmdaa1d01을 사용한다.
+      - 현재 기준 또는 현시점 기업규모를 명시한 경우에는 tbdaaat01을 사용하고 현재 기업규모를 요청 기간의 이용실적에 적용한다.
+      - tbdaaat01과 tmdaa1d01을 같은 이용월의 기업규모 필터로 동시에 JOIN하지 않는다.
+      - 고객관리번호나 카드 행을 직접 JOIN해 이용금액을 중복 합산하지 않는다.
   - name: monthly_corporate_card_usage_with_mom
     domain: card_usage
     verified_query: monthly_corporate_card_usage
@@ -9722,6 +10012,31 @@ semantic_join_graph:
       caution: 기준년월을 반드시 제한
       confidence: inferred
       provenance: workbook_grain_and_column_definition
+    - name: customer_monthly_snapshot_to_card_monthly_performance
+      from_entity: customer_monthly_snapshot
+      to_entity: card_monthly_performance
+      from_table: tmdaa1d01
+      to_table: tmdaa3e16
+      join_type: one_to_many_after_customer_month_dedup
+      sql: tmdaa1d01."기준년월" = tmdaa3e16."기준년월" AND tmdaa1d01."고객식별자" = tmdaa3e16."고객식별자"
+      use_when:
+        - 월별 고객 속성으로 같은 월의 카드 이용실적 제한
+        - 기업규모별 법인카드 이용금액 집계
+      caution: tmdaa1d01은 고객×월별 기업규모구분코드가 하나로 일치하는 1행으로, tmdaa3e16은 개인기업구분코드='2' 적용 후 고객×월 이용금액 1행으로 각각 먼저 축소한다.
+      confidence: curated
+      provenance: user_requested_temporal_join_and_source_grains
+    - name: customer_to_card_monthly_performance
+      from_entity: customer
+      to_entity: card_monthly_performance
+      from_table: tbdaaat01
+      to_table: tmdaa3e16
+      join_type: one_to_many_after_customer_dedup
+      sql: tbdaaat01."고객식별자" = tmdaa3e16."고객식별자"
+      use_when:
+        - 현재 기준 또는 현시점 기업규모별 법인카드 이용금액 집계
+      caution: tbdaaat01은 고객별 기업규모구분코드가 하나로 일치하는 1행으로, tmdaa3e16은 개인기업구분코드='2'와 요청 기간 적용 후 고객×월 이용금액 1행으로 각각 먼저 축소한다.
+      confidence: curated
+      provenance: user_requested_current_enterprise_size_join
     - name: transaction_stop_to_monthly
       from_entity: transaction_stop
       to_entity: monthly_transaction_stop
@@ -9777,6 +10092,12 @@ glossary:
     description: "기업(법인) 명의로 발급·이용되는 카드. 개인기업구분코드가 '2'(기업)인 레코드를 의미한다."
     aliases: ["기업카드", "법인", "기업"]
     sql_hint: "법인/기업 조건은 \"개인기업구분코드\" = '2' 를 사용한다."
+  - term: "기업규모"
+    canonical: "enterprise_size.value_semantics로 해석한 기업규모구분코드"
+    description: "기업규모산정미대상=0, 대기업=1, 중소기업=2, 중소기업간주=3, 외부감사대상 중소기업=4, 외부감사비대상 중소기업=5, 영세기업=6, 공공기업=7, 가계=8, 기타=9로 해석한다."
+    aliases: ["대기업", "중소기업", "중소기업간주", "외부감사대상 중소기업", "외부감사비대상 중소기업", "영세기업", "공공기업", "대규모기업", "large enterprise"]
+    sql_hint: "현재 목록은 tbdaaat01, 기간별 분석은 동일 기준년월의 tmdaa1d01 기업규모구분코드를 사용한다."
+    domains: [card_usage, customer_card_portfolio]
   - term: "개인카드"
     canonical: "개인기업구분코드 = '1' 인 카드/회원"
     description: "개인 명의로 발급된 카드. 개인기업구분코드가 '1'(개인)인 레코드."
@@ -9878,6 +10199,30 @@ glossary:
 # 6. QUERY REFERENCES - 질의별 컬럼/필터/조인 선택 지침
 # =============================================================================
 query_references:
+  - intent: 기간_기업규모별_기업카드이용금액
+    domain: card_usage
+    when_user_says:
+      - "2026년 대기업 기업카드 이용금액 뽑아줘"
+      - "2026년 현재 기준 대기업 기업카드 이용금액 뽑아줘"
+      - "작년 대기업 기업카드 이용금액 뽑아줘"
+      - "작년 중소기업 기업카드 이용금액 뽑아줘"
+      - "지난해 공공기업 법인카드 사용액 합계"
+      - "지난해 대기업 법인카드 사용액 합계"
+      - "전년도 대기업 기업카드 이용금액"
+      - "2025년 영세기업 기업카드 이용금액"
+    primary_table: tmdaa3e16
+    join_tables: [tbdaaat01, tmdaa1d01]
+    join_rule: "일반 기간 질의는 tmdaa1d01을 고객×월 1건으로 축소해 tmdaa3e16의 고객×월 이용금액과 기준년월+고객식별자로 조인한다. 현재 기준 또는 현시점 기업규모를 명시한 경우에만 tbdaaat01을 고객별 기업규모 코드가 하나로 일치하는 1건으로 축소해 고객식별자로 조인한다."
+    recommended_columns:
+      조회기간: "질문에서 해석한 시작월부터 종료월"
+      고객월기업규모: "MAX(기업규모구분코드), HAVING COUNT(DISTINCT 기업규모구분코드) = 1"
+      카드고객월이용금액: "SUM(COALESCE(금월이용합계금액, 0))"
+    rules:
+      - "질문의 기업규모 표현은 enterprise_size.value_semantics의 코드값으로 변환한다."
+      - "여러 기업규모를 요청하면 코드 IN 조건과 기업규모별 GROUP BY를 사용한다."
+      - "올해를 포함한 일반 기간 질의에는 tmdaa1d01을 사용한다."
+      - "현재 기준 또는 현시점 기업규모를 명시한 질의에만 tbdaaat01을 사용한다."
+      - "원천 두 테이블을 상세 grain에서 바로 조인하지 않는다."
   - intent: 월별_카드매출_조회
     when_user_says:
       - "이번달 카드 매출 알려줘"
@@ -10010,7 +10355,7 @@ query_references:
       - "기업 체크카드 교차판매 대상"
     primary_table: tbdaa1d12
     join_tables: []
-    join_rule: "연초부터 기준월까지 고객×월 최신 스냅샷만 사용해 신용카드 보유·이용은 0이고 체크카드 보유·이용은 있는 기업을 집계한다."
+    join_rule: "연초부터 기준월까지 고객×월 최신 스냅샷만 사용하고, 기준월 현재 신용카드 수는 0·체크카드 수는 양수이며 기간 내 신용카드 보유·이용은 없는 기업을 집계한다."
     recommended_columns:
       체크이용금액: "COALESCE(\"금월체크카드이용금액\",0)"
       달력월평균: "SUM(체크이용금액) / 기준월의 달력 월 번호"

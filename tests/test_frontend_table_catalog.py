@@ -30,15 +30,17 @@ def test_table_catalog_api_returns_visible_semantic_tables() -> None:
     assert all(table["name"] and table["physical_table"] for table in payload["tables"])
 
 
-def test_frontend_exposes_table_tab_search_and_tables_command() -> None:
+def test_frontend_exposes_left_table_catalog_search_and_tables_command() -> None:
     source = web_service.STATIC_DIR.joinpath("index.html").read_text(encoding="utf-8")
     styles = web_service.STATIC_DIR.joinpath("styles.css").read_text(encoding="utf-8")
 
-    assert 'data-tab="tables"' in source
-    assert 'id="tab-tables"' in source
+    assert 'id="tableCatalogPanel"' in source
+    assert 'data-tab="tables"' not in source
+    assert 'id="tab-tables"' not in source
     assert 'id="tableCatalogSearch"' in source
     assert 'const data = await api("api/tables");' in source
     assert 'if (question.toLowerCase() === "/tables")' in source
     assert 'if (tableCatalogSearch) tableCatalogSearch.value = "";' in source
+    assert "tableCatalogPanel.open = true;" in source
     assert "openTableCatalog();" in source
-    assert "grid-template-columns: repeat(5, 1fr);" in styles
+    assert "grid-template-columns: repeat(4, 1fr);" in styles

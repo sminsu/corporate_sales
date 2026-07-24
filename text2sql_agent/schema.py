@@ -680,7 +680,12 @@ def _format_semantic_query_contract(contract: dict) -> str:
     if contract.get("support_status"):
         lines.append(f"  support_status: {contract.get('support_status')}")
     fields = (
+        ("execution_mode", "execution_mode"),
+        ("reference_query", "reference_query"),
         ("source_tables", "source_tables"),
+        ("source_table_policy", "source_table_policy"),
+        ("require_all_selected_tables", "require_all_selected_tables"),
+        ("sql_shape", "sql_shape"),
         ("metric_names", "canonical_metrics"),
         ("result_grain", "result_grain"),
         ("dimensions", "dimensions"),
@@ -785,6 +790,8 @@ def find_relevant_queries(
     scored = []
     q_compact = _compact_text(question)
     for position, vq in enumerate(vqs):
+        if str(vq.get("runtime_mode") or "executable").lower() == "reference_only":
+            continue
         if not _entry_matches_domain(schema, vq, domain_name, _sql_table_names(vq.get("sql", ""))):
             continue
         vq_compact = _compact_text(vq.get("question"))

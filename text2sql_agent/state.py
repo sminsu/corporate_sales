@@ -14,6 +14,7 @@ class Text2SQLState(TypedDict):
     previous_sql: str
     previous_answer: str
     followup_question: str
+    query_frame: dict
     # --- Domain Routing ---
     selected_domain: str
     domain_candidates: list[dict]
@@ -49,6 +50,7 @@ class Text2SQLState(TypedDict):
     query_columns: list[str]
     query_rows: list[tuple]
     query_error: str
+    result_scope: dict
     answer: str
     error_message: str
     # --- 대손비용률 결과 ---

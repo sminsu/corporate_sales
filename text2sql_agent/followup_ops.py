@@ -12,6 +12,8 @@ from collections import OrderedDict
 from decimal import Decimal
 from typing import Any
 
+from .query_frame import evolve_query_frame
+
 
 VISUAL_KEYWORDS = (
     "그래프", "차트", "chart", "plot", "시각화", "막대", "bar", "라인", "line",
@@ -24,6 +26,19 @@ CURRENT_RESULT_KEYWORDS = (
 TIME_VALUE_RE = re.compile(
     r"(?:전월|지난\s*달|저번\s*달|이번\s*(?:달|월)|금월|작년|지난해|올해|금년|"
     r"최근\s*\d*\s*(?:개월|년)|20\d{2}\s*년(?:\s*\d{1,2}\s*월)?|20\d{2}(?:0[1-9]|1[0-2]))"
+)
+METRIC_ALIASES = (
+    ("매출", ("매출", "매출금액", "매출액")),
+    ("이용금액", ("이용금액", "사용금액")),
+    ("연체", ("연체", "연체금액", "연체율")),
+    ("한도", ("한도", "여신한도")),
+    ("대손", ("대손", "대손비용", "대손비용률")),
+    ("건수", ("건수", "거래건수", "승인건수")),
+    ("가맹점수", ("가맹점수", "가맹점개수")),
+    ("회원수", ("회원수", "고객수", "명수")),
+    ("승인율", ("승인율",)),
+    ("잔액", ("잔액",)),
+    ("수수료", ("수수료",)),
 )
 
 
@@ -395,48 +410,131 @@ def apply_local_transform(question: str, raw_columns: list[Any], raw_rows: list[
     }
 
 
-def plan_followup(question: str, columns: list[Any], rows: list[Any]) -> dict[str, Any]:
+def _requested_metrics(question: str) -> list[str]:
+    normalized = _normalized(question)
+    return [
+        canonical
+        for canonical, aliases in METRIC_ALIASES
+        if any(_normalized(alias) in normalized for alias in aliases)
+    ]
+
+
+def _metric_is_available(metric: str, columns: list[Any], query_frame: dict[str, Any]) -> bool:
+    known = _normalized(
+        " ".join(
+            [str(column) for column in columns or []]
+            + [str(value) for value in query_frame.get("metrics", []) or []]
+        )
+    )
+    aliases = next((aliases for canonical, aliases in METRIC_ALIASES if canonical == metric), (metric,))
+    return any(_normalized(alias) in known for alias in aliases)
+
+
+def _transform_requires_complete_result(operations: list[str]) -> bool:
+    """Return True when applying the transform to a partial result could lie."""
+
+    safe_display_operations = (
+        "단위 변환",
+        "반올림",
+        "표시 컬럼 선택",
+        "컬럼 순서 변경",
+        "결측값을 0으로 대체",
+    )
+    return any(
+        operation and not any(safe in operation for safe in safe_display_operations)
+        for operation in operations
+    )
+
+
+def plan_followup(
+    question: str,
+    columns: list[Any],
+    rows: list[Any],
+    *,
+    query_frame: dict[str, Any] | None = None,
+    result_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Route a follow-up to SQL, local transform, visualization, or analysis."""
 
+    frame = query_frame or {}
+    scope = result_scope or frame.get("result_scope") or {}
     lowered = " ".join(str(question or "").lower().split())
     normalized_question = _normalized(lowered)
-    columns_text = " ".join(str(column).lower() for column in columns or [])
     asks_visual = any(keyword in lowered for keyword in VISUAL_KEYWORDS)
     transform = apply_local_transform(question, columns, rows)
+    refers_to_current_result = any(keyword in lowered for keyword in CURRENT_RESULT_KEYWORDS) or bool(
+        re.search(r"(?:그|거기|같은|동일한|이전|방금|이번에는|그럼)", lowered)
+    )
 
     explicit_sql = any(keyword in lowered for keyword in ("sql", "쿼리", "query", "where", "order by", "group by", "join"))
     new_data_phrases = any(keyword in lowered for keyword in ("새로 조회", "다른 테이블", "조인", "join", "합쳐", "붙여", "merge"))
-    domain_metrics = ("연체", "한도", "심사", "대표자", "계좌", "기업카드", "폐업", "매출", "이용금액", "대손")
-    unavailable_metric = any(metric in lowered and metric not in columns_text for metric in domain_metrics)
-    asks_to_add = any(keyword in lowered for keyword in ("도 같이", "추가", "붙여", "합쳐", "포함해서"))
+    requested_metrics = _requested_metrics(question)
     derived_growth = any(keyword in normalized_question for keyword in ("증감률", "증가율", "전월대비", "전년대비")) and transform["applied"]
+    new_metrics = [
+        metric
+        for metric in requested_metrics
+        if not _metric_is_available(metric, columns, frame)
+    ]
+    if derived_growth:
+        new_metrics = [metric for metric in new_metrics if metric not in {"건수"}]
     changes_time = bool(TIME_VALUE_RE.search(lowered)) and not derived_growth
+    result_complete = bool(scope.get("is_complete", True))
+    unsafe_partial_transform = (
+        transform["applied"]
+        and not result_complete
+        and _transform_requires_complete_result(transform["operations"])
+    )
 
-    if new_data_phrases or (unavailable_metric and asks_to_add):
+    if new_data_phrases:
         base_mode = "new_sql"
+        route_reason = "new_data_requested"
+    elif new_metrics:
+        base_mode = "new_sql"
+        route_reason = "new_metric_requires_reroute"
     elif explicit_sql or changes_time:
         base_mode = "rewrite_sql"
+        route_reason = "query_definition_changed"
+    elif unsafe_partial_transform:
+        base_mode = "rewrite_sql"
+        route_reason = "incomplete_result_requires_sql"
     elif transform["applied"]:
         base_mode = "transform_visualization" if asks_visual else "transform"
+        route_reason = "complete_result_local_transform"
     elif asks_visual:
         base_mode = "visualization"
+        route_reason = "existing_result_visualization"
     elif any(keyword in lowered for keyword in ("조회", "조건", "필터", "다시 뽑", "가져와", "불러와", "월별", "연도별", "업종별", "기업별", "만 보여", "만 남겨", "제외", "포함")):
         base_mode = "rewrite_sql"
-    elif unavailable_metric:
-        base_mode = "new_sql"
+        route_reason = "filter_or_grain_changed"
+    elif refers_to_current_result and re.search(r"(?:만|빼|제외|추가|바꿔|변경)", lowered):
+        base_mode = "rewrite_sql"
+        route_reason = "contextual_condition_changed"
     else:
         base_mode = "analysis"
+        route_reason = "existing_result_analysis"
 
     if base_mode in {"rewrite_sql", "new_sql"} and asks_visual:
         mode = f"{base_mode}_visualization"
     else:
         mode = base_mode
+    next_query_frame = evolve_query_frame(
+        frame,
+        question,
+        mode=mode,
+        requested_metrics=requested_metrics,
+    )
     return {
         "mode": mode,
         "requires_sql": base_mode in {"rewrite_sql", "new_sql"},
         "visualize": asks_visual,
         "transform": transform,
-        "refers_to_current_result": any(keyword in lowered for keyword in CURRENT_RESULT_KEYWORDS),
+        "refers_to_current_result": refers_to_current_result,
+        "route_reason": route_reason,
+        "route_confidence": "high" if route_reason != "existing_result_analysis" else "medium",
+        "requested_metrics": requested_metrics,
+        "new_metrics": new_metrics,
+        "result_complete": result_complete,
+        "next_query_frame": next_query_frame,
     }
 
 
