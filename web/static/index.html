@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="자연어 질문으로 기업영업 및 프랜차이즈 데이터를 조회하고 후속 분석하는 업무용 에이전트" />
     <meta name="theme-color" content="#fbfaf7" />
-    <title>기업영업 &amp; 프랜차이즈 에이전트</title>
+    <title>기업영업지원 에이전트</title>
     <script>
       (() => {
         try {
@@ -18,107 +18,176 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260724-3" />
+    <link rel="stylesheet" href="styles.css?v=20260728-15" />
   </head>
   <body>
     <a class="skip-link" href="#questionInput">질문 입력으로 건너뛰기</a>
-    <div class="app" id="app">
+    <div class="app inspector-collapsed" id="app">
       <!-- ░░ LEFT RAIL ░░ -->
-      <aside class="rail" aria-label="대화 및 보고서 메뉴">
-        <div class="brand">
-          <div class="brand-mark">
-            <img src="kb-logo-transparent.png?v=20260724" alt="KB" />
-          </div>
-          <div class="brand-text">
-            <h1>기업영업 &amp; 프랜차이즈 에이전트</h1>
-            <p id="serviceStatus"><span class="dot"></span>연결 확인 중</p>
-          </div>
+      <aside class="rail" aria-label="대화 메뉴">
+        <div class="rail-controls">
+          <button id="railToggleBtn" class="rail-icon-button" type="button" aria-controls="railMenu" aria-expanded="true" aria-label="왼쪽 패널 접기" title="왼쪽 패널 접기">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 5.5c2.8-.8 5.6-.4 8.5 1.2v12c-2.9-1.6-5.7-2-8.5-1.2z"></path>
+              <path d="M20.5 5.5c-2.8-.8-5.6-.4-8.5 1.2v12c2.9-1.6 5.7-2 8.5-1.2z"></path>
+            </svg>
+          </button>
         </div>
 
-        <button id="newSessionBtn" class="new-session" type="button">
-          <span class="plus">+</span> 새 대화 시작
-        </button>
+        <div class="rail-bottom">
+          <button id="newSessionBtn" class="rail-icon-button rail-new-session" type="button" aria-label="새 대화" title="새 대화">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 4.5h14v13H9l-4 3z"></path>
+              <path d="M12 8v6M9 11h6"></path>
+            </svg>
+            <span>새 대화</span>
+          </button>
+        </div>
 
-        <button id="mobileMenuBtn" class="mobile-menu-btn" type="button" aria-controls="railMenu" aria-expanded="false">
-          세션·보고서 메뉴
-        </button>
-
-        <nav id="railMenu" class="rail-scroll" aria-label="대화 세션, 사용 테이블, 저장 쿼리 및 보고서">
+        <nav id="railMenu" class="rail-scroll" aria-label="대화 목록과 데이터 도구">
           <section class="rail-section">
-            <div class="section-label">세션</div>
             <div id="sessionList" class="session-list"></div>
           </section>
 
-          <section class="rail-section">
-            <div class="section-label">데이터</div>
-            <details id="tableCatalogPanel" class="rail-table-catalog">
-              <summary>
-                <span>사용 테이블</span>
-                <code>/tables</code>
-              </summary>
-              <div class="table-catalog-head">
-                <strong id="tableCatalogMeta">사용 테이블을 불러오세요.</strong>
-                <label class="sr-only" for="tableCatalogSearch">사용 테이블 검색</label>
-                <input id="tableCatalogSearch" type="search" autocomplete="off" placeholder="테이블명 검색" />
-              </div>
-              <div id="tableCatalogList" class="table-catalog-list" aria-live="polite">
-                <div class="inspector-empty">목록을 펼치면 Semantic Layer에 등록된 사용 테이블을 표시합니다.</div>
-              </div>
-            </details>
-          </section>
+          <details class="rail-tools">
+            <summary>데이터 도구</summary>
+            <div class="rail-tools-content">
+              <section class="rail-section">
+                <div class="section-label">데이터</div>
+                <details id="tableCatalogPanel" class="rail-table-catalog">
+                  <summary>
+                    <span>사용 테이블</span>
+                    <code>/tables</code>
+                  </summary>
+                  <div class="table-catalog-head">
+                    <strong id="tableCatalogMeta">사용 테이블을 불러오세요.</strong>
+                    <label class="sr-only" for="tableCatalogSearch">사용 테이블 검색</label>
+                    <input id="tableCatalogSearch" type="search" autocomplete="off" placeholder="테이블명 검색" />
+                  </div>
+                  <div id="tableCatalogList" class="table-catalog-list" aria-live="polite">
+                    <div class="inspector-empty">목록을 펼치면 Semantic Layer에 등록된 사용 테이블을 표시합니다.</div>
+                  </div>
+                </details>
+              </section>
 
-          <section class="rail-section">
-            <div class="section-label">저장 쿼리</div>
-            <button id="saveQueryBtn" class="new-session" type="button">
-              <span class="plus">+</span> 현재 질문 저장
-            </button>
-            <div id="savedQueryList" class="saved-query-list"></div>
-          </section>
+              <section class="rail-section">
+                <div class="section-label">저장 쿼리</div>
+                <button id="saveQueryBtn" class="new-session" type="button">
+                  <span class="plus">+</span> 현재 질문 저장
+                </button>
+                <div id="savedQueryList" class="saved-query-list"></div>
+              </section>
 
-          <section class="rail-section">
-            <div class="section-label">보고서 내보내기</div>
-            <div class="export-grid">
-              <button data-export="all" type="button" disabled>전체</button>
-              <button data-export="word" type="button" disabled>Word</button>
-              <button data-export="excel" type="button" disabled>Excel</button>
-              <button data-export="text" type="button" disabled>TXT</button>
+              <section class="rail-section">
+                <div class="section-label">보고서 내보내기</div>
+                <div class="export-grid">
+                  <button data-export="all" type="button" disabled>전체</button>
+                  <button data-export="word" type="button" disabled>Word</button>
+                  <button data-export="excel" type="button" disabled>Excel</button>
+                  <button data-export="text" type="button" disabled>TXT</button>
+                </div>
+                <div id="downloadList" class="download-list"></div>
+              </section>
             </div>
-            <div id="downloadList" class="download-list"></div>
-          </section>
+          </details>
         </nav>
 
+        <div
+          id="railResizeHandle"
+          class="rail-resize-handle"
+          role="separator"
+          aria-label="왼쪽 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin="220"
+          aria-valuemax="420"
+          aria-valuenow="272"
+          tabindex="0"
+        ></div>
       </aside>
 
       <!-- ░░ CENTER THREAD ░░ -->
       <main class="thread" id="mainContent" aria-busy="false">
         <header class="topbar">
           <div class="topbar-title">
-            <div class="crumb">KB카드 기업영업 에이전트</div>
-            <h2>SQL 실행 · 요약 · 보고서</h2>
+            <h2>기업영업지원 에이전트</h2>
+            <p class="conversation-note"><span aria-hidden="true">✦</span> 긴 대화 시 이전 내용을 기억하지 못할 수 있어요. 필요한 정보는 다시 말씀해 주세요.</p>
           </div>
           <div class="topbar-actions">
-            <button id="themeToggle" class="ghost-btn theme-toggle" type="button" aria-pressed="true">어둡게</button>
-            <button id="clearBtn" class="ghost-btn" type="button" title="현재 대화 비우기">비우기</button>
-            <button id="inspectorToggle" class="ghost-btn icon-only" type="button" title="상세 패널 숨기기" aria-label="상세 패널 숨기기" aria-controls="inspector" aria-expanded="true">⛶</button>
+            <button id="themeToggle" class="ghost-btn theme-toggle topbar-secondary" type="button" aria-pressed="true">어둡게</button>
+            <button id="clearBtn" class="ghost-btn topbar-secondary" type="button" title="현재 대화 비우기">비우기</button>
+            <button id="inspectorToggle" class="ghost-btn" type="button" title="상세 패널 열기" aria-label="상세 패널 열기" aria-controls="inspector" aria-expanded="false">상세</button>
           </div>
         </header>
 
         <div class="thread-body">
-          <!-- 진행 상태 -->
-          <section id="progressPanel" class="progress-panel hidden" role="status" aria-live="polite" aria-atomic="false">
-            <div class="progress-head">
-              <div class="progress-head-text">
-                <span class="kicker">진행 중</span>
-                <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
-                <p id="progressQuestion" class="progress-question"></p>
+          <!-- 빈 상태 -->
+          <section id="emptyState" class="empty-state">
+            <div class="hero">
+              <div class="hero-badge" aria-hidden="true">
+                <img src="kb-logo-transparent.png" alt="" />
               </div>
-              <div class="progress-actions">
-                <span id="elapsedTime" class="elapsed">0초</span>
-                <button id="cancelRequestBtn" class="cancel-request" type="button">요청 취소</button>
+              <div class="hero-title">
+                <h3>기업영업 관련된 질문을 해주세요</h3>
+                <p>필요한 기간, 대상, 지표를 자연스럽게 질문하면 데이터를 조회하고 핵심만 정리해 드립니다.</p>
               </div>
+              <div id="heroExamples" class="starter-grid" aria-label="예시 질문"></div>
             </div>
-            <div class="progress-bar"><span id="progressFill"></span></div>
-            <ol id="progressSteps" class="progress-steps"></ol>
+          </section>
+
+          <!-- 결과 스트림 -->
+          <section id="resultPanel" class="result hidden">
+            <div class="result-kicker hidden">
+              <span id="sourceLabel" class="source-pill"></span>
+              <div id="resultBadges" class="badges"></div>
+            </div>
+            <div id="answerBox" class="answer-stream" aria-label="질문과 분석 답변"></div>
+            <section id="progressPanel" class="progress-panel hidden" role="status" aria-live="polite" aria-atomic="false">
+              <div class="progress-head">
+                <div class="progress-head-text">
+                  <span id="progressModeLabel" class="progress-mode-label">질문 처리 중</span>
+                  <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
+                </div>
+                <div class="progress-actions">
+                  <span id="elapsedTime" class="elapsed">0초</span>
+                  <button id="cancelRequestBtn" class="cancel-request" type="button">요청 취소</button>
+                </div>
+              </div>
+              <div class="progress-bar"><span id="progressFill"></span></div>
+              <ol id="progressSteps" class="progress-steps"></ol>
+            </section>
+            <form id="inlineParamForm" class="inline-param-form hidden" aria-labelledby="inlineParamTitle">
+              <div class="inline-param-head">
+                <div>
+                  <span class="kicker">추가 입력</span>
+                  <h3 id="inlineParamTitle">조회 조건을 확인해주세요.</h3>
+                </div>
+                <span class="inline-param-status">수정 가능</span>
+              </div>
+              <p>제안된 기본값을 그대로 사용하거나 수정한 뒤 계속 진행하세요.</p>
+              <div id="inlineParamFields" class="param-grid"></div>
+              <div class="param-actions inline-param-actions">
+                <small>비어 있는 필수 값은 직접 입력해야 합니다.</small>
+                <button type="submit">계속</button>
+              </div>
+            </form>
+            <section id="chartBox" class="chart-box hidden" aria-labelledby="chartTitle">
+              <div class="chart-head">
+                <div><span class="kicker">기존 결과 Plot</span><h3 id="chartTitle"></h3></div>
+                <small id="chartNote"></small>
+              </div>
+              <div id="chartLegend" class="chart-legend" aria-label="차트 범례"></div>
+              <div class="chart-canvas-wrap"><canvas id="resultChart" role="img"></canvas></div>
+            </section>
+            <div id="excelBox" class="excel-box hidden"></div>
+
+            <div id="followupBox" class="followup-box hidden">
+              <div class="followup-head">
+                <span class="kicker">이어질 분석</span>
+                <strong>이 결과로 더 깊이 들여다보기</strong>
+              </div>
+              <p class="followup-help">아래 질문을 선택하거나 하단 입력창에서 현재 결과를 더 분석해보세요.</p>
+              <div id="suggestionList" class="suggestion-list"></div>
+            </div>
           </section>
 
           <!-- 오류 -->
@@ -151,75 +220,7 @@
               </div>
             </div>
           </section>
-
-          <!-- 빈 상태 -->
-          <section id="emptyState" class="empty-state">
-            <div class="hero">
-              <div class="hero-title">
-                <h3>무엇을 분석할까요?</h3>
-                <p>기간·대상·지표·정렬 기준을 한 문장에 적으면 작은 모델도 더 정확하게 조회할 수 있습니다.</p>
-              </div>
-              <div class="command-line">
-                <strong>›</strong>
-                <span>2025년 월별 법인카드 이용금액 추이를 보여줘</span>
-              </div>
-              <div id="heroExamples" class="starter-grid" aria-label="예시 질문"></div>
-              <div class="question-recipe" aria-label="정확한 질문 작성법">
-                <span><strong>1</strong> 기간</span>
-                <span><strong>2</strong> 대상</span>
-                <span><strong>3</strong> 지표</span>
-                <span><strong>4</strong> 집계·상위 N개</span>
-              </div>
-            </div>
-          </section>
-
-          <!-- 결과 스트림 -->
-          <section id="resultPanel" class="result hidden">
-            <div class="result-kicker">
-              <span id="sourceLabel" class="source-pill"></span>
-              <div id="resultBadges" class="badges"></div>
-            </div>
-            <div id="answerBox" class="answer-stream" aria-label="질문과 분석 답변"></div>
-            <section id="chartBox" class="chart-box hidden" aria-labelledby="chartTitle">
-              <div class="chart-head">
-                <div><span class="kicker">기존 결과 Plot</span><h3 id="chartTitle"></h3></div>
-                <small id="chartNote"></small>
-              </div>
-              <div id="chartLegend" class="chart-legend" aria-label="차트 범례"></div>
-              <div class="chart-canvas-wrap"><canvas id="resultChart" role="img"></canvas></div>
-            </section>
-            <div id="excelBox" class="excel-box hidden"></div>
-
-            <div id="followupBox" class="followup-box hidden">
-              <div class="followup-head">
-                <span class="kicker">이어질 분석</span>
-                <strong>이 결과로 더 깊이 들여다보기</strong>
-              </div>
-              <p class="followup-help">아래 질문은 현재 표와 앞선 대화 맥락을 이어받습니다. 새로운 기간·대상을 조회하려면 하단의 ‘새 조회’를 선택하세요.</p>
-              <div id="suggestionList" class="suggestion-list"></div>
-              <div class="followup-row">
-                <label class="sr-only" for="followupInput">현재 결과에 대한 후속 질문</label>
-                <input id="followupInput" autocomplete="off" maxlength="1000" placeholder="예: 이 중 전월 대비 증가율이 가장 큰 기업 5개만 보여줘" />
-                <button id="followupBtn" type="button">질문</button>
-              </div>
-            </div>
-          </section>
         </div>
-
-        <!-- 파라미터 모달 -->
-        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="paramTitle">
-          <div class="param-card">
-            <div class="param-card-head">
-              <div>
-                <span class="kicker">추가 입력</span>
-                <h3 id="paramTitle">필수 값 입력</h3>
-              </div>
-              <button id="cancelParamsBtn" class="icon-btn" type="button" title="닫기" aria-label="닫기">×</button>
-            </div>
-            <p class="param-help">부족한 값만 알려주면 같은 질문을 이어서 실행합니다.</p>
-            <form id="paramForm" class="param-form"></form>
-          </div>
-        </section>
 
         <!-- 저장 쿼리 실행 모달 -->
         <section id="savedQueryPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="savedQueryTitle">
@@ -238,49 +239,17 @@
 
         <!-- 입력 컴포저 -->
         <section id="queryPanel" class="composer">
-          <div id="contextStrip" class="context-strip hidden" role="status">
-            <div class="context-strip-copy">
-              <span class="context-label">이어받을 맥락</span>
-              <strong id="contextStripTitle">직전 조회 결과</strong>
-              <small id="contextStripMeta"></small>
-            </div>
-            <button id="clearContextBtn" type="button">새 조회로 전환</button>
-          </div>
-          <div id="promptSuggestions" class="prompt-suggestions hidden">
-            <div class="prompt-suggestions-head">
-              <span id="promptSuggestionsTitle">예시 질문</span>
-              <button id="hideSuggestionsBtn" type="button" title="예시 질문 닫기" aria-label="예시 질문 닫기">×</button>
-            </div>
-            <div id="examples" class="example-list prompt-example-list"></div>
-          </div>
-          <div id="promptCoach" class="prompt-coach" aria-live="polite">
-            <span id="promptCoachMessage">기간·대상·지표·집계 기준을 포함하면 정확도가 높아집니다.</span>
-            <div class="coach-checks" aria-label="질문에 포함된 조건">
-              <span data-coach-check="period">기간</span>
-              <span data-coach-check="target">대상</span>
-              <span data-coach-check="metric">지표</span>
-              <span data-coach-check="shape">집계/범위</span>
-            </div>
-          </div>
           <div class="composer-bar">
             <span class="composer-marker" aria-hidden="true">›</span>
             <label class="sr-only" for="questionInput">데이터 조회 질문</label>
-            <textarea id="questionInput" rows="1" maxlength="2000" aria-describedby="promptCoachMessage composerHint" placeholder="예: 2025년 월별 법인카드 이용금액과 전월 대비 증감률을 보여줘"></textarea>
-            <button id="submitBtn" type="button">조회</button>
-          </div>
-          <div class="composer-foot">
-            <div class="seg" role="group" aria-label="질문 처리 방식">
-              <button class="seg-btn active" data-query-mode="new" type="button">새 조회</button>
-              <button class="seg-btn" data-query-mode="followup" type="button" disabled>이어서 분석</button>
-            </div>
-            <span class="composer-hint" id="composerHint">Enter 전송 · Shift+Enter 줄바꿈</span>
+            <textarea id="questionInput" rows="1" maxlength="2000" placeholder="주민등록번호 등 고객 민감 정보를 입력하지 않도록 주의해 주세요."></textarea>
           </div>
         </section>
       </main>
 
       <!-- ░░ RIGHT INSPECTOR ░░ -->
       <aside class="inspector" id="inspector">
-        <button id="inspectorClose" class="inspector-mobile-close" type="button" aria-label="상세 패널 닫기">×</button>
+        <button id="inspectorClose" class="inspector-close" type="button" aria-label="상세 패널 닫기" title="상세 패널 닫기">×</button>
         <div class="inspector-tabs" role="tablist" aria-label="조회 상세 정보">
           <button id="tab-button-context" class="tab active" data-tab="context" type="button" role="tab" aria-controls="tab-context" aria-selected="true">개요</button>
           <button id="tab-button-data" class="tab" data-tab="data" type="button" role="tab" aria-controls="tab-data" aria-selected="false">데이터</button>
@@ -321,7 +290,6 @@ const state = {
   canFollowup: false,
   pendingQuestion: "",
   conversation: [],
-  queryMode: "new",
   isBusy: false,
   llmReady: null,
   llmDetail: "",
@@ -332,7 +300,6 @@ const state = {
   lastResultSummary: null,
   lastResultData: null,
   lastChart: null,
-  exampleQuestions: [],
   recommendedQuestions: [],
   failedRequest: null,
   tableCatalog: [],
@@ -390,16 +357,17 @@ const apiUrl = (path) => {
 
 function currentDateParts() {
   const now = new Date();
-  return { year: now.getFullYear(), month: String(now.getMonth() + 1).padStart(2, "0") };
+  return {
+    year: now.getFullYear(),
+    month: String(now.getMonth() + 1).padStart(2, "0"),
+    day: String(now.getDate()).padStart(2, "0"),
+  };
 }
 
-function currentYm() {
-  const { year, month } = currentDateParts();
-  return `${year}${month}`;
-}
-
-function currentYear() {
-  return String(currentDateParts().year);
+function currentYm(monthOffset = 0) {
+  const now = new Date();
+  const target = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  return `${target.getFullYear()}${String(target.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function currentYmKorean() {
@@ -410,8 +378,6 @@ function currentYmKorean() {
 const appEl = $("#app");
 const queryPanel = $("#queryPanel");
 const questionInput = $("#questionInput");
-const submitBtn = $("#submitBtn");
-const modeButtons = $$("[data-query-mode]");
 const themeToggle = $("#themeToggle");
 const clearBtn = $("#clearBtn");
 const newSessionBtn = $("#newSessionBtn");
@@ -421,9 +387,6 @@ const inspector = $("#inspector");
 const inspectorClose = $("#inspectorClose");
 const sessionList = $("#sessionList");
 const savedQueryList = $("#savedQueryList");
-const paramPanel = $("#paramPanel");
-const paramForm = $("#paramForm");
-const cancelParamsBtn = $("#cancelParamsBtn");
 const savedQueryPanel = $("#savedQueryPanel");
 const savedQueryForm = $("#savedQueryForm");
 const savedQueryTitle = $("#savedQueryTitle");
@@ -451,8 +414,11 @@ const progressTitle = $("#progressTitle");
 const progressSteps = $("#progressSteps");
 const progressFill = $("#progressFill");
 const elapsedTime = $("#elapsedTime");
-const progressQuestion = $("#progressQuestion");
+const progressModeLabel = $("#progressModeLabel");
 const cancelRequestBtn = $("#cancelRequestBtn");
+const inlineParamForm = $("#inlineParamForm");
+const inlineParamTitle = $("#inlineParamTitle");
+const inlineParamFields = $("#inlineParamFields");
 const errorPanel = $("#errorPanel");
 const errorTitle = $("#errorTitle");
 const errorMessage = $("#errorMessage");
@@ -472,17 +438,8 @@ const compactSummary = $("#compactSummary");
 const inspectorEmpty = $("#inspectorEmpty");
 const followupBox = $("#followupBox");
 const suggestionList = $("#suggestionList");
-const followupInput = $("#followupInput");
-const followupBtn = $("#followupBtn");
 const threadBody = $(".thread-body");
-const promptSuggestions = $("#promptSuggestions");
-const promptSuggestionsTitle = $("#promptSuggestionsTitle");
-const hideSuggestionsBtn = $("#hideSuggestionsBtn");
 const heroExamples = $("#heroExamples");
-const contextStrip = $("#contextStrip");
-const contextStripTitle = $("#contextStripTitle");
-const contextStripMeta = $("#contextStripMeta");
-const clearContextBtn = $("#clearContextBtn");
 const promptCoach = $("#promptCoach");
 const promptCoachMessage = $("#promptCoachMessage");
 const copyTableBtn = $("#copyTableBtn");
@@ -491,9 +448,118 @@ const tableCatalogMeta = $("#tableCatalogMeta");
 const tableCatalogSearch = $("#tableCatalogSearch");
 const tableCatalogList = $("#tableCatalogList");
 const tableCatalogPanel = $("#tableCatalogPanel");
-const mobileMenuBtn = $("#mobileMenuBtn");
 const rail = $(".rail");
+const railToggleBtn = $("#railToggleBtn");
+const railResizeHandle = $("#railResizeHandle");
 const mainContent = $("#mainContent");
+
+const RAIL_WIDTH_KEY = "text2sql:console:rail-width:v1";
+const RAIL_COLLAPSED_KEY = "text2sql:console:rail-collapsed:v1";
+const compactRailMedia = window.matchMedia("(max-width: 820px)");
+function setRailWidth(width, persist = false) {
+  const nextWidth = Math.min(420, Math.max(220, Math.round(Number(width) || 272)));
+  appEl.style.setProperty("--rail-width", `${nextWidth}px`);
+  railResizeHandle?.setAttribute("aria-valuenow", String(nextWidth));
+  if (persist) {
+    try {
+      localStorage.setItem(RAIL_WIDTH_KEY, String(nextWidth));
+    } catch (_) {
+      /* Sidebar width preference is non-critical. */
+    }
+  }
+}
+
+try {
+  setRailWidth(localStorage.getItem(RAIL_WIDTH_KEY));
+} catch (_) {
+  setRailWidth(272);
+}
+
+let railResizeStartX = 0;
+let railResizeStartWidth = 272;
+
+railResizeHandle?.addEventListener("pointerdown", (event) => {
+  if (window.matchMedia("(max-width: 820px)").matches) return;
+  railResizeStartX = event.clientX;
+  railResizeStartWidth = rail.getBoundingClientRect().width;
+  railResizeHandle.setPointerCapture(event.pointerId);
+  document.body.classList.add("rail-resizing");
+});
+
+railResizeHandle?.addEventListener("pointermove", (event) => {
+  if (!railResizeHandle.hasPointerCapture(event.pointerId)) return;
+  setRailWidth(railResizeStartWidth + event.clientX - railResizeStartX);
+});
+
+railResizeHandle?.addEventListener("pointerup", (event) => {
+  if (!railResizeHandle.hasPointerCapture(event.pointerId)) return;
+  railResizeHandle.releasePointerCapture(event.pointerId);
+  document.body.classList.remove("rail-resizing");
+  setRailWidth(rail.getBoundingClientRect().width, true);
+});
+
+railResizeHandle?.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const currentWidth = rail.getBoundingClientRect().width;
+  const nextWidth = event.key === "Home"
+    ? 220
+    : event.key === "End"
+      ? 420
+      : currentWidth + (event.key === "ArrowLeft" ? -16 : 16);
+  setRailWidth(nextWidth, true);
+});
+
+let railCollapsedPreference = false;
+try {
+  railCollapsedPreference = localStorage.getItem(RAIL_COLLAPSED_KEY) === "true";
+} catch (_) {
+  railCollapsedPreference = false;
+}
+
+function syncRailToggleUi() {
+  const expanded = compactRailMedia.matches
+    ? rail.classList.contains("menu-open")
+    : !appEl.classList.contains("rail-collapsed");
+  railToggleBtn.setAttribute("aria-expanded", String(expanded));
+  railToggleBtn.setAttribute("aria-label", expanded ? "왼쪽 패널 접기" : "왼쪽 패널 펼치기");
+  railToggleBtn.title = expanded ? "왼쪽 패널 접기" : "왼쪽 패널 펼치기";
+}
+
+function setRailCollapsed(collapsed, persist = true) {
+  railCollapsedPreference = Boolean(collapsed);
+  appEl.classList.toggle("rail-collapsed", railCollapsedPreference);
+  if (persist) {
+    try {
+      localStorage.setItem(RAIL_COLLAPSED_KEY, String(railCollapsedPreference));
+    } catch (_) {
+      /* Sidebar state preference is non-critical. */
+    }
+  }
+  syncRailToggleUi();
+}
+
+function syncRailViewport() {
+  if (compactRailMedia.matches) {
+    appEl.classList.remove("rail-collapsed");
+  } else {
+    rail.classList.remove("menu-open");
+    appEl.classList.toggle("rail-collapsed", railCollapsedPreference);
+  }
+  syncRailToggleUi();
+}
+
+railToggleBtn.addEventListener("click", () => {
+  if (compactRailMedia.matches) {
+    rail.classList.toggle("menu-open");
+    syncRailToggleUi();
+    return;
+  }
+  setRailCollapsed(!appEl.classList.contains("rail-collapsed"));
+});
+
+compactRailMedia.addEventListener?.("change", syncRailViewport);
+syncRailViewport();
 
 const THEME_KEY = "text2sql:console:theme:v2";
 function getTheme() {
@@ -522,7 +588,6 @@ function setTheme(theme) {
 }
 
 setTheme(getTheme());
-let promptSuggestionsDismissed = false;
 
 const progressLabels = [
   ["요청 이해", "질문 의도와 업무 범위를 확인합니다."],
@@ -543,6 +608,7 @@ const progressGroupIndex = {
   response: 3,
   classify_question: 0,
   route_domain: 0,
+  followup_context: 0,
   followup_route: 0,
   select_tool: 1,
   check_tool_params: 1,
@@ -566,6 +632,7 @@ const progressGroupIndex = {
 const progressPhaseGroupIndex = {
   question_analysis: 0,
   domain_routing: 0,
+  followup_context: 0,
   followup_route: 0,
   tool_selection: 1,
   capability_selection: 1,
@@ -586,7 +653,6 @@ let activeProgressLabels = progressLabels;
 let progressTimer = null;
 let progressStartedAt = 0;
 let progressCurrentIndex = 0;
-let progressHideTimer = null;
 let modalReturnFocus = null;
 
 function showToast(message) {
@@ -776,10 +842,13 @@ function webappHeaders() {
 }
 
 function conversationHistory(limit = 10) {
-  return state.conversation.slice(-limit).map((message) => ({
-    role: message.role,
-    content: message.text || "",
-  }));
+  return state.conversation
+    .filter((message) => message.status !== "pending")
+    .slice(-limit)
+    .map((message) => ({
+      role: message.role,
+      content: message.text || "",
+    }));
 }
 
 function webappQueryPayload(payload = {}) {
@@ -842,15 +911,15 @@ function restoreCancelledDraft(request) {
   state.retryAction = null;
   state.failedRequest = null;
   if (request?.question) {
-    if (request.kind === "followup" && request.restoreTarget !== "composer") {
-      followupInput.value = request.question;
-    } else {
-      questionInput.value = request.question;
-      autoGrowInput();
-      updatePromptCoach();
-    }
+    questionInput.value = request.question;
+    autoGrowInput();
+    updatePromptCoach();
   }
   stopProgress();
+  if (state.conversation.at(-1)?.status === "pending") {
+    state.conversation.pop();
+    renderConversation();
+  }
   clearInlineError();
   if (state.conversation.length) {
     emptyState.classList.add("hidden");
@@ -862,70 +931,27 @@ function restoreCancelledDraft(request) {
   showToast("요청을 취소했습니다. 질문을 수정해 다시 실행할 수 있습니다.");
 }
 
-function setQueryMode(mode) {
-  const previousMode = state.queryMode;
-  state.queryMode = mode === "followup" && canUseFollowupMode() ? "followup" : "new";
-  if (previousMode !== state.queryMode) resetPromptSuggestionsDismissal();
-  renderPromptSuggestionContent();
-  syncQueryModeUi();
-}
-
 function syncQueryModeUi() {
-  const followupAvailable = canUseFollowupMode();
-  if (!followupAvailable && state.queryMode === "followup") {
-    state.queryMode = "new";
-  }
-  modeButtons.forEach((button) => {
-    const mode = button.dataset.queryMode;
-    button.classList.toggle("active", mode === state.queryMode);
-    button.disabled = state.isBusy || (mode === "followup" && !followupAvailable);
-  });
+  queryPanel.classList.toggle("hidden", Boolean(state.continuation));
   if (state.continuation) {
-    submitBtn.textContent = state.isBusy ? "처리 중" : "계속";
-    updateContextStrip();
     updatePromptCoach();
     return;
   }
-  submitBtn.textContent = state.isBusy ? "처리 중" : state.queryMode === "followup" ? "분석" : "조회";
   if (!queryPanel.classList.contains("awaiting-param")) {
-    questionInput.placeholder =
-      state.queryMode === "followup" && followupAvailable
-        ? "이전 결과를 바탕으로 이어서 물어보세요."
-        : "예: 2025년 월별 법인카드 이용금액과 전월 대비 증감률을 보여줘";
+    questionInput.placeholder = "주민등록번호 등 고객 민감 정보를 입력하지 않도록 주의해 주세요.";
   }
-  updateContextStrip();
   updatePromptCoach();
 }
 
 function setBusy(isBusy) {
   state.isBusy = isBusy;
-  submitBtn.disabled = isBusy;
   questionInput.readOnly = isBusy;
   newSessionBtn.disabled = isBusy;
   clearBtn.disabled = isBusy;
   saveQueryBtn.disabled = isBusy;
   $$(".suggestion").forEach((button) => { button.disabled = isBusy; });
+  Array.from(inlineParamForm.elements).forEach((element) => { element.disabled = isBusy; });
   syncQueryModeUi();
-}
-
-function setFollowupBusy(isBusy) {
-  followupBtn.disabled = isBusy;
-  followupInput.readOnly = isBusy;
-  followupBtn.textContent = isBusy ? "분석 중" : "질문";
-}
-
-function updateContextStrip() {
-  const showContext = state.queryMode === "followup" && canUseFollowupMode();
-  contextStrip?.classList.toggle("hidden", !showContext);
-  if (!showContext) return;
-  const summary = state.lastResultSummary || {};
-  contextStripTitle.textContent = summary.question || "직전 조회 결과";
-  const meta = [
-    Number.isFinite(summary.rowCount) ? `${summary.rowCount.toLocaleString("ko-KR")}건` : "",
-    summary.source || "",
-    `${state.conversation.filter((item) => item.role === "user").length}번째 질문까지`,
-  ].filter(Boolean);
-  contextStripMeta.textContent = meta.join(" · ");
 }
 
 function promptSignals(text) {
@@ -940,7 +966,19 @@ function promptSignals(text) {
 
 function updatePromptCoach() {
   if (!promptCoach || !promptCoachMessage) return;
-  const followupMode = state.queryMode === "followup" && canUseFollowupMode();
+  if (state.continuation) {
+    const labels = (state.continuation.missing_params || [])
+      .map((param) => param.label || param.name)
+      .filter(Boolean)
+      .join(", ");
+    $$('[data-coach-check]').forEach((item) => item.classList.remove("found"));
+    promptCoach.classList.add("ready");
+    promptCoachMessage.textContent = labels
+      ? `분석을 계속하려면 ${labels} 값을 입력해주세요.`
+      : "분석을 계속하려면 요청된 값을 입력해주세요.";
+    return;
+  }
+  const followupMode = canUseFollowupMode();
   const signals = promptSignals(questionInput.value);
   if (followupMode) {
     signals.period = true;
@@ -953,11 +991,11 @@ function updatePromptCoach() {
   promptCoach.classList.toggle("ready", found >= 3);
   if (!questionInput.value.trim()) {
     promptCoachMessage.textContent = followupMode
-      ? "직전 결과의 기간·대상을 이어받습니다. 비교, 필터 또는 상위 N개처럼 원하는 작업을 적어주세요."
-      : "기간·대상·지표·집계 기준을 포함하면 정확도가 높아집니다.";
+      ? "현재 결과에서 비교, 필터 또는 상위 N개처럼 원하는 분석을 적어주세요."
+      : "주민등록번호 등 고객 민감 정보를 입력하지 않도록 주의해 주세요.";
   } else if (found >= 3) {
     promptCoachMessage.textContent = followupMode
-      ? "직전 결과 맥락과 함께 분석할 준비가 되었습니다."
+      ? "현재 결과를 이어서 분석할 준비가 되었습니다."
       : "좋은 질문입니다. 조건을 구체적으로 인식할 수 있습니다.";
   } else {
     const missingLabels = { period: "기간", target: "대상", metric: "지표", shape: "집계/범위" };
@@ -973,13 +1011,109 @@ function isProgressEvent(eventName) {
 }
 
 function normalizeProgressEvent(progress) {
-  const data = progress?.data || {};
+  const data = { ...(progress || {}), ...(progress?.data || {}) };
   return {
-    step: progress?.step || progress?.text2sql_step || data.text2sql_step || data.step || "",
-    phase: progress?.phase || data.phase || "",
-    title: progress?.title || data.title || "",
-    message: progress?.message || data.message || "",
+    step: data.step || data.text2sql_step || "",
+    phase: data.phase || "",
+    title: data.title || "",
+    message: progress?.message || data.progress_message || data.message || "",
+    data,
   };
+}
+
+function progressContextLines(progress) {
+  const { step, data = {} } = progress;
+  const lines = [];
+  const selectedTables = Array.isArray(data.selected_tables) ? data.selected_tables.filter(Boolean) : [];
+  const missingParams = Array.isArray(data.missing_params) ? data.missing_params : [];
+
+  if (step === "classify_question" && data.question_type) {
+    const questionTypes = { need_sql: "데이터 조회", direct_sql: "직접 SQL", direct_answer: "일반 안내", reject: "지원 범위 확인" };
+    lines.push(`질문 유형: ${questionTypes[data.question_type] || data.question_type}`);
+  }
+
+  if (step === "route_domain" && data.selected_domain) {
+    lines.push(`선택 도메인: ${data.selected_domain}`);
+    const candidates = Array.isArray(data.domain_candidates) ? data.domain_candidates.slice(0, 3) : [];
+    if (candidates.length) {
+      const candidateText = candidates
+        .map((candidate) => {
+          const score = Number(candidate?.score);
+          return `${candidate?.domain || "-"}${Number.isFinite(score) ? ` ${score.toFixed(2)}` : ""}`;
+        })
+        .join(" · ");
+      lines.push(`라우팅 후보: ${candidateText}`);
+    }
+  }
+
+  if (step === "select_tool") {
+    if (data.selected_tool) {
+      lines.push(`실행 경로: 업무 Tool · ${data.selected_tool}`);
+    } else if (data.matched_query_name) {
+      lines.push(`실행 경로: 검증 쿼리 · ${data.matched_query_name}`);
+    } else {
+      lines.push("실행 경로: Tool·검증 쿼리·동적 SQL 후보 비교");
+    }
+  }
+
+  if (step === "match_verified_query") {
+    lines.push(
+      data.matched_query_name
+        ? `검증 쿼리 매칭: ${data.matched_query_name}`
+        : "검증 쿼리 미일치 · 질문 맞춤 SQL 생성 경로로 이동",
+    );
+  }
+
+  if (step === "analyze_question" && selectedTables.length) {
+    lines.push(`선택 테이블: ${selectedTables.join(", ")}`);
+  }
+
+  if (["check_tool_params", "check_sql_gen_params"].includes(step)) {
+    const labels = missingParams.map((param) => param?.label || param?.name || String(param)).filter(Boolean);
+    lines.push(labels.length ? `추가로 필요한 조건: ${labels.join(", ")}` : "필수 조회 조건 확인 완료");
+  }
+
+  if (step === "generate_sql") {
+    lines.push(
+      selectedTables.length
+        ? `SQL 생성 기준: ${selectedTables.length}개 테이블 · ${selectedTables.join(", ")}`
+        : "질문 조건에 맞는 읽기 전용 SQL 생성",
+    );
+  }
+
+  if (step === "validate_sql") {
+    lines.push("검증 항목: 읽기 전용 여부 · 허용 테이블/컬럼 · 실행 문법");
+  }
+
+  if (["run_query", "run_tool_query", "run_matched_query"].includes(step)) {
+    const rowCount = Number(data.row_count || 0);
+    const columnCount = Array.isArray(data.columns) ? data.columns.length : Number(data.column_count || 0);
+    lines.push(`조회 결과: ${rowCount.toLocaleString("ko-KR")}건 · ${columnCount.toLocaleString("ko-KR")}개 컬럼`);
+  }
+
+  if (step === "followup_route" && data.followup_mode) {
+    const mode = String(data.followup_mode);
+    const contextLabels = {
+      existing_result: "현재 결과를 이어서 처리",
+      refine_query: "이전 조건을 반영한 후속 조회",
+      new_query: "이전 조건과 분리된 새 조회",
+    };
+    const route = mode.startsWith("new_sql")
+      ? "새 데이터 조회"
+      : mode.startsWith("rewrite_sql")
+        ? "기존 SQL 조건 변경"
+        : mode.startsWith("transform")
+          ? "기존 결과 재가공"
+          : mode === "visualization"
+            ? "기존 결과 시각화"
+            : "기존 결과 설명·분석";
+    if (data.context_relation) {
+      lines.push(`대화 맥락 판단: ${contextLabels[data.context_relation] || data.context_relation}`);
+    }
+    lines.push(`후속 처리 경로: ${route}${data.requires_sql ? " · SQL 실행" : " · SQL 재실행 없음"}`);
+  }
+
+  return lines;
 }
 
 function progressIndexFor(step, phase = "") {
@@ -1016,9 +1150,15 @@ function appendProgressDetail(item, progress, step) {
     detailItem.dataset.step = step;
     list.appendChild(detailItem);
   }
+  const contextLines = progressContextLines(progress);
   detailItem.innerHTML = `
     <span>${escapeHtml(progress.title || step)}</span>
     <small>${escapeHtml(progress.message || "")}</small>
+    ${
+      contextLines.length
+        ? `<div class="progress-context">${contextLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}</div>`
+        : ""
+    }
   `;
   detailItem.classList.add("current");
   activateProgressItem(item);
@@ -1091,18 +1231,36 @@ function renderStreamProgress(eventName, data) {
   renderProgressEvent(data);
 }
 
-function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
+function appendPendingUserMessage(question) {
+  const text = String(question || "").trim();
+  if (!text) return;
+  const lastMessage = state.conversation.at(-1);
+  if (lastMessage?.role === "user" && (lastMessage.status === "pending" || lastMessage.text === text)) {
+    lastMessage.text = text;
+    lastMessage.status = "pending";
+  } else {
+    state.conversation.push({ role: "user", text, status: "pending" });
+  }
+  renderConversation();
+}
+
+function settlePendingUserMessage(question) {
+  const lastMessage = state.conversation.at(-1);
+  if (lastMessage?.role !== "user" || lastMessage.status !== "pending") return false;
+  lastMessage.text = String(question || lastMessage.text || "").trim();
+  delete lastMessage.status;
+  return true;
+}
+
+function startProgress(labels = [], fallbackLabels = progressLabels) {
   const seedLabels = Array.isArray(labels) && labels.length ? labels : fallbackLabels;
   activeProgressLabels = seedLabels;
   progressStartedAt = Date.now();
   progressCurrentIndex = 0;
-  window.clearTimeout(progressHideTimer);
-  progressHideTimer = null;
   elapsedTime.textContent = "0초";
   progressFill.style.width = "12%";
+  progressModeLabel.textContent = state.activeRequest?.kind === "followup" ? "후속 질문 처리 중" : "질문 처리 중";
   progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
-  progressQuestion.textContent = state.pendingQuestion || "";
-  progressQuestion.classList.toggle("hidden", !progressQuestion.textContent);
   cancelRequestBtn.disabled = false;
   progressSteps.innerHTML = seedLabels
     .map(
@@ -1124,8 +1282,9 @@ function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = p
   progressPanel.classList.remove("hidden");
   clearInlineError();
   emptyState.classList.add("hidden");
-  if (hideCurrentResult) resultPanel.classList.add("hidden");
-  paramPanel.classList.add("hidden");
+  resultPanel.classList.add("processing");
+  resultPanel.classList.remove("hidden");
+  appendPendingUserMessage(state.activeRequest?.question || state.pendingQuestion);
   setProgressStep(0);
   scrollThreadToBottom();
   window.clearInterval(progressTimer);
@@ -1146,22 +1305,26 @@ function finishProgress() {
   });
   progressTitle.textContent = "결과를 화면에 표시합니다.";
   cancelRequestBtn.disabled = true;
-  const elapsed = Date.now() - progressStartedAt;
-  const delay = Math.max(300, 1200 - elapsed);
-  window.clearTimeout(progressHideTimer);
-  progressHideTimer = window.setTimeout(() => {
-    progressPanel.classList.add("hidden");
-    progressHideTimer = null;
-  }, delay);
+  progressPanel.classList.add("hidden");
+  resultPanel.classList.remove("processing");
 }
 
 function stopProgress() {
   window.clearInterval(progressTimer);
   progressTimer = null;
-  window.clearTimeout(progressHideTimer);
-  progressHideTimer = null;
   progressPanel.classList.add("hidden");
+  resultPanel.classList.remove("processing");
   cancelRequestBtn.disabled = true;
+}
+
+function pauseProgressForParams() {
+  window.clearInterval(progressTimer);
+  progressTimer = null;
+  progressTitle.textContent = "추가 입력을 기다리고 있습니다.";
+  progressModeLabel.textContent = "추가 입력 대기";
+  cancelRequestBtn.disabled = true;
+  progressPanel.classList.remove("hidden");
+  resultPanel.classList.remove("processing");
 }
 
 function clearInlineError() {
@@ -1186,26 +1349,10 @@ function setInspectorHasData(hasData) {
   inspectorEmpty?.classList.toggle("hidden", hasData);
 }
 
-function showPromptSuggestions() {
-  if (!promptSuggestions || state.isBusy || promptSuggestionsDismissed) return;
-  renderPromptSuggestionContent();
-  if ($("#examples")?.children.length) {
-    promptSuggestions.classList.remove("hidden");
-  }
-}
-
-function hidePromptSuggestions({ dismiss = false } = {}) {
-  if (dismiss) promptSuggestionsDismissed = true;
-  promptSuggestions?.classList.add("hidden");
-}
-
-function resetPromptSuggestionsDismissal() {
-  promptSuggestionsDismissed = false;
-}
-
 function resetResultPanels() {
   state.lastResultSummary = null;
   state.lastResultData = null;
+  resultPanel.classList.remove("processing");
   resultPanel.classList.add("hidden");
   emptyState.classList.remove("hidden");
   answerBox.innerHTML = "";
@@ -1222,13 +1369,13 @@ function resetResultPanels() {
   excelBox.innerHTML = "";
   excelBox.classList.add("hidden");
   suggestionList.innerHTML = "";
-  followupInput.value = "";
   followupBox.classList.add("hidden");
   downloadList.innerHTML = "";
   copyTableBtn.disabled = true;
   copySqlBtn.disabled = true;
   setInspectorHasData(false);
   setExportEnabled(false);
+  hideInlineParamForm();
 }
 
 function renderFailureDiagnostics(diagnostics) {
@@ -1281,12 +1428,13 @@ function showInlineError(message, title = "요청을 처리하지 못했습니�
     renderConversation();
     renderHistory({ question: pending, original_answer: safeMessage, analysis_history: [] });
   }
+  scrollThreadToBottom();
 }
 
 async function loadHealth() {
   const statusEl = $("#serviceStatus");
   const setStatus = (dotClass, text) => {
-    statusEl.innerHTML = `<span class="dot ${dotClass}"></span>${escapeHtml(text)}`;
+    if (statusEl) statusEl.innerHTML = `<span class="dot ${dotClass}"></span>${escapeHtml(text)}`;
   };
   try {
     const data = await api("health");
@@ -1314,14 +1462,6 @@ function llmUnavailableMessage() {
   return `모델 서버가 응답하지 않습니다. 잠시 후 다시 시도하거나 운영 담당자에게 문의해 주세요.${detail}`;
 }
 
-function chooseExample(item) {
-  questionInput.value = item;
-  autoGrowInput();
-  updatePromptCoach();
-  hidePromptSuggestions();
-  questionInput.focus();
-}
-
 function normalizedQuestions(items) {
   return Array.from(new Set(
     (Array.isArray(items) ? items : [])
@@ -1329,6 +1469,13 @@ function normalizedQuestions(items) {
       .map((item) => item.trim())
       .filter(Boolean),
   ));
+}
+
+function chooseExample(item) {
+  questionInput.value = item;
+  autoGrowInput();
+  updatePromptCoach();
+  questionInput.focus();
 }
 
 function renderExampleButtons(container, examples, className) {
@@ -1340,22 +1487,9 @@ function renderExampleButtons(container, examples, className) {
     button.type = "button";
     button.textContent = item;
     button.dataset.example = item;
-    const isRecommendation = className.includes("recommendation");
-    button.setAttribute("aria-label", `${isRecommendation ? "추천" : "예시"} 질문 사용: ${item}`);
+    button.setAttribute("aria-label", `예시 질문 사용: ${item}`);
     container.appendChild(button);
   });
-}
-
-function renderPromptSuggestionContent() {
-  const box = $("#examples");
-  if (!box) return;
-  const isFollowup = state.queryMode === "followup" && canUseFollowupMode();
-  const questions = isFollowup ? state.recommendedQuestions : state.exampleQuestions;
-  promptSuggestionsTitle.textContent = isFollowup ? "추천 질문" : "예시 질문";
-  hideSuggestionsBtn.title = `${isFollowup ? "추천" : "예시"} 질문 닫기`;
-  hideSuggestionsBtn.setAttribute("aria-label", hideSuggestionsBtn.title);
-  renderExampleButtons(box, questions, isFollowup ? "example recommendation" : "example");
-  if (!questions.length) promptSuggestions?.classList.add("hidden");
 }
 
 async function loadExamples() {
@@ -1364,12 +1498,8 @@ async function loadExamples() {
     const apiExamples = Array.isArray(data?.examples) ? data.examples : [];
     const examples = normalizedQuestions(apiExamples);
     if (!examples.length) throw new Error("예시 질문 응답이 비어 있습니다.");
-    state.exampleQuestions = examples;
-    renderPromptSuggestionContent();
     renderExampleButtons(heroExamples, examples.slice(0, 3), "starter-chip");
   } catch {
-    state.exampleQuestions = normalizedQuestions(DEFAULT_EXAMPLES);
-    renderPromptSuggestionContent();
     renderExampleButtons(heroExamples, DEFAULT_EXAMPLES.slice(0, 3), "starter-chip");
   }
 }
@@ -1614,7 +1744,6 @@ async function runSavedQuery() {
   try {
     const rendered = await renderSavedQueryFromForm();
     closeSavedQueryDialog();
-    hidePromptSuggestions();
     downloadList.innerHTML = "";
     questionInput.value = "";
     autoGrowInput();
@@ -1626,7 +1755,6 @@ async function runSavedQuery() {
 }
 
 function resetSessionDraft() {
-  resetPromptSuggestionsDismissal();
   state.retryAction = null;
   state.failedRequest = null;
   state.sessionId = null;
@@ -1636,13 +1764,10 @@ function resetSessionDraft() {
   state.continuation = null;
   state.pendingQuestion = "";
   state.conversation = [];
-  state.queryMode = "new";
   queryPanel.classList.remove("awaiting-param");
-  closeParamDialog();
   resetResultPanels();
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
-  renderPromptSuggestionContent();
   syncQueryModeUi();
 }
 
@@ -1668,34 +1793,68 @@ function renderSessions(sessions) {
     sessionList.innerHTML = `<div class="session-empty">아직 세션이 없습니다.</div>`;
     return;
   }
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const groups = [
+    { label: "오늘", maxDays: 0, sessions: [] },
+    { label: "최근 3일", maxDays: 3, sessions: [] },
+    { label: "최근 1주일", maxDays: 7, sessions: [] },
+    { label: "이전 30일", maxDays: 30, sessions: [] },
+  ];
+
   visibleSessions.forEach((session) => {
-    const item = document.createElement("div");
-    item.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+    const updatedAt = new Date(session.updated_at || session.created_at || "");
+    if (Number.isNaN(updatedAt.getTime())) return;
+    const updatedDay = new Date(updatedAt.getFullYear(), updatedAt.getMonth(), updatedAt.getDate());
+    const ageDays = Math.max(0, Math.floor((today - updatedDay) / 86400000));
+    groups.find((group) => ageDays <= group.maxDays)?.sessions.push(session);
+  });
 
-    const openButton = document.createElement("button");
-    openButton.type = "button";
-    openButton.className = "session-open";
-    openButton.innerHTML = `
-      <span>${escapeHtml(session.title || "새 대화")}</span>
-      <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
-    `;
-    if (session.id === state.sessionId) openButton.setAttribute("aria-current", "page");
-    openButton.addEventListener("click", () => loadSession(session.id));
+  const populatedGroups = groups.filter((group) => group.sessions.length);
+  if (!populatedGroups.length) {
+    sessionList.innerHTML = `<div class="session-empty">최근 30일 이내 대화가 없습니다.</div>`;
+    return;
+  }
 
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "session-delete";
-    deleteButton.title = "세션 삭제";
-    deleteButton.setAttribute("aria-label", `${session.title || "새 대화"} 세션 삭제`);
-    deleteButton.textContent = "×";
-    deleteButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      deleteSession(session.id);
+  populatedGroups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "session-group";
+
+    const heading = document.createElement("h3");
+    heading.className = "session-group-label";
+    heading.textContent = group.label;
+    section.appendChild(heading);
+
+    group.sessions.forEach((session) => {
+      const item = document.createElement("div");
+      item.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.className = "session-open";
+      openButton.innerHTML = `
+        <span>${escapeHtml(session.title || "새 대화")}</span>
+        <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
+      `;
+      if (session.id === state.sessionId) openButton.setAttribute("aria-current", "page");
+      openButton.addEventListener("click", () => loadSession(session.id));
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "session-delete";
+      deleteButton.title = "세션 삭제";
+      deleteButton.setAttribute("aria-label", `${session.title || "새 대화"} 세션 삭제`);
+      deleteButton.textContent = "×";
+      deleteButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSession(session.id);
+      });
+
+      item.appendChild(openButton);
+      item.appendChild(deleteButton);
+      section.appendChild(item);
     });
-
-    item.appendChild(openButton);
-    item.appendChild(deleteButton);
-    sessionList.appendChild(item);
+    sessionList.appendChild(section);
   });
 }
 
@@ -1719,8 +1878,7 @@ async function deleteSession(sessionId) {
 async function loadSession(sessionId) {
   const data = await api(`api/sessions/${encodeURIComponent(sessionId)}`);
   rail.classList.remove("menu-open");
-  mobileMenuBtn.setAttribute("aria-expanded", "false");
-  mobileMenuBtn.textContent = "세션·보고서 메뉴";
+  syncRailToggleUi();
   state.retryAction = null;
   state.lastResultSummary = null;
   state.lastResultData = null;
@@ -1729,7 +1887,6 @@ async function loadSession(sessionId) {
   state.canFollowup = Boolean(state.lastResultId);
   state.continuation = null;
   state.pendingQuestion = "";
-  state.queryMode = "new";
   state.conversation = (data.messages || []).map((message) => ({
     role: message.role,
     text: message.text,
@@ -1741,10 +1898,9 @@ async function loadSession(sessionId) {
   if (pendingMessage) {
     state.continuation = pendingMessage.continuation;
     state.pendingQuestion = pendingMessage.continuation?.question || "";
-    applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
   } else {
     queryPanel.classList.remove("awaiting-param");
-    closeParamDialog();
+    hideInlineParamForm();
   }
 
   if (data.last_result) {
@@ -1753,19 +1909,25 @@ async function loadSession(sessionId) {
       state.continuation = pendingMessage.continuation;
       state.pendingQuestion = pendingMessage.continuation?.question || "";
       syncQueryModeUi();
-      applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+      const params = pendingMessage.missing_params || pendingMessage.continuation?.missing_params || [];
+      applyPendingParamPrompt(params);
+      renderInlineParamForm(params);
     }
     return;
   }
   resetResultPanels();
   renderConversation();
   syncQueryModeUi();
+  if (pendingMessage) {
+    const params = pendingMessage.missing_params || pendingMessage.continuation?.missing_params || [];
+    applyPendingParamPrompt(params);
+    renderInlineParamForm(params);
+  }
   await loadSessions();
 }
 
 function renderMissingParams(data) {
   state.continuation = data.continuation;
-  state.queryMode = "new";
   state.pendingQuestion = data.continuation?.question || state.pendingQuestion;
   if (data.session_id) state.sessionId = data.session_id;
   if (data.messages?.length) {
@@ -1777,6 +1939,7 @@ function renderMissingParams(data) {
       continuation: message.continuation,
     }));
   } else {
+    settlePendingUserMessage(state.activeRequest?.question || state.pendingQuestion);
     state.conversation.push({
       role: "assistant",
       text: "추가 입력이 필요합니다.",
@@ -1785,14 +1948,17 @@ function renderMissingParams(data) {
       continuation: data.continuation,
     });
   }
-  stopProgress();
+  pauseProgressForParams();
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
+  sourceLabel.textContent = "추가 입력 요청";
+  resultBadges.innerHTML = "";
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
   syncQueryModeUi();
-  applyPendingParamPrompt(data.missing_params || data.continuation?.missing_params || []);
-  openParamDialog(data.missing_params || data.continuation?.missing_params || []);
+  const params = data.missing_params || data.continuation?.missing_params || [];
+  applyPendingParamPrompt(params);
+  renderInlineParamForm(params);
   loadSessions();
 }
 
@@ -1812,85 +1978,64 @@ function isManagedScopeParam(param = {}) {
   return String(param.type || "").toLowerCase() === "business_number_list" || name === "관리기업목록";
 }
 
-function paramPlaceholder(param) {
-  const key = String(param.name || param.label || "").toLowerCase();
+function inlineParamDefault(param = {}) {
+  const name = String(param.name || param.label || "").toLowerCase();
+  const { year, day } = currentDateParts();
+  if (name.includes("전월")) return { value: currentYm(-1), note: "전월 기준 기본값" };
+  if (/(년월|기준월|기간_|_ym|base_ym)/.test(name)) return { value: currentYm(), note: "현재 월 기준 기본값" };
+  if (/(기준일|날짜|date)/.test(name)) return { value: `${currentYm()}${day}`, note: "오늘 기준 기본값" };
+  if (/(기준년|연도|년도|year)/.test(name)) return { value: String(year), note: "현재 연도 기준 기본값" };
+  if (param.default !== undefined && param.default !== null && param.default !== "") {
+    return { value: String(param.default), note: "제안 기본값" };
+  }
+  return { value: "", note: "" };
+}
+
+function inlineParamPlaceholder(param = {}) {
+  const name = String(param.name || param.label || "").toLowerCase();
   if (isManagedScopeParam(param)) return "예: 123-45-67890, 234-56-78901";
-  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return `예: ${currentYm()}`;
-  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return `예: ${currentYear()}`;
-  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return `예: ${currentYear()}-${currentDateParts().month}-01`;
+  if (name === "ls" || name === "is" || name.includes("비율") || name.includes("율")) return "예: 0.3";
+  if (name.includes("기업") || name.includes("가맹점") || name.includes("대상")) return "조회 대상명을 입력하세요";
   return "값을 입력하세요";
 }
 
-function paramNaturalPlaceholder(params = []) {
-  const names = params.map((param) => String(param.name || param.label || "").toLowerCase());
-  if (params.some(isManagedScopeParam)) {
-    return "예: 123-45-67890, 234-56-78901";
-  }
-  if (names.some((name) => name.includes("ls")) || names.some((name) => name.includes("is"))) {
-    return `예: 한빛테크놀로지 ${currentYmKorean()}, LS=0.3, IS=0.3`;
-  }
-  if (names.some((name) => name.includes("가맹점") || name.includes("기업"))) {
-    return "예: 한빛테크놀로지로 해줘";
-  }
-  if (names.some((name) => name.includes("년월") || name.includes("기준월") || name.includes("ym"))) {
-    return `예: ${currentYmKorean()}로 해줘`;
-  }
-  return "예: 필요한 값을 문장으로 입력";
+function hideInlineParamForm() {
+  inlineParamForm.classList.add("hidden");
+  inlineParamFields.innerHTML = "";
 }
 
-function openParamDialog(params = []) {
-  modalReturnFocus = document.activeElement;
-  $("#paramTitle").textContent = params.length ? `필수 값 ${params.length}개 입력` : "추가 정보 입력";
-  const fields = params
+function renderInlineParamForm(params = []) {
+  const normalized = (params || []).map((param) => typeof param === "object" ? param : { name: String(param) });
+  if (!normalized.length) {
+    hideInlineParamForm();
+    return;
+  }
+  inlineParamTitle.textContent = `조회 조건 ${normalized.length}개를 확인해주세요.`;
+  inlineParamFields.innerHTML = normalized
     .map((param, index) => {
       const name = param.name || param.label || `param_${index + 1}`;
       const label = param.label || param.name || `필수 값 ${index + 1}`;
-      const detail = [param.description, param.type ? `형식: ${param.type}` : ""].filter(Boolean).join(" · ");
-      if (isManagedScopeParam(param)) {
-        return `
-          <div class="field managed-scope-field">
-            <label for="param-${index}">${escapeHtml(label)}</label>
-            ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
-            <textarea id="param-${index}" name="${escapeHtml(name)}" data-param-field rows="5" autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}"></textarea>
-            <small class="managed-scope-input-hint">사업자등록번호를 쉼표 또는 줄바꿈으로 구분해 입력하세요. 하이픈은 있어도 됩니다.</small>
-          </div>
-        `;
-      }
+      const { value, note } = inlineParamDefault(param);
+      const id = `inline-param-${index}`;
+      const hint = param.description ? `<small class="field-hint">${escapeHtml(param.description)}</small>` : "";
+      const defaultNote = note ? `<small class="field-default">${escapeHtml(note)}</small>` : "";
+      const control = isManagedScopeParam(param)
+        ? `<textarea id="${id}" name="${escapeHtml(name)}" rows="4" required autocomplete="off" placeholder="${escapeHtml(inlineParamPlaceholder(param))}">${escapeHtml(value)}</textarea>`
+        : `<input id="${id}" name="${escapeHtml(name)}" type="${["integer", "number"].includes(String(param.type || "").toLowerCase()) ? "number" : "text"}" ${String(param.type || "").toLowerCase() === "number" ? 'step="any"' : ""} value="${escapeHtml(value)}" required autocomplete="off" placeholder="${escapeHtml(inlineParamPlaceholder(param))}" />`;
       return `
         <div class="field">
-          <label for="param-${index}">${escapeHtml(label)}</label>
-          ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
-          <input id="param-${index}" name="${escapeHtml(name)}" data-param-field autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}" />
+          <label for="${id}">${escapeHtml(label)}</label>
+          ${hint}
+          ${control}
+          ${defaultNote}
         </div>
       `;
     })
     .join("");
-  paramForm.innerHTML = `
-    <div class="field param-natural">
-      <label for="param-natural-input">문장으로 답하기</label>
-      <input id="param-natural-input" name="_natural_input" autocomplete="off" placeholder="${escapeHtml(paramNaturalPlaceholder(params))}" />
-    </div>
-    <div class="param-grid">${fields || ""}</div>
-    <div class="param-actions">
-      <button type="submit">계속</button>
-      <button type="button" data-use-chat-input>질문창에 적기</button>
-    </div>
-  `;
-  paramForm.querySelector("[data-use-chat-input]")?.addEventListener("click", () => {
-    closeParamDialog();
-    questionInput.focus();
-  });
-  paramPanel.classList.remove("hidden");
-  const firstParamField = params.some(isManagedScopeParam)
-    ? paramForm.querySelector("[data-param-field]")
-    : paramForm.querySelector("#param-natural-input");
-  window.setTimeout(() => firstParamField?.focus(), 0);
-}
-
-function closeParamDialog() {
-  paramPanel.classList.add("hidden");
-  modalReturnFocus?.focus?.();
-  modalReturnFocus = null;
+  inlineParamForm.classList.remove("hidden");
+  const fields = Array.from(inlineParamForm.querySelectorAll("input, textarea"));
+  const focusTarget = fields.find((field) => !field.value.trim()) || fields[0];
+  window.setTimeout(() => focusTarget?.focus(), 0);
 }
 
 function renderBadges(data) {
@@ -2345,7 +2490,14 @@ function renderConversation() {
     .map((message, index) => {
       if (message.role === "user") turn += 1;
       const turnLabel = turn ? ` ${turn}` : "";
-      const label = message.role === "user" ? `내 질문${turnLabel}` : message.status === "error" ? "오류" : `분석 답변${turnLabel}`;
+      const label =
+        message.role === "user"
+          ? `내 질문${turnLabel}`
+          : message.status === "error"
+            ? "오류"
+            : message.status === "requires_params"
+              ? "추가 입력 요청"
+              : `분석 답변${turnLabel}`;
       const content =
         message.role === "assistant"
           ? `${renderAnswerHtml(message.text || "응답이 없습니다.")}`
@@ -2487,8 +2639,7 @@ function triggerDownloads(files) {
 }
 
 function renderSuggestions(suggestions) {
-  state.recommendedQuestions = normalizedQuestions(suggestions);
-  renderPromptSuggestionContent();
+  state.recommendedQuestions = normalizedQuestions(suggestions).slice(0, 3);
   suggestionList.innerHTML = "";
   if (!state.recommendedQuestions.length || !state.lastResultId || !state.canFollowup) {
     followupBox.classList.add("hidden");
@@ -2502,7 +2653,6 @@ function renderSuggestions(suggestions) {
     button.addEventListener("click", () => submitFollowup(item));
     suggestionList.appendChild(button);
   });
-  followupInput.value = "";
   followupBox.classList.remove("hidden");
 }
 
@@ -2511,16 +2661,13 @@ function renderResult(data, context = {}) {
   state.failedRequest = null;
   state.lastResultId = data.result_id;
   state.canFollowup = Boolean(data.columns?.length && data.rows?.length);
-  state.recommendedQuestions = normalizedQuestions(data.suggestions);
-  resetPromptSuggestionsDismissal();
+  state.recommendedQuestions = normalizedQuestions(data.suggestions).slice(0, 3);
   if (data.session_id) state.sessionId = data.session_id;
   state.continuation = null;
-  state.queryMode = context.mode === "followup" && state.canFollowup ? "followup" : "new";
+  hideInlineParamForm();
   queryPanel.classList.remove("awaiting-param");
-  renderPromptSuggestionContent();
   syncQueryModeUi();
   finishProgress();
-  closeParamDialog();
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
   setInspectorHasData(true);
@@ -2536,9 +2683,12 @@ function renderResult(data, context = {}) {
   if (data.messages?.length) {
     state.conversation = rebuildConversationFromResult(data);
   } else if (data.error) {
+    settlePendingUserMessage(context.question || data.question || state.pendingQuestion);
     state.conversation.push({ role: "assistant", text: data.error });
   } else if (context.mode === "followup") {
-    state.conversation.push({ role: "user", text: context.question });
+    if (!settlePendingUserMessage(context.question)) {
+      state.conversation.push({ role: "user", text: context.question });
+    }
     state.conversation.push({ role: "assistant", text: data.answer || "응답이 없습니다." });
   } else {
     state.conversation = rebuildConversationFromResult(data);
@@ -2576,10 +2726,10 @@ function renderResult(data, context = {}) {
 }
 
 async function submitFollowup(question, options = {}) {
-  const followupQuestion = String(question || followupInput.value || "").trim();
+  const followupQuestion = String(question || "").trim();
   if (!followupQuestion) {
     showToast("후속 질문을 입력해주세요.");
-    followupInput.focus();
+    questionInput.focus();
     return;
   }
   if (!state.lastResultId || !state.canFollowup) {
@@ -2587,8 +2737,8 @@ async function submitFollowup(question, options = {}) {
     return;
   }
   if (state.isBusy) return;
+  state.pendingQuestion = followupQuestion;
   setBusy(true);
-  setFollowupBusy(true);
   if (state.llmReady === false) {
     await loadHealth();
   }
@@ -2596,18 +2746,16 @@ async function submitFollowup(question, options = {}) {
     const message = llmUnavailableMessage();
     state.failedRequest = { kind: "followup", question: followupQuestion };
     state.retryAction = () => submitFollowup(followupQuestion, options);
-    showInlineError(message, "모델 연결 오류");
+    showInlineError(message, "모델 연결 오류", { appendMessage: true });
     showToast("모델 서버 확인 필요");
     setBusy(false);
-    setFollowupBusy(false);
     return;
   }
 
-  state.pendingQuestion = followupQuestion;
   state.retryAction = null;
   clearInlineError();
   const request = beginActiveRequest("followup", followupQuestion, options.restoreTarget || "followup");
-  startProgress([], false, followupProgressLabels);
+  startProgress([], followupProgressLabels);
   let receivedTerminalEvent = false;
   try {
     await streamApi(
@@ -2639,16 +2787,17 @@ async function submitFollowup(question, options = {}) {
       restoreCancelledDraft(request);
     } else {
       stopProgress();
+      settlePendingUserMessage(followupQuestion);
+      renderConversation();
       const message = friendlyErrorMessage(error, "후속 질문 처리 중 오류가 발생했습니다.");
       state.failedRequest = { kind: "followup", question: followupQuestion };
       state.retryAction = () => submitFollowup(followupQuestion, options);
-      showInlineError(message, "후속 질문 처리 오류");
+      showInlineError(message, "후속 질문 처리 오류", { appendMessage: true });
       showToast(message);
     }
   } finally {
     endActiveRequest(request);
     setBusy(false);
-    setFollowupBusy(false);
     loadSessions();
   }
 }
@@ -2672,8 +2821,8 @@ async function submitQuestion(payload) {
   state.retryAction = null;
   clearInlineError();
   const requestQuestion = payload.question || state.pendingQuestion || "";
-  const request = beginActiveRequest("query", requestQuestion, "composer");
-  startProgress([], !state.lastResultData);
+  const request = beginActiveRequest("query", payload.display_question || requestQuestion, "composer");
+  startProgress();
   let receivedTerminalEvent = false;
   try {
     await streamApi(
@@ -2708,6 +2857,8 @@ async function submitQuestion(payload) {
       restoreCancelledDraft(request);
     } else {
       stopProgress();
+      settlePendingUserMessage(request.question);
+      renderConversation();
       const message = friendlyErrorMessage(error, "질문 처리 중 오류가 발생했습니다.");
       state.failedRequest = { kind: "query", question: requestQuestion };
       state.retryAction = () => submitQuestion(payload);
@@ -2726,29 +2877,27 @@ function handleSubmit() {
   if (!question) {
     showToast(state.continuation ? "추가 정보를 입력해주세요." : "질문을 입력해주세요.");
     questionInput.focus();
-    showPromptSuggestions();
     return;
   }
   if (question.toLowerCase() === "/tables") {
-    hidePromptSuggestions();
     questionInput.value = "";
     autoGrowInput();
     updatePromptCoach();
     openTableCatalog();
     return;
   }
-  hidePromptSuggestions();
   downloadList.innerHTML = "";
   questionInput.value = "";
   autoGrowInput();
   if (state.continuation) {
     submitQuestion({
       question: state.continuation.question || state.pendingQuestion || "추가 입력",
+      display_question: question,
       session_id: state.sessionId,
       params: { _natural_input: question },
       continuation: state.continuation,
     });
-  } else if (state.queryMode === "followup" && state.lastResultId && state.canFollowup) {
+  } else if (state.lastResultId && state.canFollowup) {
     state.pendingQuestion = question;
     submitFollowup(question, { restoreTarget: "composer" });
   } else {
@@ -2757,7 +2906,6 @@ function handleSubmit() {
   }
 }
 
-submitBtn.addEventListener("click", handleSubmit);
 cancelRequestBtn.addEventListener("click", cancelActiveRequest);
 
 retryBtn.addEventListener("click", () => {
@@ -2771,9 +2919,6 @@ retryBtn.addEventListener("click", () => {
 editQuestionBtn.addEventListener("click", () => {
   const failedRequest = state.failedRequest;
   const draft = failedRequest?.question || state.pendingQuestion;
-  if (failedRequest?.kind === "followup" && canUseFollowupMode()) {
-    setQueryMode("followup");
-  }
   if (draft) {
     questionInput.value = draft;
     autoGrowInput();
@@ -2788,24 +2933,12 @@ questionInput.addEventListener("input", () => {
   autoGrowInput();
   updatePromptCoach();
 });
-questionInput.addEventListener("focus", showPromptSuggestions);
-questionInput.addEventListener("click", showPromptSuggestions);
 
 questionInput.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    hidePromptSuggestions();
-    return;
-  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     handleSubmit();
   }
-});
-
-hideSuggestionsBtn?.addEventListener("click", (event) => {
-  event.preventDefault();
-  hidePromptSuggestions({ dismiss: true });
-  questionInput.focus();
 });
 
 document.addEventListener("click", (event) => {
@@ -2821,19 +2954,26 @@ answerBox.addEventListener("click", (event) => {
   copyText(message?.text || "", "메시지를 복사했습니다.");
 });
 
-paramForm.addEventListener("submit", (event) => {
+inlineParamForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const params = {};
-  new FormData(paramForm).forEach((value, key) => {
-    if (String(value).trim()) params[key] = String(value).trim();
-  });
-  if (!Object.keys(params).length) {
-    showToast("필요한 값을 입력하거나 질문창에 이어서 적어주세요.");
-    paramForm.querySelector("input")?.focus();
+  const emptyField = Array.from(inlineParamForm.querySelectorAll("input, textarea"))
+    .find((field) => !field.value.trim());
+  if (emptyField) {
+    showToast("비어 있는 필수 값을 입력해주세요.");
+    emptyField.focus();
     return;
   }
+  const params = {};
+  new FormData(inlineParamForm).forEach((value, key) => {
+    if (String(value).trim()) params[key] = String(value).trim();
+  });
+  const displayQuestion = Object.entries(params)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(" · ");
+  hideInlineParamForm();
   submitQuestion({
-    question: state.pendingQuestion || questionInput.value.trim(),
+    question: state.continuation?.question || state.pendingQuestion || "추가 입력",
+    display_question: displayQuestion,
     session_id: state.sessionId,
     params,
     continuation: state.continuation,
@@ -2845,21 +2985,9 @@ savedQueryForm.addEventListener("submit", (event) => {
   runSavedQuery();
 });
 
-cancelParamsBtn.addEventListener("click", () => {
-  closeParamDialog();
-  questionInput.focus();
-});
-
 cancelSavedQueryBtn.addEventListener("click", () => {
   closeSavedQueryDialog();
   questionInput.focus();
-});
-
-paramPanel.addEventListener("click", (event) => {
-  if (event.target === paramPanel) {
-    closeParamDialog();
-    questionInput.focus();
-  }
 });
 
 savedQueryPanel.addEventListener("click", (event) => {
@@ -2870,13 +2998,11 @@ savedQueryPanel.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  const activeModal = !paramPanel.classList.contains("hidden")
-    ? paramPanel
-    : !savedQueryPanel.classList.contains("hidden")
-      ? savedQueryPanel
-      : appEl.classList.contains("inspector-mobile-open")
-        ? inspector
-        : null;
+  const activeModal = !savedQueryPanel.classList.contains("hidden")
+    ? savedQueryPanel
+    : appEl.classList.contains("inspector-mobile-open")
+      ? inspector
+      : null;
   if (event.key === "Tab" && activeModal) {
     const focusable = Array.from(
       activeModal.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'),
@@ -2893,40 +3019,16 @@ document.addEventListener("keydown", (event) => {
       }
     }
   }
-  if (event.key === "Escape" && !paramPanel.classList.contains("hidden")) {
-    closeParamDialog();
-    questionInput.focus();
-  } else if (event.key === "Escape" && !savedQueryPanel.classList.contains("hidden")) {
+  if (event.key === "Escape" && !savedQueryPanel.classList.contains("hidden")) {
     closeSavedQueryDialog();
     questionInput.focus();
   } else if (event.key === "Escape" && appEl.classList.contains("inspector-mobile-open")) {
-    closeCompactInspector({ restoreFocus: true });
+    closeInspector({ restoreFocus: true });
   }
-});
-
-followupBtn.addEventListener("click", () => submitFollowup());
-
-followupInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    submitFollowup();
-  }
-});
-
-clearContextBtn.addEventListener("click", () => {
-  setQueryMode("new");
-  questionInput.focus();
-  showToast("직전 결과 맥락을 해제했습니다. 새 조회로 실행합니다.");
 });
 
 copyTableBtn.addEventListener("click", () => copyText(resultTableAsTsv(), "표를 복사했습니다."));
 copySqlBtn.addEventListener("click", () => copyText(state.lastResultData?.sql || sqlBox.textContent, "SQL을 복사했습니다."));
-
-mobileMenuBtn.addEventListener("click", () => {
-  const expanded = rail.classList.toggle("menu-open");
-  mobileMenuBtn.setAttribute("aria-expanded", String(expanded));
-  mobileMenuBtn.textContent = expanded ? "세션·보고서 메뉴 닫기" : "세션·보고서 메뉴";
-});
 
 newSessionBtn.addEventListener("click", async () => {
   try {
@@ -2942,10 +3044,6 @@ newSessionBtn.addEventListener("click", async () => {
 });
 
 saveQueryBtn.addEventListener("click", saveCurrentQuery);
-
-modeButtons.forEach((button) => {
-  button.addEventListener("click", () => setQueryMode(button.dataset.queryMode));
-});
 
 clearBtn.addEventListener("click", () => {
   newSessionBtn.click();
@@ -2971,8 +3069,9 @@ function updateInspectorButton(expanded) {
   inspectorToggle.title = expanded ? "상세 패널 숨기기" : "상세 패널 열기";
 }
 
-function closeCompactInspector({ restoreFocus = false } = {}) {
+function closeInspector({ restoreFocus = false } = {}) {
   appEl.classList.remove("inspector-mobile-open");
+  if (!compactInspectorMedia.matches) appEl.classList.add("inspector-collapsed");
   inspector.removeAttribute("role");
   inspector.removeAttribute("aria-modal");
   updateInspectorButton(false);
@@ -3012,7 +3111,7 @@ inspectorToggle.addEventListener("click", () => {
   updateInspectorButton(!collapsed);
 });
 
-inspectorClose.addEventListener("click", () => closeCompactInspector({ restoreFocus: true }));
+inspectorClose.addEventListener("click", () => closeInspector({ restoreFocus: true }));
 compactInspectorMedia.addEventListener?.("change", syncInspectorViewport);
 syncInspectorViewport();
 
@@ -3051,9 +3150,12 @@ function openTableCatalog() {
   const wasOpen = tableCatalogPanel.open;
   if (tableCatalogSearch) tableCatalogSearch.value = "";
   tableCatalogPanel.open = true;
-  rail.classList.add("menu-open");
-  mobileMenuBtn.setAttribute("aria-expanded", "true");
-  mobileMenuBtn.textContent = "세션·보고서 메뉴 닫기";
+  if (compactRailMedia.matches) {
+    rail.classList.add("menu-open");
+    syncRailToggleUi();
+  } else {
+    setRailCollapsed(false);
+  }
   if (wasOpen) loadTableCatalog();
   window.requestAnimationFrame(() => tableCatalogSearch?.focus());
 }

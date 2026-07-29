@@ -78,6 +78,10 @@ def test_semantic_contracts_route_paraphrases_without_exact_verified_query_text(
             "지난 12개월 동안 문 닫은 교촌치킨 점포 수는?",
             "recent_closed_brand_merchant_count",
         ),
+        (
+            "2026년 4월 현재 신용카드 없이 기업 체크카드만 갖고 있고 올해 월평균 5천만원 넘게 쓴 기업",
+            "corporate_check_card_only_high_monthly_avg",
+        ),
     ],
 )
 def test_semantic_contracts_select_bound_verified_queries(
@@ -161,17 +165,17 @@ def test_global_contract_forbids_treating_payment_institution_as_account_type() 
 @pytest.mark.parametrize(
     ("question", "expected_code", "expected_tables"),
     [
-        ("2026년 대기업 기업카드 이용금액 뽑아줘", "1", ["tmdaa1d01", "tmdaa3e16"]),
+        ("2026년 대기업 기업카드 이용금액 뽑아줘", "1", ["tbdaaat01", "tmdaa3e16"]),
         (
             "2026년 현재 기준 대기업 기업카드 이용금액 뽑아줘",
             "1",
             ["tbdaaat01", "tmdaa3e16"],
         ),
-        ("작년 대기업 기업카드 이용금액 뽑아줘", "1", ["tmdaa1d01", "tmdaa3e16"]),
-        ("작년 중소기업 기업카드 이용금액 뽑아줘", "2", ["tmdaa1d01", "tmdaa3e16"]),
-        ("지난해 공공기업 법인카드 사용액 합계", "7", ["tmdaa1d01", "tmdaa3e16"]),
-        ("2025년 영세기업 기업카드 이용금액", "6", ["tmdaa1d01", "tmdaa3e16"]),
-        ("2025년 외부감사대상 중소기업 법인카드 사용액", "4", ["tmdaa1d01", "tmdaa3e16"]),
+        ("작년 대기업 기업카드 이용금액 뽑아줘", "1", ["tbdaaat01", "tmdaa3e16"]),
+        ("작년 중소기업 기업카드 이용금액 뽑아줘", "2", ["tbdaaat01", "tmdaa3e16"]),
+        ("지난해 공공기업 법인카드 사용액 합계", "7", ["tbdaaat01", "tmdaa3e16"]),
+        ("2025년 영세기업 기업카드 이용금액", "6", ["tbdaaat01", "tmdaa3e16"]),
+        ("2025년 외부감사대상 중소기업 법인카드 사용액", "4", ["tbdaaat01", "tmdaa3e16"]),
     ],
 )
 def test_enterprise_size_usage_routes_to_safe_semantic_contract(
@@ -182,16 +186,18 @@ def test_enterprise_size_usage_routes_to_safe_semantic_contract(
     candidates = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
 
     assert candidates
+    expected_vq = "enterprise_size_corporate_card_usage_by_current_size"
     assert candidates[0]["name"] == "enterprise_size_corporate_card_usage"
-    assert candidates[0]["source_tables"] == ["tbdaaat01", "tmdaa1d01", "tmdaa3e16"]
-    assert candidates[0]["support_status"] == "generative"
+    assert candidates[0]["source_tables"] == expected_tables
+    assert candidates[0]["verified_query"] == expected_vq
+    assert candidates[0]["support_status"] == "supported"
     assert workflow._reference_domain_by_rule(question) == "card_usage"
     assert workflow._rule_rank_tables(question) == expected_tables
     assert resolve_semantic_attribute_value(SCHEMA, "enterprise_size", question) == expected_code
 
     selection = workflow.select_tool({"question": question, "domain_context": ""})
-    assert selection["selected_capability_type"] == "semantic_generation"
-    assert selection["selected_capability_name"] == "enterprise_size_corporate_card_usage"
+    assert selection["selected_capability_type"] == "verified_query"
+    assert selection["selected_capability_name"] == expected_vq
 
 
 def test_enterprise_size_attribute_uses_verified_business_codebook() -> None:
@@ -227,7 +233,7 @@ def test_enterprise_size_attribute_uses_verified_business_codebook() -> None:
         "tmdaa1d01",
     }
     assert '"1": "대기업"' in context
-    assert "현재 고객 마스터가 아니라 동일 기준년월" in context
+    assert "tbdaaat01의 현재 기업규모" in context
 
 
 @pytest.mark.parametrize(
@@ -254,63 +260,126 @@ def test_current_enterprise_size_list_uses_customer_master(
     assert selection["selected_capability_name"] == "current_enterprise_size_customer_list"
 
 
-def test_explicit_current_snapshot_sql_prompt_includes_master_join_contract() -> None:
-    question = "2026년 현재 기준 대기업 기업카드 이용금액 뽑아줘"
-    selected_tables = workflow._rule_rank_tables(question)
-    state = workflow._new_initial_state(question)
+@pytest.mark.parametrize(
+    (
+        "question",
+        "expected_vq",
+        "expected_tables",
+        "expected_join",
+        "expected_start",
+        "expected_end",
+        "expected_code",
+    ),
+    [
+        (
+            "2026년 대기업 기업카드 이용금액 뽑아줘",
+            "enterprise_size_corporate_card_usage_by_current_size",
+            ["tbdaaat01", "tmdaa3e16"],
+            'cm."고객식별자" = cs."고객식별자"',
+            "202601",
+            "202612",
+            "1",
+        ),
+        (
+            "2025년 중소기업 기업카드 이용금액 뽑아줘",
+            "enterprise_size_corporate_card_usage_by_current_size",
+            ["tbdaaat01", "tmdaa3e16"],
+            'cm."고객식별자" = cs."고객식별자"',
+            "202501",
+            "202512",
+            "2",
+        ),
+        (
+            "2026년 현재 기준 대기업 기업카드 이용금액 뽑아줘",
+            "enterprise_size_corporate_card_usage_by_current_size",
+            ["tbdaaat01", "tmdaa3e16"],
+            'cm."고객식별자" = cs."고객식별자"',
+            "202601",
+            "202612",
+            "1",
+        ),
+    ],
+)
+def test_enterprise_size_usage_vq_applies_semantic_period_and_code(
+    question: str,
+    expected_vq: str,
+    expected_tables: list[str],
+    expected_join: str,
+    expected_start: str,
+    expected_end: str,
+    expected_code: str,
+) -> None:
+    state = {"question": question, "domain_context": "", "user_provided_params": {}}
+    state.update(workflow.select_tool(state))
+
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        result = workflow.extract_and_apply_params(state)
+
+    assert state["matched_query_name"] == expected_vq
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {
+        "기간_시작": expected_start,
+        "기간_종료": expected_end,
+        "기업규모구분코드": expected_code,
+    }
+    assert expected_join in result["final_sql"]
+    assert "'{기업규모구분코드}'" not in result["final_sql"]
+    assert not workflow._validate_sql_against_schema(result["final_sql"], expected_tables)
+
+
+def test_enterprise_size_usage_repairs_common_small_model_sql_typos() -> None:
+    sql = f"""WITH
+Params AS
+  (SELECT ‘202601’ AS “시작월”,
+          “202612” AS “종료월”),
+Customer _month_size AS
+  (SELECT “기준년월”, “고객식별자”,
+          MAX(“기업규모구분코드”) AS “기업규모구분코드”
+     FROM {workflow.DB_SCHEMA_PREFIX}tmdaa1d01
+     CROSS JOIN params p
+     WHERE “기준년월” BETWEEN p.“시작월” AND p.“종료월”
+     GROUP BY “기준년월”, “고객식별자”
+     HAVING COUNT(DISTINCT. “기업규모구분코드”) = 1),
+card_customer_month AS
+  (SELECT “기준년월”, “고객식별자”,
+          SUM(COALESCE(“금월이용합계금액”, 0)) AS “월이용금액”
+     FROM {workflow.DB_SCHEMA_PREFIX}tmdaa3e16
+     CROSS JOIN params p
+     WHERE “개인기업구분코드” = ‘2’
+       AND “기준년월” BETWEEN p.“시작월” AND p.“종료월”
+     GROUP BY “기준년월”, “고객식별자”)
+SELECT cm.“기준년월”,
+       SUM(cm.“월이용금액”) AS “법인카드월이용금액”
+FROM card_customer_month cm
+JOIN customer_month_size cs
+  ON cm.“기준년월” = cs.“기준년월”
+ AND cm.“고객식별자” = cs.“고객식별자”
+WHERE cs.“기업규모구분코드” = ‘1’
+GROUP BY cm.“기준년월”
+ORDER BY cm.“기준년월”"""
+    state = workflow._new_initial_state("2026년 대기업 기업카드 이용금액 뽑아줘")
     state.update(
         {
             "selected_domain": "card_usage",
-            "selected_tables": selected_tables,
-            "table_details": workflow._table_details(selected_tables, question),
+            "selected_tables": ["tmdaa1d01", "tmdaa3e16"],
+            "generated_sql": sql,
         }
     )
-    captured: dict[str, str] = {}
 
-    def fake_llm(prompt: str, **_: object) -> str:
-        captured["prompt"] = prompt
-        return "SELECT 1"
+    with patch.object(workflow, "_call_llm", return_value="VALID"):
+        result = workflow.validate_sql(state)
 
-    with patch.object(workflow, "_call_llm", side_effect=fake_llm):
-        workflow.generate_sql(state)
+    prepared = result["final_sql"]
 
-    prompt = captured["prompt"]
-    assert selected_tables == ["tbdaaat01", "tmdaa3e16"]
-    assert "current_customer_size CTE" in prompt
-    assert "tbdaaat01.\"고객식별자\" = tmdaa3e16.\"고객식별자\"" in prompt
-    assert "대기업은 기업규모구분코드 = '1'" in prompt
-
-
-def test_year_period_sql_prompt_includes_monthly_snapshot_join_contract() -> None:
-    question = "2026년 대기업 기업카드 이용금액 뽑아줘"
-    selected_tables = workflow._rule_rank_tables(question)
-    state = workflow._new_initial_state(question)
-    state.update(
-        {
-            "selected_domain": "card_usage",
-            "selected_tables": selected_tables,
-            "table_details": workflow._table_details(selected_tables, question),
-        }
-    )
-    captured: dict[str, str] = {}
-
-    def fake_llm(prompt: str, **_: object) -> str:
-        captured["prompt"] = prompt
-        return "SELECT 1"
-
-    with patch.object(workflow, "_call_llm", side_effect=fake_llm):
-        workflow.generate_sql(state)
-
-    prompt = captured["prompt"]
-    assert selected_tables == ["tmdaa1d01", "tmdaa3e16"]
-    assert "customer_month_size CTE" in prompt
+    assert result["is_valid"] is True
+    assert "Customer_month_size AS" in prepared
+    assert 'COUNT(DISTINCT "기업규모구분코드")' in prepared
+    assert "'202601'" in prepared
+    assert "'202612'" in prepared
+    assert not any(mark in prepared for mark in "‘’“”")
     assert (
-        'tmdaa1d01."기준년월" = tmdaa3e16."기준년월"'
-        in prompt
-    )
-    assert (
-        'tmdaa1d01."고객식별자" = tmdaa3e16."고객식별자"'
-        in prompt
+        workflow.prepare_sql_for_backend('SELECT \'label "202612"\'')
+        == 'SELECT \'label "202612"\''
     )
 
 

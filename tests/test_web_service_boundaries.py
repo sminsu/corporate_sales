@@ -9,6 +9,26 @@ import web_service
 from text2sql_agent import workflow
 
 
+def test_progress_payload_includes_public_routing_context() -> None:
+    payload = web_service._progress_payload(
+        "route_domain",
+        web_service.CompatibleQueryRequest(query="매출 알려줘"),
+        {
+            "question_type": "need_sql",
+            "selected_domain": "sales",
+            "domain_candidates": [{"domain": "sales", "score": 0.91}],
+            "selected_capability_type": "tool",
+            "selected_capability_name": "sales_summary",
+            "selected_tool": "sales_summary",
+        },
+    )
+
+    assert payload["data"]["selected_domain"] == "sales"
+    assert payload["data"]["domain_candidates"] == [{"domain": "sales", "score": 0.91}]
+    assert payload["data"]["selected_capability_type"] == "tool"
+    assert payload["data"]["selected_capability_name"] == "sales_summary"
+
+
 def test_health_endpoint_does_not_expose_provider_or_internal_details() -> None:
     sensitive_url = "http://10.75.221.91:13086"
     sensitive_endpoint = "/api/v2/openai/chat/completions"

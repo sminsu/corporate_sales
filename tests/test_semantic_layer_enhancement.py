@@ -107,6 +107,64 @@ def test_source_inventory_matches_every_physical_business_column() -> None:
     assert source_total == business_total + excluded_total
 
 
+def test_encrypted_customer_table_matches_source_contract_and_stays_restricted() -> None:
+    table = _raw_table("tbdaaat18")
+    columns = {column["name"]: column for column in _business_columns(table)}
+    expected_physical_types = {
+        "고객식별자": "VARCHAR2(10)",
+        "고객관리번호": "VARCHAR2(5)",
+        "실적기준년월일": "VARCHAR2(8)",
+        "회원일련번호": "VARCHAR2(8)",
+        "고객고유번호평문길이": "NUMBER(3)",
+        "고객고유번호": "VARCHAR2(48)",
+        "주민등록번호": "VARCHAR2(24)",
+        "주민사업자등록번호": "VARCHAR2(24)",
+        "고객명": "VARCHAR2(88)",
+        "영문고객명": "VARCHAR2(88)",
+        "세대주명": "VARCHAR2(88)",
+        "고객전자주소": "VARCHAR2(176)",
+        "휴대폰번호": "VARCHAR2(48)",
+        "고객대표전화지역번호": "VARCHAR2(24)",
+        "고객대표전화번호": "VARCHAR2(48)",
+        "고객자택전화번호": "VARCHAR2(48)",
+        "고객직장전화번호": "VARCHAR2(48)",
+        "자택상세주소": "VARCHAR2(216)",
+        "직장상세주소": "VARCHAR2(216)",
+        "고객대표상세주소": "VARCHAR2(216)",
+        "계좌번호": "VARCHAR2(48)",
+        "BC카드결제계좌번호": "VARCHAR2(48)",
+    }
+
+    assert table["korean_name"] == "고객회원카드 (고객암호화정보)"
+    assert table["primary_key"] == ["고객식별자", "고객관리번호"]
+    assert table["semantic_visibility"] == "restricted"
+    assert table["data_classification"] == "restricted_personal_information"
+    assert set(columns) == set(expected_physical_types)
+    assert {
+        name: column["physical_data_type"]
+        for name, column in columns.items()
+    } == expected_physical_types
+    assert columns["고객고유번호평문길이"]["default"] == 0
+    assert columns["고객고유번호평문길이"] in table["dimensions"]
+    assert table.get("measures", []) == []
+    assert next(
+        column for column in table["time_dimensions"] if column["name"] == "실적기준년월일"
+    )["role"] == "snapshot_date"
+    assert table["entity_occurrence_rules"] == {
+        "insert": "신규고객 생성 시 적재",
+        "update": "주소·연락처·결제 관련 사항 등 변동 시 적재",
+        "delete": "해당 없음",
+    }
+    assert {
+        "주민등록번호",
+        "고객전자주소",
+        "휴대폰번호",
+        "고객대표상세주소",
+        "계좌번호",
+        "BC카드결제계좌번호",
+    } <= set(table["restricted_columns"])
+
+
 def test_all_safe_paths_have_valid_endpoints_and_quoted_korean_join_columns() -> None:
     paths = RAW_SEMANTIC["semantic_join_graph"]["safe_paths"]
     entities = {entity["name"]: entity for entity in RAW_SEMANTIC["semantic_entities"]}

@@ -1083,7 +1083,7 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
         params["limit"] = min(max(int(limit_match.group(1)), 1), 500)
 
     amount_specs = {
-        "월평균금액": ("월평균", "평균 이용금액", "평균금액"),
+        "월평균금액": ("월평균", "월 평균", "평균 이용금액", "평균금액"),
         "월매출금액": ("월매출", "월 매출", "매출액", "매출금액"),
         "한도금액": ("총한도", "한도금액", "한도"),
     }

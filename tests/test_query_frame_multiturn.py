@@ -158,6 +158,224 @@ def test_new_metric_reroutes_domain_and_tables_but_rewrite_keeps_them() -> None:
     assert rewrite_state["query_frame"]["time"]["expressions"] == ["전월"]
 
 
+def test_popeyes_five_year_count_trend_reroutes_to_new_sql_and_keeps_brand_context() -> None:
+    question = "지난 5년간 파파이스 가맹점 수 변동 추이를 알려주세요"
+    result = {
+        "question": "파파이스 가맹점 수 알려줘",
+        "selected_domain": "merchant_sales",
+        "selected_tables": ["tbdaadt01"],
+        "table_details": "name: tbdaadt01",
+        "final_sql": """
+            SELECT COUNT(DISTINCT m."가맹점번호") AS "가맹점수"
+            FROM card_system.tbdaadt01 m
+            WHERE LOWER(m."가맹점명") LIKE LOWER('%파파이스%')
+        """,
+        "query_columns": ["가맹점수"],
+        "query_rows": [(42,)],
+        "answer": "파파이스 가맹점은 42개입니다.",
+        "analysis_history": [],
+    }
+    frame = build_query_frame(result)
+    resolution = {
+        "relation": "refine_query",
+        "source_strategy": "rediscover",
+        "resolved_question": question,
+        "reason": "현재 단일 집계 결과에는 5년 시계열이 없음",
+        "used_llm": True,
+    }
+    plan = plan_followup(
+        question,
+        result["query_columns"],
+        result["query_rows"],
+        query_frame=frame,
+        result_scope=frame["result_scope"],
+        context_resolution=resolution,
+    )
+    state = web_service._followup_query_state(result, question, plan)
+
+    assert frame["entities"] == [{"column": "가맹점명", "value": "파파이스"}]
+    assert plan["mode"] == "new_sql_visualization"
+    assert plan["requires_sql"] is True
+    assert plan["route_reason"] == "new_time_series_requires_reroute"
+    assert plan["context_relation"] == "refine_query"
+    assert state["selected_domain"] == ""
+    assert state["selected_tables"] == []
+    assert state["query_frame"]["time"]["expressions"] == ["지난 5년간"]
+    context = workflow._multiturn_sql_context(state)
+    assert "가맹점명=파파이스" in context
+    assert "지난 5년간" in context
+    assert question in context
+
+
+def test_llm_context_resolution_reconstructs_elliptical_followup_for_sql() -> None:
+    result = _base_result()
+    result["query_frame"] = build_query_frame(result)
+    result["analysis_history"] = [
+        {
+            "question": "상위 가맹점만 보여줘",
+            "answer": "상위 가맹점 결과입니다.",
+            "mode": "transform",
+        }
+    ]
+    question = "그럼 버거킹은?"
+    preliminary = plan_followup(
+        question,
+        COLUMNS,
+        ROWS,
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+    )
+    llm_result = """{
+      "relation": "refine_query",
+      "source_strategy": "same_source",
+      "resolved_question": "2025년 2월 버거킹 가맹점별 매출을 보여줘",
+      "reason": "기존 기간과 지표를 유지하고 브랜드만 교체"
+    }"""
+
+    with patch.object(web_service.agent, "_call_llm", return_value=llm_result) as call:
+        resolution = web_service._resolve_followup_context(result, question, preliminary)
+
+    plan = plan_followup(
+        question,
+        COLUMNS,
+        ROWS,
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+        context_resolution=resolution,
+    )
+    state = web_service._followup_query_state(result, question, plan)
+    prompt = call.call_args.args[0]
+
+    assert "가맹점명=도미노피자" in prompt
+    assert "상위 가맹점만 보여줘" in prompt
+    assert resolution["used_llm"] is True
+    assert plan["mode"] == "rewrite_sql"
+    assert plan["route_reason"] == "context_change_requires_sql"
+    assert state["question"] == "2025년 2월 버거킹 가맹점별 매출을 보여줘"
+    assert state["followup_question"] == question
+    assert state["selected_tables"] == ["tmdaa5e11"]
+
+
+def test_llm_context_resolution_separates_independent_new_question() -> None:
+    result = _base_result()
+    frame = build_query_frame(result)
+    resolution = {
+        "relation": "new_query",
+        "source_strategy": "rediscover",
+        "resolved_question": "법인카드 연체 고객 현황을 알려줘",
+        "reason": "기존 가맹점 매출과 독립된 질문",
+        "used_llm": True,
+    }
+    plan = plan_followup(
+        "법인카드 연체 고객 현황을 알려줘",
+        COLUMNS,
+        ROWS,
+        query_frame=frame,
+        result_scope=frame["result_scope"],
+        context_resolution=resolution,
+    )
+    state = web_service._followup_query_state(
+        result,
+        "법인카드 연체 고객 현황을 알려줘",
+        plan,
+    )
+
+    assert plan["mode"] == "new_sql"
+    assert plan["route_reason"] == "independent_question_requires_new_query"
+    assert plan["next_query_frame"].get("entities") is None
+    assert state["selected_domain"] == ""
+    assert state["selected_tables"] == []
+    assert state["previous_question"] == ""
+    assert state["previous_sql"] == ""
+    assert state["skip_tool_selection"] is False
+    assert state["skip_verified_query_matching"] is False
+    assert state["question"] == "법인카드 연체 고객 현황을 알려줘"
+
+
+def test_invalid_context_router_output_falls_back_to_deterministic_plan() -> None:
+    result = _base_result()
+    preliminary = plan_followup(
+        "그럼 전월은?",
+        COLUMNS,
+        ROWS,
+        query_frame=build_query_frame(result),
+    )
+
+    with patch.object(web_service.agent, "_call_llm", return_value="잘 모르겠습니다"):
+        resolution = web_service._resolve_followup_context(
+            result,
+            "그럼 전월은?",
+            preliminary,
+        )
+
+    assert resolution["used_llm"] is False
+    assert resolution["relation"] == "refine_query"
+    assert resolution["source_strategy"] == "same_source"
+
+
+def test_completed_followup_becomes_context_for_the_next_turn() -> None:
+    result = _base_result()
+    frame = build_query_frame(result)
+    first_question = "그럼 버거킹은?"
+    first_resolution = {
+        "relation": "refine_query",
+        "source_strategy": "same_source",
+        "resolved_question": "2025년 2월 버거킹 가맹점별 매출을 보여줘",
+        "reason": "브랜드 변경",
+        "used_llm": True,
+    }
+    first_plan = plan_followup(
+        first_question,
+        COLUMNS,
+        ROWS,
+        query_frame=frame,
+        result_scope=frame["result_scope"],
+        context_resolution=first_resolution,
+    )
+    burger_result = {
+        **result,
+        "final_sql": SQL.replace("도미노피자", "버거킹"),
+        "answer": "버거킹 매출 결과입니다.",
+    }
+    completed = web_service._finalize_followup_result(
+        result,
+        first_question,
+        burger_result,
+        burger_result["answer"],
+        first_plan["mode"],
+        "후속 SQL",
+        first_plan,
+    )
+    next_question = "그중 가장 높은 곳은?"
+    preliminary = plan_followup(
+        next_question,
+        COLUMNS,
+        ROWS,
+        query_frame=completed["query_frame"],
+        result_scope=completed["result_scope"],
+    )
+    llm_result = """{
+      "relation": "existing_result",
+      "source_strategy": "current_result",
+      "resolved_question": "2025년 2월 버거킹 가맹점별 매출 결과에서 매출이 가장 높은 가맹점을 알려줘",
+      "reason": "현재 결과 정렬로 답변 가능"
+    }"""
+
+    with patch.object(web_service.agent, "_call_llm", return_value=llm_result) as call:
+        resolution = web_service._resolve_followup_context(
+            completed,
+            next_question,
+            preliminary,
+        )
+
+    prompt = call.call_args.args[0]
+    assert completed["question"] == first_resolution["resolved_question"]
+    assert completed["query_frame"]["entities"] == [{"column": "가맹점명", "value": "버거킹"}]
+    assert "가맹점명=버거킹" in prompt
+    assert first_question in prompt
+    assert resolution["relation"] == "existing_result"
+
+
 def test_query_execution_records_raw_and_displayed_result_scope() -> None:
     rows = [(index,) for index in range(120)]
     state = workflow._new_initial_state("값을 보여줘")

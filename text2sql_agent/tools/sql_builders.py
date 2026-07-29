@@ -138,9 +138,29 @@ def _month_end_yyyymmdd(yyyymm: str) -> str:
 
 
 VQ_PARAM_SPECS: dict[str, list[dict]] = {
+    "corporate_card_active_no_usage_members": [
+        {"name": "기준년월", "type": "string", "description": "카드 보유 여부를 판단할 기준년월 (YYYYMM)"},
+        {"name": "조회개월수", "type": "integer", "description": "기준월을 포함한 무실적 판정 개월 수"},
+        {"name": "limit", "type": "integer", "description": "상세 목록 제한 건수"},
+    ],
+    "corporate_check_card_only_high_monthly_avg": [
+        {"name": "기준년월", "type": "string", "description": "보유·이용과 월평균을 판단할 기준년월 (YYYYMM)"},
+        {"name": "월평균금액", "type": "integer", "description": "월평균 체크카드 이용금액 기준"},
+        {"name": "limit", "type": "integer", "description": "상세 목록 제한 건수"},
+    ],
     "monthly_corporate_card_usage": [
         {"name": "기간_시작", "type": "string", "description": "시작 기준년월 (YYYYMM)"},
         {"name": "기간_종료", "type": "string", "description": "종료 기준년월 (YYYYMM)"},
+    ],
+    "enterprise_size_corporate_card_usage_by_current_size": [
+        {"name": "기간_시작", "type": "string", "description": "시작 기준년월 (YYYYMM)"},
+        {"name": "기간_종료", "type": "string", "description": "종료 기준년월 (YYYYMM)"},
+        {
+            "name": "기업규모구분코드",
+            "type": "string",
+            "description": "enterprise_size 코드북의 기업규모 코드",
+            "semantic_attribute": "enterprise_size",
+        },
     ],
     "daily_sales_amount": [
         {"name": "기간_시작", "type": "string", "description": "시작 기준년월 (YYYYMM) 또는 기준년월일 (YYYYMMDD)"},

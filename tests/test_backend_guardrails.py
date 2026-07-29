@@ -105,18 +105,8 @@ REFERENCE_VQ_CASES = list(zip(
 
 SEMANTIC_GENERATION_CASES = [
     (
-        "corporate_card_active_without_recent_usage",
-        "2026년 4월 기준 기업카드는 살아 있지만 6개월 동안 한 번도 쓰지 않은 회사 목록",
-        {"tbdaa1d12"},
-    ),
-    (
         "corporate_card_churn_after_usage",
         "최근 반년 내 기업카드 결제는 있었는데 2026년 4월 현재 유효 카드가 없는 법인",
-        {"tbdaa1d12"},
-    ),
-    (
-        "corporate_check_card_only_high_average",
-        "2026년 4월 현재 신용카드 없이 기업 체크카드만 갖고 있고 올해 월평균 5천만원 넘게 쓴 기업",
         {"tbdaa1d12"},
     ),
     (
@@ -396,13 +386,32 @@ def test_reference_paraphrases_use_semantic_generation_without_verified_query(
     assert required_tables <= set(workflow._rule_rank_tables(question))
 
 
-@pytest.mark.parametrize("question", [question for question, _, _ in REFERENCE_ROUTING_CASES[:5]])
+@pytest.mark.parametrize(
+    "question",
+    [REFERENCE_ROUTING_CASES[index][0] for index in (1, 3, 4)],
+)
 def test_reference_sql_is_not_runtime_verified_query(question: str) -> None:
     selection = workflow.select_tool({"question": question, "domain_context": ""})
 
     assert workflow._select_verified_query_capability(question, {}) is None
     assert selection["selected_capability_type"] == "semantic_generation"
     assert selection["matched_query_name"] == ""
+
+
+def test_corporate_card_no_usage_query_uses_verified_query_with_explicit_basis_month() -> None:
+    question = "KB카드 기업카드 보유회원 중에 2026년 5월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘"
+    state = {"question": question, "domain_context": "", "user_provided_params": {}}
+    state.update(workflow.select_tool(state))
+
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        result = workflow.extract_and_apply_params(state)
+
+    assert state["selected_capability_type"] == "verified_query"
+    assert state["matched_query_name"] == "corporate_card_active_no_usage_members"
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {"기준년월": "202605", "조회개월수": 6}
+    assert not re.findall(r"\{[A-Za-z0-9가-힣_]+\}", result["final_sql"])
+    assert not schema._validate_sql_against_schema(result["final_sql"], ["tbdaa1d12"])
 
 
 def test_check_card_only_query_requires_current_check_card_holding() -> None:
@@ -417,6 +426,38 @@ def test_check_card_only_query_requires_current_check_card_holding() -> None:
     assert 'COALESCE(c."유효기업신용카드수", 0) = 0' in sql
     assert 'COALESCE(c."유효기업체크카드수", 0) > 0' in sql
     assert '"현재유효기업체크카드수"' in sql
+
+
+def test_check_card_only_question_uses_verified_query_and_extracts_threshold() -> None:
+    question = (
+        "KB국민 기업 체크카드만을 보유, 이용하고 있는 기업회원 중 "
+        "월 평균 5천만원 이상 이용하는 기업 회원 명단을 알고 싶어"
+    )
+    state = {"question": question, "domain_context": "", "user_provided_params": {}}
+    state.update(workflow.select_tool(state))
+
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        missing = workflow.extract_and_apply_params(state)
+
+    assert state["selected_capability_type"] == "verified_query"
+    assert state["matched_query_name"] == "corporate_check_card_only_high_monthly_avg"
+    assert missing["param_stage"] == "need_params"
+    assert missing["extracted_params"] == {"월평균금액": 50_000_000}
+    assert [item["name"] for item in missing["missing_params"]] == ["기준년월"]
+
+    state["user_provided_params"] = {"기준년월": "202604"}
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        result = workflow.extract_and_apply_params(state)
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {
+        "기준년월": "202604",
+        "월평균금액": 50_000_000,
+    }
+    assert "50000000" in result["final_sql"]
+    assert "tbdaa1d12" in result["final_sql"]
+    assert not re.findall(r"\{[A-Za-z0-9가-힣_]+\}", result["final_sql"])
+    assert not schema._validate_sql_against_schema(result["final_sql"], ["tbdaa1d12"])
 
 
 def test_athena_contract_explicitly_rejects_oracle_sas_wrappers() -> None:

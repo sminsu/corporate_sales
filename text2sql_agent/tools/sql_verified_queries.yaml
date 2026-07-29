@@ -1,6 +1,5 @@
 verified_queries:
 - name: corporate_card_active_no_usage_members
-  runtime_mode: reference_only
   question: KB국민 기업카드 보유회원 중 현재 시점 기준 6개월 무실적인 기업회원 명단을 알려줘
   description: 문서화된 기업고객 일별 스냅샷(tbdaa1d12)에서 기준년월일로 월을 파생하고 고객별 월 최신행만 사용해, 기준월 현재 유효 기업카드를 보유하면서 최근 N개월 신용·체크 이용금액이 모두 0인 기업을 조회합니다.
   sql: |
@@ -246,7 +245,6 @@ verified_queries:
   - Athena
   - SAS참조
 - name: corporate_check_card_only_high_monthly_avg
-  runtime_mode: reference_only
   question: KB국민 기업 체크카드만 보유하고 이용하는 기업회원 중 월 평균 5천만원 이상 이용 기업 명단을 알려줘
   description: tbdaa1d12의 고객별 월 최신행을 기준으로, 기준월 현재 신용카드는 없고 체크카드는 보유하며 연초부터 기준월까지 신용카드 보유·이용 없이 체크카드를 이용한 기업의 달력 월수 기준 월평균 체크 이용금액을 계산합니다.
   sql: |
@@ -2572,6 +2570,66 @@ verified_queries:
   - 일시불
   - 할부
   - CA
+- name: enterprise_size_corporate_card_usage_by_current_size
+  question: 현재 기업규모 기준으로 지정 기간의 기업카드 이용금액을 보여줘
+  description: 현재 고객 마스터의 기업규모와 요청 기간의 고객별 법인카드 월 이용금액을 각각 중복 제거한 뒤 합산합니다.
+  sql: |
+    WITH current_customer_size AS (
+      SELECT
+        s."고객식별자",
+        MAX(s."기업규모구분코드") AS "기업규모구분코드"
+      FROM card_system.tbdaaat01 s
+      WHERE s."개인기업구분코드" = '2'
+      GROUP BY s."고객식별자"
+      HAVING COUNT(DISTINCT s."기업규모구분코드") = 1
+    ),
+    card_customer_month AS (
+      SELECT
+        f."기준년월",
+        f."고객식별자",
+        SUM(COALESCE(f."금월이용합계금액", 0)) AS "월이용금액"
+      FROM card_system.tmdaa3e16 f
+      WHERE f."개인기업구분코드" = '2'
+        AND f."기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
+      GROUP BY f."기준년월", f."고객식별자"
+    )
+    SELECT
+      cm."기준년월",
+      '{기업규모구분코드}' AS "기업규모구분코드",
+      SUM(cm."월이용금액") AS "법인카드월이용금액"
+    FROM card_customer_month cm
+    JOIN current_customer_size cs
+      ON cm."고객식별자" = cs."고객식별자"
+    WHERE cs."기업규모구분코드" = '{기업규모구분코드}'
+    GROUP BY cm."기준년월"
+    ORDER BY cm."기준년월"
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM)
+      required: true
+    기업규모구분코드:
+      type: string
+      description: enterprise_size 코드북으로 해석한 기업규모구분코드
+      semantic_attribute: enterprise_size
+      required: true
+  tags:
+  - 현재기준
+  - 현재기업규모
+  - 기업규모
+  - 대기업
+  - 중소기업
+  - 공공기업
+  - 영세기업
+  - 기업카드
+  - 법인카드
+  - 이용금액
+  - tbdaaat01
+  - tmdaa3e16
 - name: top_merchants_by_revenue
   question: 매출 상위 10개 가맹점은?
   description: 기간/업종/가맹점명 필터를 지정하여 매출 상위 가맹점 순위를 조회합니다.

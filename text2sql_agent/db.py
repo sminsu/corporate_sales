@@ -165,11 +165,22 @@ def _quote_athena_non_ascii_identifiers(sql: str) -> str:
 
 def _normalize_common_sql_typos(sql: str) -> str:
     """Normalize a few keyboard/IME artifacts that break otherwise valid SQL."""
+    sql = sql.translate(str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"}))
     out: list[str] = []
     for protected, text in _split_sql_segments(sql):
         if protected:
-            out.append(text)
+            if re.fullmatch(r'"20\d{4}(?:\d{2})?"', text):
+                out.append(f"'{text[1:-1]}'")
+            else:
+                out.append(text)
             continue
+        text = re.sub(r"\bDISTINCT\s*\.\s*", "DISTINCT ", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"\b([A-Za-z][A-Za-z0-9]*)\s+(_[A-Za-z][A-Za-z0-9_]*)\s+AS\s*\(",
+            r"\1\2 AS (",
+            text,
+            flags=re.IGNORECASE,
+        )
         i = 0
         n = len(text)
         while i < n:

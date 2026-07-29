@@ -25,7 +25,8 @@ CURRENT_RESULT_KEYWORDS = (
 )
 TIME_VALUE_RE = re.compile(
     r"(?:전월|지난\s*달|저번\s*달|이번\s*(?:달|월)|금월|작년|지난해|올해|금년|"
-    r"최근\s*\d*\s*(?:개월|년)|20\d{2}\s*년(?:\s*\d{1,2}\s*월)?|20\d{2}(?:0[1-9]|1[0-2]))"
+    r"(?:최근|지난)\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)"
+    r"(?:\s*(?:이내|내|간|동안))?|20\d{2}\s*년(?:\s*\d{1,2}\s*월)?|20\d{2}(?:0[1-9]|1[0-2]))"
 )
 METRIC_ALIASES = (
     ("매출", ("매출", "매출금액", "매출액")),
@@ -453,11 +454,15 @@ def plan_followup(
     *,
     query_frame: dict[str, Any] | None = None,
     result_scope: dict[str, Any] | None = None,
+    context_resolution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Route a follow-up to SQL, local transform, visualization, or analysis."""
 
     frame = query_frame or {}
     scope = result_scope or frame.get("result_scope") or {}
+    resolution = context_resolution or {}
+    context_relation = str(resolution.get("relation") or "")
+    source_strategy = str(resolution.get("source_strategy") or "")
     lowered = " ".join(str(question or "").lower().split())
     normalized_question = _normalized(lowered)
     asks_visual = any(keyword in lowered for keyword in VISUAL_KEYWORDS)
@@ -478,6 +483,14 @@ def plan_followup(
     if derived_growth:
         new_metrics = [metric for metric in new_metrics if metric not in {"건수"}]
     changes_time = bool(TIME_VALUE_RE.search(lowered)) and not derived_growth
+    asks_time_series = changes_time and any(
+        keyword in normalized_question for keyword in ("추이", "변동", "변화", "시계열")
+    )
+    frame_dimensions = _normalized(" ".join(str(value) for value in frame.get("dimensions", []) or []))
+    has_time_dimension = any(
+        keyword in frame_dimensions for keyword in ("년월", "월", "일자", "날짜", "date", "month", "year", "ym")
+    )
+    needs_time_series_source = asks_time_series and not has_time_dimension
     result_complete = bool(scope.get("is_complete", True))
     unsafe_partial_transform = (
         transform["applied"]
@@ -491,6 +504,9 @@ def plan_followup(
     elif new_metrics:
         base_mode = "new_sql"
         route_reason = "new_metric_requires_reroute"
+    elif needs_time_series_source:
+        base_mode = "new_sql"
+        route_reason = "new_time_series_requires_reroute"
     elif explicit_sql or changes_time:
         base_mode = "rewrite_sql"
         route_reason = "query_definition_changed"
@@ -513,12 +529,33 @@ def plan_followup(
         base_mode = "analysis"
         route_reason = "existing_result_analysis"
 
+    # The context resolver only escalates work; deterministic safety rules
+    # above still win when they already require a fresh SQL result.
+    if context_relation == "new_query":
+        base_mode = "new_sql"
+        route_reason = "independent_question_requires_new_query"
+    elif context_relation == "refine_query" and base_mode not in {"new_sql", "rewrite_sql"}:
+        base_mode = "new_sql" if source_strategy == "rediscover" else "rewrite_sql"
+        route_reason = (
+            "context_change_requires_reroute"
+            if base_mode == "new_sql"
+            else "context_change_requires_sql"
+        )
+    elif (
+        context_relation == "refine_query"
+        and source_strategy == "rediscover"
+        and base_mode == "rewrite_sql"
+    ):
+        base_mode = "new_sql"
+        route_reason = "context_change_requires_reroute"
+
     if base_mode in {"rewrite_sql", "new_sql"} and asks_visual:
         mode = f"{base_mode}_visualization"
     else:
         mode = base_mode
+    frame_to_evolve = {} if context_relation == "new_query" else frame
     next_query_frame = evolve_query_frame(
-        frame,
+        frame_to_evolve,
         question,
         mode=mode,
         requested_metrics=requested_metrics,
@@ -535,6 +572,11 @@ def plan_followup(
         "new_metrics": new_metrics,
         "result_complete": result_complete,
         "next_query_frame": next_query_frame,
+        "context_relation": context_relation,
+        "source_strategy": source_strategy,
+        "resolved_question": str(resolution.get("resolved_question") or question),
+        "context_reason": str(resolution.get("reason") or ""),
+        "context_resolved_by_llm": bool(resolution.get("used_llm")),
     }
 
 

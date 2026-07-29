@@ -42,11 +42,13 @@ from text2sql_agent.query_frame import (  # noqa: E402
     build_query_frame,
     ensure_query_frame,
     infer_result_scope,
+    query_frame_prompt,
 )
 from text2sql_agent.schema import SCHEMA, _extract_schema_tables, _is_semantic_table_visible  # noqa: E402
 from text2sql_agent.session_store import SessionOwnershipError, create_session_store  # noqa: E402
 from text2sql_agent.workflow import (  # noqa: E402
     _get_app as _get_compiled_graph,
+    _parse_llm_json,
     _table_details as _bounded_table_details,
 )
 
@@ -1355,7 +1357,7 @@ def _param_instruction_line(item: Any) -> str:
 def _requires_params_answer(result: dict[str, Any]) -> str:
     missing = result.get("missing_params", []) or []
     if not missing:
-        return "추가 입력이 필요해요. 팝업 또는 질문창에 필요한 정보를 입력해 주세요."
+        return "추가 입력이 필요해요. 진행 영역의 입력값을 확인해 주세요."
     names = [_param_name(item) for item in missing if _param_name(item)]
     example = ", ".join(_param_example_value(name) for name in names) or "필요한 값"
     managed_scope_help = ""
@@ -1374,7 +1376,7 @@ def _requires_params_answer(result: dict[str, Any]) -> str:
         + "\n".join(_param_instruction_line(item) for item in missing)
         + "\n\n"
         f"예: `{example}`\n"
-        "팝업의 문장 입력칸이나 아래 질문창에 이어서 입력하면 같은 질문을 계속 실행합니다."
+        "진행 영역의 입력값을 확인하거나 수정한 뒤 `계속`을 누르면 같은 질문을 이어서 실행합니다."
         + managed_scope_help
     )
 
@@ -1574,6 +1576,7 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
             "query": req.query,
             "question_type": result.get("question_type", ""),
             "selected_domain": result.get("selected_domain", ""),
+            "domain_candidates": result.get("domain_candidates", []),
             "selected_tool": result.get("selected_tool", ""),
             "matched_query_name": result.get("matched_query_name", ""),
             "selected_capability_type": result.get("selected_capability_type", ""),
@@ -1582,6 +1585,7 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
             "param_stage": result.get("param_stage", ""),
             "missing_params": result.get("missing_params", []),
             "sql": result.get("final_sql", ""),
+            "validation_result": result.get("validation_result", ""),
             "columns": result.get("query_columns", []),
             "row_count": len(result.get("query_rows", []) or []),
             "source": _source_label(result),
@@ -1901,6 +1905,104 @@ def _classify_followup_intent(question: str, columns: list[Any] | None = None, r
     return str(plan_followup(question, columns or [], rows or [])["mode"])
 
 
+def _fallback_followup_context(question: str, plan: dict[str, Any]) -> dict[str, Any]:
+    mode = str(plan.get("mode") or "")
+    return {
+        "relation": "refine_query" if plan.get("requires_sql") else "existing_result",
+        "source_strategy": (
+            "rediscover"
+            if mode.startswith("new_sql")
+            else "same_source"
+            if mode.startswith("rewrite_sql")
+            else "current_result"
+        ),
+        "resolved_question": question,
+        "reason": "deterministic_fallback",
+        "used_llm": False,
+    }
+
+
+def _resolve_followup_context(
+    base_result: dict[str, Any],
+    question: str,
+    preliminary_plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve an elliptical follow-up before deciding how to execute it."""
+
+    frame = ensure_query_frame(base_result)
+    history = list(base_result.get("analysis_history") or [])
+    recent_history = "\n".join(
+        (
+            f"- 사용자: {str(item.get('question') or '')[:400]}\n"
+            f"  처리: {str(item.get('mode') or '')}\n"
+            f"  답변: {str(item.get('answer') or '')[:700]}"
+        )
+        for item in history[-5:]
+    )
+    prompt = f"""당신은 기업영업 데이터 에이전트의 대화 문맥 라우터입니다.
+현재 사용자의 말을 최근 대화와 실제 조회 상태에 연결해 해석하고 JSON object 하나만 반환하세요.
+
+## 현재 조회를 만든 질문
+{str(base_result.get("question") or "")[:1000]}
+
+## 현재 구조화된 조회 상태
+{query_frame_prompt(frame)}
+
+## 현재 조회 컬럼
+{", ".join(str(value) for value in base_result.get("query_columns", []) or []) or "(없음)"}
+
+## 직전 답변
+{str(base_result.get("answer") or "")[:1400] or "(없음)"}
+
+## 최근 대화
+{recent_history or "(없음)"}
+
+## 새 사용자 입력
+{question}
+
+판단 기준:
+- relation="existing_result": 현재 저장된 행의 설명·요약·정렬·필터·계산·시각화만 요청합니다.
+- relation="refine_query": 이전 대상·기간·지표·조건 일부를 유지하면서 변경하거나, 현재 행에 없는 데이터를 추가 조회해야 합니다.
+- relation="new_query": 이전 업무 대상·조건을 이어받지 않는 독립된 새 데이터 질문입니다.
+- source_strategy="current_result": 현재 행만 사용합니다.
+- source_strategy="same_source": 같은 도메인·테이블에서 SQL 조건을 바꾸면 됩니다.
+- source_strategy="rediscover": 새 도메인·지표·테이블 또는 현재 소스에 없는 시계열이 필요합니다.
+- 대명사와 생략된 대상·기간·지표는 조회 상태와 최근 대화에서만 복원하세요.
+- 사용자가 명시적으로 바꾼 조건은 교체하고, 말하지 않은 조건은 refine_query일 때 유지하세요.
+- 새 질문에 없는 조건이나 사실을 만들지 마세요.
+- resolved_question은 SQL 담당자가 과거 대화를 보지 않아도 이해할 수 있는 완전한 한국어 질문으로 작성하세요.
+
+반환 형식:
+{{"relation":"existing_result|refine_query|new_query","source_strategy":"current_result|same_source|rediscover","resolved_question":"완전한 질문","reason":"짧은 판단 근거"}}
+"""
+    fallback = _fallback_followup_context(question, preliminary_plan)
+    try:
+        parsed = _parse_llm_json(agent._call_llm(prompt, max_tokens=700))
+    except Exception:
+        return fallback
+
+    relation = str(parsed.get("relation") or "")
+    source_strategy = str(parsed.get("source_strategy") or "")
+    resolved_question = str(parsed.get("resolved_question") or "").strip()
+    if (
+        relation not in {"existing_result", "refine_query", "new_query"}
+        or source_strategy not in {"current_result", "same_source", "rediscover"}
+        or not resolved_question
+    ):
+        return fallback
+    if relation == "existing_result":
+        source_strategy = "current_result"
+    elif relation == "new_query":
+        source_strategy = "rediscover"
+    return {
+        "relation": relation,
+        "source_strategy": source_strategy,
+        "resolved_question": resolved_question[:2000],
+        "reason": str(parsed.get("reason") or "")[:500],
+        "used_llm": True,
+    }
+
+
 def _table_names_from_sql(sql: str) -> list[str]:
     used_tables = _extract_schema_tables(sql or "")
     if not used_tables:
@@ -1928,9 +2030,6 @@ def _followup_query_state(
     question: str,
     followup_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Keep the actual follow-up as the main question.  Passing a synthetic,
-    # multi-page question made compact models repeat instructions or miss the
-    # changed period.  The workflow now has explicit bounded context fields.
     frame = ensure_query_frame(base_result)
     plan = followup_plan or plan_followup(
         question,
@@ -1941,21 +2040,24 @@ def _followup_query_state(
     )
     mode = str(plan.get("mode") or "")
     reroute_sources = mode.startswith("new_sql")
-    state = agent._new_initial_state(question)
+    relation = str(plan.get("context_relation") or "")
+    resolved_question = str(plan.get("resolved_question") or question)
+    state = agent._new_initial_state(resolved_question)
     state["question_type"] = "need_sql"
-    state["skip_tool_selection"] = True
-    state["skip_verified_query_matching"] = True
+    state["skip_tool_selection"] = relation != "new_query"
+    state["skip_verified_query_matching"] = relation != "new_query"
     state["query_frame"] = plan.get("next_query_frame") or frame
-    history = list(base_result.get("analysis_history") or [])
-    previous_turn = history[-1] if history else {}
-    state["previous_question"] = str(
-        previous_turn.get("question")
-        or base_result.get("followup_question")
-        or base_result.get("question")
-        or ""
-    )
-    state["previous_sql"] = str(base_result.get("final_sql") or "")
-    state["previous_answer"] = str(base_result.get("answer") or "")
+    if relation != "new_query":
+        history = list(base_result.get("analysis_history") or [])
+        previous_turn = history[-1] if history else {}
+        state["previous_question"] = str(
+            previous_turn.get("question")
+            or base_result.get("followup_question")
+            or base_result.get("question")
+            or ""
+        )
+        state["previous_sql"] = str(base_result.get("final_sql") or "")
+        state["previous_answer"] = str(base_result.get("answer") or "")
     state["followup_question"] = question
     if not reroute_sources:
         state["selected_domain"] = base_result.get("selected_domain", "")
@@ -2090,9 +2192,14 @@ def _finalize_followup_result(
     plan = followup_plan or {}
     history = list(base_result.get("analysis_history", []))
     uses_sql = mode.startswith("rewrite_sql") or mode.startswith("new_sql") or mode == "query"
+    resolved_question = str(plan.get("resolved_question") or question)
+    context_relation = str(plan.get("context_relation") or "")
     history.append(
         {
             "question": question,
+            "resolved_question": resolved_question,
+            "context_relation": context_relation,
+            "context_reason": str(plan.get("context_reason") or ""),
             "answer": answer,
             "mode": mode,
             "sql": followup_result.get("final_sql", "") if uses_sql else "",
@@ -2108,7 +2215,7 @@ def _finalize_followup_result(
     )
     followup_result.update(
         {
-            "question": base_result.get("question", ""),
+            "question": resolved_question if uses_sql else base_result.get("question", ""),
             "original_answer": base_result.get("original_answer", base_result.get("answer", "")),
             "answer": answer,
             "followup_question": question,
@@ -2120,6 +2227,11 @@ def _finalize_followup_result(
                 "confidence": str(plan.get("route_confidence") or ""),
                 "requested_metrics": list(plan.get("requested_metrics") or []),
                 "new_metrics": list(plan.get("new_metrics") or []),
+                "context_relation": context_relation,
+                "source_strategy": str(plan.get("source_strategy") or ""),
+                "resolved_question": resolved_question,
+                "context_reason": str(plan.get("context_reason") or ""),
+                "context_resolved_by_llm": bool(plan.get("context_resolved_by_llm")),
             },
             "error_message": "",
         }
@@ -2155,15 +2267,46 @@ def _stream_followup(
     yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다.", "query": req.question})
     try:
         base_frame = ensure_query_frame(base_result)
+        yield _sse(
+            "progress",
+            {
+                "step": "followup_context",
+                "title": "대화 맥락 해석",
+                "message": "이전 질의의 대상·기간·지표와 새 질문의 변경점을 함께 확인합니다.",
+                "query": req.question,
+            },
+        )
         with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
-            followup_plan = plan_followup(
+            preliminary_plan = plan_followup(
                 req.question,
                 base_result.get("query_columns", []),
                 base_result.get("query_rows", []),
                 query_frame=base_frame,
                 result_scope=base_frame.get("result_scope"),
             )
+            context_resolution = _resolve_followup_context(
+                base_result,
+                req.question,
+                preliminary_plan,
+            )
+            followup_plan = plan_followup(
+                req.question,
+                base_result.get("query_columns", []),
+                base_result.get("query_rows", []),
+                query_frame=base_frame,
+                result_scope=base_frame.get("result_scope"),
+                context_resolution=context_resolution,
+            )
             intent = str(followup_plan["mode"])
+            resolved_question = str(followup_plan.get("resolved_question") or req.question)
+            route_progress = {
+                "step": "followup_route",
+                "title": "후속 의도 판단",
+                "query": req.question,
+                "followup_mode": intent,
+                "requires_sql": bool(followup_plan["requires_sql"]),
+                "context_relation": followup_plan.get("context_relation", ""),
+            }
 
         if followup_plan["requires_sql"]:
             sql_intent = "new_sql" if intent.startswith("new_sql") else "rewrite_sql"
@@ -2172,9 +2315,11 @@ def _stream_followup(
                 route_message = "직전 결과가 일부 범위이므로 정확한 상위 N·집계를 위해 SQL을 다시 실행합니다."
             else:
                 route_message = "후속 요청에 새 데이터가 필요해 도메인과 테이블을 다시 선택합니다." if sql_intent == "new_sql" else "기간·대상·조회 조건이 달라져 기존 SQL을 재작성합니다."
+            if followup_plan.get("context_relation") == "new_query":
+                route_message = "이전 조건을 이어받지 않는 새 질문으로 판단해 도메인과 테이블을 새로 선택합니다."
             if wants_chart:
                 route_message += " 조회가 끝나면 새 결과로 차트도 생성합니다."
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message, "query": req.question})
+            yield _sse("progress", {**route_progress, "message": route_message})
             state = _followup_query_state(base_result, req.question, followup_plan)
             compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
             followup_result = dict(state)
@@ -2190,9 +2335,18 @@ def _stream_followup(
                     yield _sse("heartbeat", followup_result)
                     continue
                 payload = _progress_payload(node_name, compatible, followup_result)
-                yield _sse("progress", {"step": node_name, "title": payload["data"]["title"], "message": payload["message"], "query": req.question})
+                yield _sse(
+                    "progress",
+                    {
+                        **payload["data"],
+                        "step": node_name,
+                        "title": payload["data"]["title"],
+                        "message": payload["message"],
+                        "query": req.question,
+                    },
+                )
             answer = followup_result.get("answer", "")
-            chart = build_chart_spec(req.question, followup_result.get("query_columns", []), followup_result.get("query_rows", [])) if wants_chart else None
+            chart = build_chart_spec(resolved_question, followup_result.get("query_columns", []), followup_result.get("query_rows", [])) if wants_chart else None
             if chart:
                 followup_result["chart"] = chart
                 answer = (
@@ -2210,7 +2364,7 @@ def _stream_followup(
             route_message = "후속 요청을 직전 결과의 로컬 재가공으로 분류했습니다. SQL은 다시 실행하지 않습니다."
             if wants_chart:
                 route_message += " 재가공한 결과로 차트를 생성합니다."
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message, "query": req.question})
+            yield _sse("progress", {**route_progress, "message": route_message})
             yield _sse("progress", {"step": "generate_answer", "title": "결과 재가공", "message": "저장된 결과에 정렬·필터·집계·표현 변경을 안전하게 적용합니다.", "query": req.question})
             local_result = dict(base_result)
             local_result.update(
@@ -2224,7 +2378,7 @@ def _stream_followup(
                     },
                 }
             )
-            chart = build_chart_spec(req.question, transform["columns"], transform["rows"]) if wants_chart else None
+            chart = build_chart_spec(resolved_question, transform["columns"], transform["rows"]) if wants_chart else None
             if chart:
                 local_result["chart"] = chart
             else:
@@ -2233,10 +2387,10 @@ def _stream_followup(
             source = "기존 결과 재가공 + 시각화" if chart else "기존 결과 재가공"
             final_result = _finalize_followup_result(base_result, req.question, local_result, answer, intent, source, followup_plan)
         elif intent == "visualization":
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "직전 결과만 사용해 차트를 생성합니다. SQL은 다시 실행하지 않습니다.", "query": req.question})
+            yield _sse("progress", {**route_progress, "message": "직전 결과만 사용해 차트를 생성합니다. SQL은 다시 실행하지 않습니다."})
             yield _sse("progress", {"step": "generate_answer", "title": "차트 생성", "message": "숫자·범주·시간 컬럼을 판별해 차트 데이터를 구성합니다.", "query": req.question})
             visual_result = dict(base_result)
-            chart = build_chart_spec(req.question, base_result.get("query_columns", []), base_result.get("query_rows", []))
+            chart = build_chart_spec(resolved_question, base_result.get("query_columns", []), base_result.get("query_rows", []))
             if chart:
                 visual_result["chart"] = chart
                 visual_result["followup_operations"] = ["차트 생성"]
@@ -2248,7 +2402,7 @@ def _stream_followup(
             final_result = _finalize_followup_result(base_result, req.question, visual_result, answer, intent, source, followup_plan)
         else:
             source = "기존 결과 분석"
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 직전 결과 설명·분석으로 분류했습니다. SQL은 다시 실행하지 않습니다.", "query": req.question})
+            yield _sse("progress", {**route_progress, "message": "후속 요청을 직전 결과 설명·분석으로 분류했습니다. SQL은 다시 실행하지 않습니다."})
             yield _sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 SQL 결과와 대화 이력을 기반으로 답변을 생성합니다.", "query": req.question})
             with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
                 answer = _followup_analysis(base_result, req.question)

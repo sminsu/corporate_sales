@@ -170,7 +170,7 @@ def adapt_sse_stream(chunks: Iterable[str]) -> Iterator[str]:
 
 
 def _event_name_for_node(node_name: str) -> str | None:
-    if node_name in {"start", "followup_route"}:
+    if node_name in {"start", "followup_context", "followup_route"}:
         return "search_plan"
     if node_name == "complete":
         return "response"
@@ -223,11 +223,16 @@ def _search_plan_payload(data: dict[str, Any], message: Any, query: str) -> dict
             "progress_message": str(message or ""),
             "question_type": data.get("question_type", ""),
             "selected_domain": data.get("selected_domain", ""),
+            "domain_candidates": data.get("domain_candidates", []),
             "selected_tool": data.get("selected_tool", ""),
             "matched_query_name": data.get("matched_query_name", ""),
+            "selected_capability_type": data.get("selected_capability_type", ""),
+            "selected_capability_name": data.get("selected_capability_name", ""),
             "selected_tables": data.get("selected_tables", []),
             "param_stage": data.get("param_stage", ""),
             "missing_params": data.get("missing_params", []),
+            "followup_mode": data.get("followup_mode", ""),
+            "requires_sql": bool(data.get("requires_sql")),
         },
     }
 
@@ -247,11 +252,15 @@ def _aggregate_review_payload(data: dict[str, Any], message: Any, query: str) ->
             "progress_message": str(message or ""),
             "source": data.get("source", ""),
             "selected_domain": data.get("selected_domain", ""),
+            "domain_candidates": data.get("domain_candidates", []),
             "selected_tool": data.get("selected_tool", ""),
             "matched_query_name": data.get("matched_query_name", ""),
+            "selected_capability_type": data.get("selected_capability_type", ""),
+            "selected_capability_name": data.get("selected_capability_name", ""),
             "selected_tables": data.get("selected_tables", []),
             "sql": sql,
             "has_sql": bool(sql),
+            "validation_result": data.get("validation_result", ""),
             "columns": columns,
             "column_count": len(columns) if isinstance(columns, list) else 0,
             "row_count": _row_count(data),

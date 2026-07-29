@@ -126,6 +126,17 @@ def test_followup_stream_runs_local_transform_without_graph_or_llm() -> None:
     session = {"id": "session-1", "user_id": "user-1", "messages": []}
     with (
         patch.object(web_service._SESSION_STORE, "get_result", return_value=base_result),
+        patch.object(
+            web_service,
+            "_resolve_followup_context",
+            return_value={
+                "relation": "existing_result",
+                "source_strategy": "current_result",
+                "resolved_question": request.question,
+                "reason": "test",
+                "used_llm": True,
+            },
+        ),
         patch.object(web_service, "_stream_graph", side_effect=AssertionError("SQL graph must not run")),
         patch.object(web_service, "_followup_analysis", side_effect=AssertionError("LLM analysis must not run")),
         patch.object(web_service, "_result_payload", side_effect=capture_payload),
