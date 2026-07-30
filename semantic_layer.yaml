@@ -9544,6 +9544,45 @@ semantic_query_contracts:
       previous_amount: LAG(월이용금액) OVER (ORDER BY 기준년월)
       mom_rate_percent: (월이용금액 - 전월이용금액) / NULLIF(전월이용금액, 0) * 100
     result_fields: [기준년월, 월이용금액, 전월이용금액, 전월대비증감률_퍼센트]
+  - name: named_corporate_half_year_usage
+    domain: corporate_sales_targeting
+    verified_query: named_corporate_half_year_usage
+    routing_strength: high
+    support_status: supported
+    table_selection_mode: authoritative
+    description: 기업명을 부분일치로 검색하고 고객별 월 최신 스냅샷의 신용·체크 이용금액을 전년과 금년의 반기별로 합산한다.
+    match:
+      required:
+        - [이용금액, 이용액, 사용금액, 사용액, 이용실적]
+        - [반기별, 상반기, 하반기]
+        - [작년, 지난해, 전년]
+        - [올해, 금년]
+      optional:
+        - [기업, 법인, 회사, 기업회원]
+      excluded: [가맹점, 브랜드, 점포, 매장, 매출액, 매출금액]
+    examples:
+      - 쿠팡의 작년과 올해 반기별 이용금액 실적을 알려줘
+      - 삼성전자의 전년과 금년 반기별 기업카드 이용액을 보여줘
+    source_tables: [tbdaa1d12]
+    metric_names: [기업월카드이용금액]
+    result_grain: 기준연도×반기 1행
+    dimensions: [기준연도, 반기]
+    entity_binding:
+      parameter: 기업명
+      source_column: tbdaa1d12.기업명
+      required: true
+    name_filter:
+      default: contains
+      sql: LOWER(COALESCE(tbdaa1d12.기업명, '')) LIKE LOWER(CONCAT('%', :기업명, '%'))
+    time_policy:
+      input_range: 전년 1월부터 금년 현재월
+      grouping: 기준년월의 01~06은 상반기, 07~12는 하반기
+    deduplication: 고객식별자×기준년월별 최신 기준년월일 1행
+    calculation:
+      credit_amount: SUM(금월신용카드이용금액)
+      check_amount: SUM(금월체크카드이용금액)
+      total_amount: SUM(금월신용카드이용금액 + 금월체크카드이용금액)
+    result_fields: [기준연도, 반기, 최종반영년월, 신용카드이용금액, 체크카드이용금액, 총이용금액]
   - name: named_merchant_monthly_sales
     domain: merchant_sales
     verified_query: merchant_sales_comparison

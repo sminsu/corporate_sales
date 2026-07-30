@@ -2403,6 +2403,68 @@ verified_queries:
   - 상세
   - 검색
   - 파라미터
+- name: named_corporate_half_year_usage
+  question: 특정 기업의 작년과 올해 반기별 이용금액 실적을 알려줘
+  description: |
+    기업명을 부분일치로 검색하고 기업고객 일별 스냅샷을 고객별 월 최신행으로 축소한 뒤,
+    전년 1월부터 금년 현재월까지 신용·체크카드 이용금액을 반기별로 합산합니다.
+  sql: |
+    WITH monthly_latest AS (
+      SELECT
+        SUBSTR(a."기준년월일", 1, 6) AS "기준년월",
+        a."고객식별자",
+        a."기업명",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY SUBSTR(a."기준년월일", 1, 6), a."고객식별자"
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaa1d12 a
+      WHERE LOWER(COALESCE(a."기업명", ''))
+        LIKE LOWER(CONCAT('%', '{기업명}', '%')) ESCAPE '\'
+        AND SUBSTR(a."기준년월일", 1, 6)
+          BETWEEN '{기간_시작}' AND '{기간_종료}'
+    )
+    SELECT
+      SUBSTR(m."기준년월", 1, 4) AS "기준연도",
+      CASE
+        WHEN SUBSTR(m."기준년월", 5, 2) BETWEEN '01' AND '06' THEN '상반기'
+        ELSE '하반기'
+      END AS "반기",
+      MAX(m."기준년월") AS "최종반영년월",
+      SUM(COALESCE(m."금월신용카드이용금액", 0)) AS "신용카드이용금액",
+      SUM(COALESCE(m."금월체크카드이용금액", 0)) AS "체크카드이용금액",
+      SUM(
+        COALESCE(m."금월신용카드이용금액", 0)
+        + COALESCE(m."금월체크카드이용금액", 0)
+      ) AS "총이용금액"
+    FROM monthly_latest m
+    WHERE m.rn = 1
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  parameters:
+    기업명:
+      type: string
+      description: 기업명에서 찾을 기업회원 검색어
+      required: true
+    기간_시작:
+      type: string
+      description: 이용실적 집계 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 이용실적 집계 종료 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 기업회원
+  - 기업명
+  - 이용금액
+  - 반기별
+  - 전년
+  - 금년
+  - tbdaa1d12
+  - Athena
 - name: region_top_enterprise_merchants
   question: 최근 기준일 기준 지역별 기업영업 가맹점 전월 매입 상위 지역은?
   sql: |

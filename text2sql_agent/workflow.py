@@ -807,6 +807,11 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     if year_match:
         year = year_match.group(1)
         return f"{year}01", f"{year}12", explicit_day
+    if (
+        re.search(r"작년|지난해|전년(?:도)?", text)
+        and re.search(r"올해|금년", text)
+    ):
+        return f"{now.year - 1}01", current, explicit_day
     if "작년" in text or "지난해" in text:
         year = now.year - 1
         return f"{year}01", f"{year}12", explicit_day
@@ -993,6 +998,38 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     return ""
 
 
+def _extract_company_name_by_rule(question: str) -> str:
+    """Extract a named corporate customer from a timed card-usage question."""
+    text = question or ""
+    if (
+        not re.search(r"이용\s*(?:금액|액|실적)|사용\s*(?:금액|액)|카드\s*이용", text)
+        or not _has_time_expression(text)
+    ):
+        return ""
+
+    token = r"[0-9A-Za-z가-힣&()._-]+"
+    time_phrase = (
+        r"작년|지난해|전년(?:도)?|올해|금년|"
+        r"최근|지난\s*\d+\s*(?:개월|달|년)|이번\s*(?:달|월|년)|"
+        r"20\d{2}\s*년"
+    )
+    match = re.search(
+        rf"^\s*(?P<name>{token}(?:\s+{token}){{0,4}}?)\s*(?:의|에서)?\s*(?={time_phrase})",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+
+    candidate = re.sub(r"\s+", " ", match.group("name")).strip()
+    candidate = re.sub(r"(?:의|에서)$", "", candidate).strip()
+    generic = {
+        "당사", "해당", "특정", "전체", "모든", "기업", "법인", "회사",
+        "기업회원", "법인회원", "기업카드", "법인카드", "카드",
+    }
+    return candidate if candidate and candidate not in generic and len(candidate) <= 80 else ""
+
+
 def _is_named_merchant_sales_question(question: str) -> bool:
     """Return whether a question unambiguously asks named merchant sales."""
     return bool(
@@ -1103,6 +1140,10 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
         merchant_name = _extract_merchant_name_by_rule(question)
         if merchant_name:
             params["가맹점명"] = merchant_name
+    if "기업명" in names:
+        company_name = _extract_company_name_by_rule(question)
+        if company_name:
+            params["기업명"] = company_name
     for name in ("LS", "IS"):
         if name in names:
             match = re.search(rf"(?<![A-Za-z]){name}\s*(?:[:=은는])?\s*(-?\d+(?:\.\d+)?)", question or "", re.IGNORECASE)
