@@ -1,4 +1,43 @@
 verified_queries:
+- name: corporate_member_with_usage_count
+  question: 지정 월 기준 법인회원의 유실적 업체수를 알려줘
+  description: 기업고객 일별 스냅샷(tbdaa1d12)을 고객별 월 최신행으로 축소한 뒤, 지정 월의 신용·체크 이용금액 합계가 0보다 큰 고유 법인회원 업체 수를 계산합니다.
+  sql: |
+    WITH ranked AS (
+      SELECT
+        a."고객식별자",
+        a."금월신용카드이용금액",
+        a."금월체크카드이용금액",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."고객식별자"
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaa1d12 a
+      WHERE a."기준년월일"
+        BETWEEN CONCAT('{기준년월}', '01') AND CONCAT('{기준년월}', '31')
+    )
+    SELECT
+      COUNT(DISTINCT r."고객식별자") AS "유실적업체수"
+    FROM ranked r
+    WHERE r.rn = 1
+      AND (
+        COALESCE(r."금월신용카드이용금액", 0)
+        + COALESCE(r."금월체크카드이용금액", 0)
+      ) > 0
+  parameters:
+    기준년월:
+      type: string
+      description: 유실적 법인회원 업체 수를 조회할 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 법인회원
+  - 기업회원
+  - 유실적
+  - 실적있음
+  - 업체수
+  - 이용금액
+  - tbdaa1d12
+  - Athena
 - name: corporate_card_active_no_usage_members
   question: KB국민 기업카드 보유회원 중 현재 시점 기준 6개월 무실적인 기업회원 명단을 알려줘
   description: 문서화된 기업고객 일별 스냅샷(tbdaa1d12)에서 기준년월일로 월을 파생하고 고객별 월 최신행만 사용해, 기준월 현재 유효 기업카드를 보유하면서 최근 N개월 신용·체크 이용금액이 모두 0인 기업을 조회합니다.
@@ -2464,6 +2503,335 @@ verified_queries:
   - 전년
   - 금년
   - tbdaa1d12
+  - Athena
+- name: corporate_valid_card_count_by_brand_at_month
+  question: 지정 월 기준 기업카드의 브랜드별 유효 좌수를 알려줘
+  description: |
+    지정 월의 마지막 회원카드 스냅샷에서 기업카드만 선택하고,
+    유효 신용카드 또는 유효 체크카드인 고유 카드 좌수를 브랜드별로 계산합니다.
+  sql: |
+    WITH target_snapshot AS (
+      SELECT MAX(c."실적기준년월일") AS "조회기준일"
+      FROM card_system.tbdaaat05 c
+      WHERE c."실적기준년월일"
+        BETWEEN CONCAT('{기준년월}', '01') AND CONCAT('{기준년월}', '31')
+    ),
+    valid_cards AS (
+      SELECT DISTINCT
+        c."회원일련번호",
+        c."카드구분키번호",
+        c."카드브랜드구분코드"
+      FROM card_system.tbdaaat05 c
+      CROSS JOIN target_snapshot s
+      WHERE c."실적기준년월일" = s."조회기준일"
+        AND c."개인기업구분코드" = '2'
+        AND (
+          c."유효신용카드여부" = '1'
+          OR c."유효체크카드여부" = '1'
+        )
+    )
+    SELECT
+      s."조회기준일",
+      v."카드브랜드구분코드",
+      CASE v."카드브랜드구분코드"
+        WHEN '1' THEN '로칼(국민)'
+        WHEN '2' THEN '마스터'
+        WHEN '3' THEN '비자'
+        WHEN '4' THEN 'JCB'
+        ELSE COALESCE(v."카드브랜드구분코드", '미분류')
+      END AS "카드브랜드명",
+      COUNT(*) AS "유효좌수"
+    FROM target_snapshot s
+    JOIN valid_cards v
+      ON TRUE
+    GROUP BY
+      s."조회기준일",
+      v."카드브랜드구분코드"
+    ORDER BY v."카드브랜드구분코드"
+  parameters:
+    기준년월:
+      type: string
+      description: 브랜드별 유효 기업카드 좌수를 조회할 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 기업카드
+  - 법인카드
+  - 카드브랜드
+  - 브랜드별
+  - 유효좌수
+  - 기준년월
+  - tbdaaat05
+  - Athena
+- name: corporate_cards_issued_then_cancelled_count
+  question: 기업카드를 지정 기간에 발급하고 이후 지정 기간 안에 해지한 카드좌수와 업체수를 알려줘
+  description: |
+    최신 회원카드 원장에서 기업카드만 선택하고, 카드 신규발급일과 해지일이 각각
+    요청한 기간에 포함되는 고유 카드 좌수와 고유 기업고객 업체 수를 계산합니다.
+  sql: |
+    WITH latest_snapshot AS (
+      SELECT MAX(c."실적기준년월일") AS "조회기준일"
+      FROM card_system.tbdaaat05 c
+    ),
+    matched_cards AS (
+      SELECT DISTINCT
+        m."고객식별자",
+        c."회원일련번호",
+        c."카드구분키번호"
+      FROM card_system.tbdaaat05 c
+      JOIN card_system.tbdaaat03 m
+        ON c."회원일련번호" = m."회원일련번호"
+      CROSS JOIN latest_snapshot s
+      WHERE c."실적기준년월일" = s."조회기준일"
+        AND c."개인기업구분코드" = '2'
+        AND m."개인기업구분코드" = '2'
+        AND c."카드신규발급년월일"
+          BETWEEN CONCAT('{발급기간_시작}', '01') AND CONCAT('{발급기간_종료}', '31')
+        AND c."해지년월일"
+          BETWEEN CONCAT('{해지기간_시작}', '01') AND CONCAT('{해지기간_종료}', '31')
+    )
+    SELECT
+      s."조회기준일",
+      COUNT(m."카드구분키번호") AS "카드좌수",
+      COUNT(DISTINCT m."고객식별자") AS "업체수"
+    FROM latest_snapshot s
+    LEFT JOIN matched_cards m
+      ON TRUE
+    GROUP BY s."조회기준일"
+  parameters:
+    발급기간_시작:
+      type: string
+      description: 카드 신규발급 조회 시작 기준년월(YYYYMM)
+      required: true
+    발급기간_종료:
+      type: string
+      description: 카드 신규발급 조회 종료 기준년월(YYYYMM)
+      required: true
+    해지기간_시작:
+      type: string
+      description: 카드 해지 조회 시작 기준년월(YYYYMM)
+      required: true
+    해지기간_종료:
+      type: string
+      description: 카드 해지 조회 종료 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 기업카드
+  - 법인카드
+  - 발급후해지
+  - 카드해지
+  - 카드좌수
+  - 업체수
+  - tbdaaat03
+  - tbdaaat05
+  - Athena
+- name: card_product_current_valid_corporate_count
+  question: 현재 기준 특정 기업카드 상품의 유효카드 수를 알려줘
+  description: |
+    회원카드 최신 스냅샷에서 기업카드만 선택하고 카드 상품명을 부분일치로 검색한 뒤,
+    유효 신용카드 또는 유효 체크카드인 고유 카드 좌수를 계산합니다.
+  sql: |
+    WITH latest_snapshot AS (
+      SELECT MAX(c."실적기준년월일") AS "조회기준일"
+      FROM card_system.tbdaaat05 c
+    ),
+    matched_cards AS (
+      SELECT DISTINCT
+        c."회원일련번호",
+        c."카드구분키번호"
+      FROM card_system.tbdaaat05 c
+      JOIN card_system.tbdaada72 p
+        ON c."상품코드" = p."상품코드"
+      CROSS JOIN latest_snapshot s
+      WHERE c."실적기준년월일" = s."조회기준일"
+        AND c."개인기업구분코드" = '2'
+        AND (
+          c."유효신용카드여부" = '1'
+          OR c."유효체크카드여부" = '1'
+        )
+        AND (
+          REGEXP_REPLACE(LOWER(COALESCE(p."한글상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+          OR REGEXP_REPLACE(LOWER(COALESCE(p."대표카드상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+          OR REGEXP_REPLACE(LOWER(COALESCE(p."고객안내상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+          OR REGEXP_REPLACE(LOWER(COALESCE(p."통장장표인자상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+        )
+    )
+    SELECT
+      s."조회기준일",
+      COUNT(m."카드구분키번호") AS "유효카드수"
+    FROM latest_snapshot s
+    LEFT JOIN matched_cards m
+      ON TRUE
+    GROUP BY s."조회기준일"
+  parameters:
+    상품명:
+      type: like_string
+      description: 상품명·대표상품명·고객안내상품명에서 찾을 카드 상품 검색어
+      required: true
+  tags:
+  - 카드상품
+  - 기업카드
+  - 법인카드
+  - 유효카드수
+  - 현재기준
+  - tbdaaat05
+  - tbdaada72
+  - Athena
+- name: current_corporate_member_half_year_new_check_card_issuance
+  question: 현재 기업카드 보유회원 중 반기 특정 체크카드 상품 신규 발급 좌수와 목록을 알려줘
+  description: |
+    현재 유효 기업카드를 보유한 회원을 모집단으로 제한하고, 회원카드 최신 스냅샷에서
+    지정 반기에 신규 발급된 특정 체크카드 상품의 좌수와 기업·회원별 목록을 반환합니다.
+  sql: |
+    WITH latest_card_snapshot AS (
+      SELECT MAX(c."실적기준년월일") AS "조회기준일"
+      FROM card_system.tbdaaat05 c
+    ),
+    current_corporate_members AS (
+      SELECT
+        m."회원일련번호",
+        m."고객식별자"
+      FROM card_system.tbdaaat03 m
+      WHERE m."개인기업구분코드" = '2'
+        AND (
+          COALESCE(m."유효신용카드수", 0)
+          + COALESCE(m."유효체크카드수", 0)
+        ) > 0
+    ),
+    company_ranked AS (
+      SELECT
+        a."고객식별자",
+        a."기업명",
+        a."사업자등록번호",
+        ROW_NUMBER() OVER (
+          PARTITION BY a."고객식별자"
+          ORDER BY a."기준년월일" DESC
+        ) AS rn
+      FROM card_system.tbdaa1d12 a
+    ),
+    issued_cards AS (
+      SELECT DISTINCT
+        s."조회기준일",
+        m."고객식별자",
+        c."회원일련번호",
+        c."카드구분키번호",
+        c."상품코드",
+        COALESCE(
+          p."한글상품명",
+          p."대표카드상품명",
+          p."고객안내상품명"
+        ) AS "상품명",
+        c."카드신규발급년월일"
+      FROM card_system.tbdaaat05 c
+      JOIN current_corporate_members m
+        ON c."회원일련번호" = m."회원일련번호"
+      JOIN card_system.tbdaada72 p
+        ON c."상품코드" = p."상품코드"
+      CROSS JOIN latest_card_snapshot s
+      WHERE c."실적기준년월일" = s."조회기준일"
+        AND c."개인기업구분코드" = '2'
+        AND c."상품중분류구분코드" IN ('CP53', 'CP54')
+        AND c."카드신규발급년월일"
+          BETWEEN CONCAT('{기간_시작}', '01') AND CONCAT('{기간_종료}', '31')
+        AND (
+          REGEXP_REPLACE(LOWER(COALESCE(p."한글상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+          OR REGEXP_REPLACE(LOWER(COALESCE(p."대표카드상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+          OR REGEXP_REPLACE(LOWER(COALESCE(p."고객안내상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+          OR REGEXP_REPLACE(LOWER(COALESCE(p."통장장표인자상품명", '')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+        )
+    ),
+    issuance_summary AS (
+      SELECT COUNT(*) AS "신규발급좌수"
+      FROM issued_cards
+    )
+    SELECT
+      s."신규발급좌수",
+      i."조회기준일",
+      i."고객식별자",
+      co."기업명",
+      co."사업자등록번호",
+      i."회원일련번호",
+      i."카드구분키번호",
+      i."상품코드",
+      i."상품명",
+      i."카드신규발급년월일"
+    FROM issuance_summary s
+    LEFT JOIN issued_cards i
+      ON TRUE
+    LEFT JOIN company_ranked co
+      ON i."고객식별자" = co."고객식별자"
+      AND co.rn = 1
+    ORDER BY
+      i."카드신규발급년월일",
+      co."기업명",
+      i."회원일련번호",
+      i."카드구분키번호"
+    LIMIT {limit}
+  parameters:
+    상품명:
+      type: like_string
+      description: 상품명·대표상품명·고객안내상품명에서 찾을 체크카드 상품 검색어
+      required: true
+    기간_시작:
+      type: string
+      description: 신규 발급 조회 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 신규 발급 조회 종료 기준년월(YYYYMM)
+      required: true
+    limit:
+      type: integer
+      description: 발급 카드 목록 제한 건수
+      default: 500
+  tags:
+  - 현재기업카드보유회원
+  - 기업카드
+  - 체크카드
+  - 신규발급
+  - 발급좌수
+  - 발급목록
+  - 반기
+  - tbdaaat03
+  - tbdaaat05
+  - tbdaada72
+  - tbdaa1d12
+  - Athena
+- name: overseas_peak_month_usage
+  question: 2026년 해외업종에서 가장 많이 사용한 달과 이용금액을 알려줘
+  description: 지정 연도의 해외 매출전표를 월별로 합산해 이용금액이 가장 큰 달과 금액을 반환합니다.
+  sql: |
+    SELECT
+      "기준년월" AS "최다이용월",
+      SUM(COALESCE("매출금액", 0)) AS "이용금액"
+    FROM card_system.tbdaabt08
+    WHERE "기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY "기준년월"
+    ORDER BY "이용금액" DESC, "최다이용월"
+    LIMIT 1
+  parameters:
+    기간_시작:
+      type: string
+      description: 조회 시작 기준년월(YYYYMM)
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 종료 기준년월(YYYYMM)
+      required: true
+  tags:
+  - 해외업종
+  - 해외이용
+  - 최다이용월
+  - 이용금액
+  - 월별
+  - tbdaabt08
   - Athena
 - name: region_top_enterprise_merchants
   question: 최근 기준일 기준 지역별 기업영업 가맹점 전월 매입 상위 지역은?

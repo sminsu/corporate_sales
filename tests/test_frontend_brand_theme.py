@@ -40,8 +40,9 @@ def test_recent_sessions_are_grouped_by_last_activity() -> None:
     source = INDEX_HTML.read_text(encoding="utf-8")
     css = STYLES_CSS.read_text(encoding="utf-8")
 
-    for label in ("오늘", "최근 3일", "최근 1주일", "이전 30일"):
+    for label in ("오늘", "이전 7일", "이전 30일"):
         assert f'label: "{label}"' in source
+    assert 'label: "최근 3일"' not in source
     assert "session.updated_at || session.created_at" in source
     assert "ageDays <= group.maxDays" in source
     assert ".session-group-label" in css

@@ -8,6 +8,7 @@ from text2sql_agent import config as agent_config
 
 INDEX_HTML = Path(__file__).parents[1] / "web" / "static" / "index.html"
 STYLES_CSS = INDEX_HTML.parent / "styles.css"
+ACCESS_DENIED_HTML = INDEX_HTML.parent / "access-denied.html"
 
 
 def test_stylesheet_path_works_for_file_preview_and_web_server() -> None:
@@ -21,6 +22,19 @@ def test_stylesheet_path_works_for_file_preview_and_web_server() -> None:
     assert response.media_type == "text/css"
 
 
+def test_frontend_redirects_users_without_login_id_ok() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    denied = ACCESS_DENIED_HTML.read_text(encoding="utf-8")
+
+    auth_guard = source.split("<title>기업영업지원 에이전트</title>", 1)[1].split(
+        "text2sql:console:theme:v2", 1
+    )[0]
+    assert 'localStorage.getItem("loginID") === "OK"' in auth_guard
+    assert 'window.location.replace("access-denied.html")' in auth_guard
+    assert "접속 권한이 없습니다" in denied
+    assert Path(web_service.static_fallback("access-denied.html").path) == ACCESS_DENIED_HTML
+
+
 def test_hero_examples_use_api_response_without_merging_defaults() -> None:
     source = INDEX_HTML.read_text(encoding="utf-8")
 
@@ -28,6 +42,21 @@ def test_hero_examples_use_api_response_without_merging_defaults() -> None:
     assert "new Set([...(data.examples || []), ...DEFAULT_EXAMPLES])" not in source
     assert 'if (!examples.length) throw new Error("예시 질문 응답이 비어 있습니다.")' in source
     assert '<div id="heroExamples" class="starter-grid" aria-label="예시 질문"></div>' in source
+
+
+def test_user_guide_opens_from_below_the_hero_description() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    css = STYLES_CSS.read_text(encoding="utf-8")
+
+    description_index = source.index("필요한 기간, 대상, 지표를 자연스럽게 질문하면")
+    trigger_index = source.index('id="userGuideBtn"')
+    examples_index = source.index('id="heroExamples"')
+    assert description_index < trigger_index < examples_index
+    assert '<dialog id="userGuideDialog"' in source
+    assert 'aria-labelledby="userGuideTitle"' in source
+    assert "userGuideDialog.showModal()" in source
+    assert 'class="user-guide-actions" method="dialog"' in source
+    assert ".user-guide-dialog::backdrop" in css
 
 
 def test_hero_default_examples_are_only_rendered_in_api_fallback() -> None:

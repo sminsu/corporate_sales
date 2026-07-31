@@ -28,6 +28,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import text2sql_agent as agent  # noqa: E402
+import text2sql_agent.db as agent_db  # noqa: E402
 import webapp_compatible_api as webapp_api  # noqa: E402
 from text2sql_agent import config as agent_config  # noqa: E402
 from text2sql_agent.followup_ops import build_chart_spec, plan_followup  # noqa: E402
@@ -66,6 +67,16 @@ async def _lifespan(_: FastAPI):
             error_type=type(exc).__name__,
             error_message=str(exc),
         )
+    database_status = agent_db.probe_database()
+    database_ready = bool(database_status.get("database_ready"))
+    _stream_log(
+        logging.INFO if database_ready or database_status.get("database_status") == "not_applicable" else logging.ERROR,
+        "database_connection_check",
+        database_ready=database_ready,
+        database_status=database_status.get("database_status", "unavailable"),
+        database_source=database_status.get("database_source", "unknown"),
+        database_error_type=database_status.get("database_error_type"),
+    )
     _stream_log(
         logging.INFO,
         "service_started",

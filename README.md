@@ -188,11 +188,23 @@ KBCARD_CONFIG_PATH=config/agent.example.yaml
 AWS_BEARER_TOKEN_BEDROCK=...
 # 로컬 vLLM을 쓸 때만 필요 (Bedrock 경로에서는 사용 안 함).
 LLM_API_KEY=EMPTY
-KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
 
-# ECS/ALB 운영 시 웹 세션/메시지/후속질문 결과 저장
+# 업무 데이터 조회는 Athena
+DB_BACKEND=athena
+ATHENA_REGION=ap-northeast-2
+ATHENA_WORKGROUP=primary
+ATHENA_DATABASE=card_system
+ATHENA_CATALOG=AwsDataCatalog
+
+# ECS/ALB 운영 시 웹 세션/메시지/후속질문 결과는 PostgreSQL에 저장
 WEBAPP_SESSION_STORE=postgres
-WEBAPP_POSTGRES_DSN="host=session-db.xxxx.ap-northeast-2.rds.amazonaws.com port=5432 dbname=text2sql user=text2sql_app password=..."
+KBCARD_POSTGRES_SECRET_ID=keyscr-aihub-dev-ane2-agentifo
+AWS_REGION=ap-northeast-2
+WEBAPP_POSTGRES_SCHEMA=corporate_sales
+
+# 운영 로그는 DB에 저장하지 않고 stdout JSONL로 출력
+KBCARD_LOG_LEVEL=INFO
+KBCARD_LOG_FORMAT=jsonl
 # 선택: PostgreSQL이 원본이고 Redis는 result/file token 보조 캐시입니다.
 WEBAPP_REDIS_URL="redis://redis.xxxx.cache.amazonaws.com:6379/0"
 
@@ -210,31 +222,32 @@ WEBAPP_SESSION_RETENTION_DAYS=60
 ### 로깅
 
 `config/agent.example.yaml`의 `logger` 섹션은 `kbcard-agent-common`의 `KBCardLogger.from_config(...)`로 읽힙니다.
-기본값은 stdout pretty 출력이며, 파일 로그가 필요하면 YAML 또는 환경 변수로 바꿉니다.
+기본 출력 위치는 stdout입니다. ECS 운영에서는 stdout을 유지하고 JSONL 포맷만 지정하면
+컨테이너 로그 드라이버를 통해 CloudWatch로 전달할 수 있습니다.
 
 ```bash
 KBCARD_LOG_LEVEL=INFO
-KBCARD_LOG_FORMAT=pretty      # stdout 포맷: pretty | jsonl
-KBCARD_LOG_OUTPUT=both        # stdout | file | both
-KBCARD_LOG_FILE_PATH=logs/text2sql-agent.jsonl
-KBCARD_LOG_FILE_MAX_BYTES=10485760
-KBCARD_LOG_FILE_BACKUP_COUNT=5
+KBCARD_LOG_FORMAT=jsonl
 ```
 
-파일 출력은 항상 JSONL이며, `max_bytes`를 넘으면 `backup_count`만큼 롤링됩니다.
+PostgreSQL에는 운영 로그를 적재하지 않습니다.
 
 ### 웹 세션 저장소 (ECS/ALB 권장)
 
 브라우저 UI의 멀티턴 상태는 FastAPI worker 메모리가 아니라 저장소에 보관합니다. 운영에서는
-`WEBAPP_SESSION_STORE=postgres`와 `WEBAPP_POSTGRES_DSN`을 지정하세요. 앱이 시작 후 첫 요청에서
-다음 테이블을 `CREATE TABLE IF NOT EXISTS`로 자동 준비합니다.
+`WEBAPP_SESSION_STORE=postgres`와 `KBCARD_POSTGRES_SECRET_ID`를 지정하세요. Secret은
+`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`와 선택 항목인
+`POSTGRES_DB`를 JSON 키로 포함해야 합니다. 앱 시작 시 `corporate_sales` 스키마와 다음 테이블을
+`CREATE SCHEMA/TABLE IF NOT EXISTS`로 자동 준비합니다.
 
 - `webapp_sessions`: 사용자별 대화방, 마지막 결과, 누락 파라미터 continuation
 - `webapp_messages`: user/assistant 메시지 본문과 응답 payload
 - `webapp_results`: 후속질문/export에 필요한 result payload
 - `webapp_files`: 다운로드 token과 실제 파일 경로
 
-`WEBAPP_POSTGRES_DSN`이 없으면 `KBCARD_POSTGRES_DSN`, `DATABASE_URL`, `DB_DSN` 등을 재사용합니다.
+명시적인 DSN을 사용해야 하는 환경에서는 `WEBAPP_POSTGRES_DSN`을 지정할 수 있습니다. 이 값이 없으면
+Secret의 개별 PostgreSQL 접속 항목을 사용하며, `KBCARD_POSTGRES_DSN`, `DATABASE_URL`, `DB_DSN`도
+호환성을 위해 우선순위가 높은 명시적 DSN으로 인식합니다.
 업무 조회 DB를 읽기 전용 계정으로 운영한다면 세션 저장용 RDS/스키마와 쓰기 가능한 계정을 별도로 두는 편이 안전합니다.
 Redis는 선택 사항이며 `WEBAPP_REDIS_URL`을 지정하면 result/file token을 TTL 캐시하지만, 원본은 계속 PostgreSQL입니다.
 저장소는 무한 누적하지 않고 다음 보존 정책을 적용합니다. `0`을 지정하면 해당 제한만 끕니다.
@@ -268,6 +281,16 @@ ATHENA_DATABASE=card_system
 ATHENA_CATALOG=AwsDataCatalog
 # ATHENA_PROFILE=your-aws-profile     # 선택: 특정 AWS 프로필 사용 시
 # ATHENA_ENDPOINT_URL=https://vpce-xxxx.athena.ap-northeast-2.vpce.amazonaws.com  # 선택: VPC 엔드포인트
+
+# 웹 세션/대화 이력은 Secrets Manager의 PostgreSQL 접속 정보로 별도 저장
+WEBAPP_SESSION_STORE=postgres
+KBCARD_POSTGRES_SECRET_ID=keyscr-aihub-dev-ane2-agentifo
+AWS_REGION=ap-northeast-2
+WEBAPP_POSTGRES_SCHEMA=corporate_sales
+
+# 운영 로그는 stdout JSONL
+KBCARD_LOG_LEVEL=INFO
+KBCARD_LOG_FORMAT=jsonl
 ```
 
 Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명 체인**(환경변수 `AWS_ACCESS_KEY_ID`/

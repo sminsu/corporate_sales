@@ -1,11 +1,13 @@
 """Runtime configuration for the Text2SQL agent.
 
 LLM and embedding settings come from the kbcard-agent-common YAML (agent config +
-model registry) with optional environment-variable overrides. Secrets stay in the
-environment; endpoints and model defaults live in the YAML. The common SDK is the
-single source of truth for inference and embedding — there is no raw HTTP fallback.
+model registry) with optional environment-variable overrides. Secrets come from the
+environment or AWS Secrets Manager; endpoints and model defaults live in the YAML.
+The common SDK is the single source of truth for inference and embedding — there is
+no raw HTTP fallback.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -161,17 +163,56 @@ AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=((_AGENT.service_name i
 # ---------------------------------------------------------------------------
 # "postgres" (기본) 또는 "athena". execute_sql이 이 값으로 실행 백엔드를 분기한다.
 DB_BACKEND = _env("DB_BACKEND", default="postgres").strip().lower()
+SESSION_STORE_BACKEND = _env("WEBAPP_SESSION_STORE", "SESSION_STORE", default="auto").strip().lower()
 
 # ---------------------------------------------------------------------------
 # PostgreSQL connection
 # ---------------------------------------------------------------------------
 DB_DSN_ENV = _env("KBCARD_POSTGRES_DSN_ENV", "DB_DSN_ENV", default="KBCARD_POSTGRES_DSN")
 DB_DSN = _env("DATABASE_URL", "DB_DSN", "POSTGRES_DSN", DB_DSN_ENV, default="")
-DB_HOST = _env("DB_HOST", default="localhost")
-DB_PORT = int(_env("DB_PORT", default="5432"))
-DB_NAME = _env("DB_NAME", default="postgres")
-DB_USER = _env("DB_USER", default=os.getenv("USER", "postgres"))
-DB_PASSWORD = _env("DB_PASSWORD", default="")
+DB_DSN_ERROR = ""
+DB_DSN_SOURCE = "environment" if DB_DSN else "components"
+_POSTGRES_SECRET: dict[str, str] = {}
+if not DB_DSN and (DB_BACKEND == "postgres" or SESSION_STORE_BACKEND == "postgres"):
+    secret_id = _env(
+        "KBCARD_POSTGRES_SECRET_ID",
+        default="keyscr-aihub-dev-ane2-agentifo",
+    )
+    if secret_id:
+        try:
+            import boto3
+
+            secret_region = _env("AWS_REGION", "AWS_DEFAULT_REGION", default="ap-northeast-2")
+            session = boto3.session.Session()
+            client = session.client(service_name="secretsmanager", region_name=secret_region)
+            secret_string = client.get_secret_value(SecretId=secret_id).get("SecretString")
+            secret = json.loads(secret_string or "")
+            required_keys = ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_PASSWORD")
+            if not isinstance(secret, dict) or any(not str(secret.get(key, "")).strip() for key in required_keys):
+                raise ValueError("missing required PostgreSQL connection value")
+            int(str(secret["POSTGRES_PORT"]))
+            _POSTGRES_SECRET = {key: str(value) for key, value in secret.items()}
+            DB_DSN_SOURCE = "secrets_manager"
+        except Exception as exc:
+            error = getattr(exc, "response", {}).get("Error", {})
+            DB_DSN_ERROR = str(error.get("Code") or type(exc).__name__)
+DB_HOST = _env(
+    "DB_HOST", "POSTGRES_HOST", default=_POSTGRES_SECRET.get("POSTGRES_HOST", "localhost")
+)
+DB_PORT = int(
+    _env("DB_PORT", "POSTGRES_PORT", default=_POSTGRES_SECRET.get("POSTGRES_PORT", "5432"))
+)
+DB_NAME = _env(
+    "DB_NAME", "POSTGRES_DB", default=_POSTGRES_SECRET.get("POSTGRES_DB", "postgres")
+)
+DB_USER = _env(
+    "DB_USER",
+    "POSTGRES_USER",
+    default=_POSTGRES_SECRET.get("POSTGRES_USER", os.getenv("USER", "postgres")),
+)
+DB_PASSWORD = _env(
+    "DB_PASSWORD", "POSTGRES_PASSWORD", default=_POSTGRES_SECRET.get("POSTGRES_PASSWORD", "")
+)
 DB_POOL_MAX = int(_env("DB_POOL_MAX", default="10"))
 
 # ---------------------------------------------------------------------------

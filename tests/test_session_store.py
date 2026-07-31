@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from unittest.mock import patch
 
 
 SESSION_STORE_PATH = Path(__file__).resolve().parents[1] / "text2sql_agent" / "session_store.py"
@@ -12,11 +13,67 @@ session_store_module = module_from_spec(spec)
 spec.loader.exec_module(session_store_module)
 
 InMemorySessionStore = session_store_module.InMemorySessionStore
+PostgresSessionStore = session_store_module.PostgresSessionStore
 RetentionPolicy = session_store_module.RetentionPolicy
 SessionOwnershipError = session_store_module.SessionOwnershipError
 
 
 class SessionStoreTest(unittest.TestCase):
+    def test_postgres_status_creates_missing_schema_and_tables(self) -> None:
+        statements: list[str] = []
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def execute(self, query, *_):
+                statements.append(str(query))
+
+            def fetchone(self):
+                return ("corporate_sales",)
+
+            def close(self):
+                return None
+
+        class Connection:
+            closed = False
+
+            def cursor(self, **_):
+                return Cursor()
+
+            def commit(self):
+                return None
+
+            def rollback(self):
+                return None
+
+        class Pool:
+            closed = False
+
+            def __init__(self):
+                self.connection = Connection()
+
+            def getconn(self):
+                return self.connection
+
+            def putconn(self, *_):
+                return None
+
+        store = PostgresSessionStore()
+        pool = Pool()
+
+        with patch.object(store, "_get_pool", return_value=pool):
+            status = store.status()
+
+        rendered = "\n".join(statements)
+        self.assertEqual(status["schema"], "corporate_sales")
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS", rendered)
+        self.assertIn("CREATE TABLE IF NOT EXISTS webapp_sessions", rendered)
+        self.assertIn("CREATE TABLE IF NOT EXISTS webapp_saved_queries", rendered)
+
     def test_sessions_are_scoped_by_user(self) -> None:
         store = InMemorySessionStore()
         session = store.get_or_create_session(None, "user-a", "manual")

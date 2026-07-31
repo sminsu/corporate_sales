@@ -9,6 +9,16 @@
     <script>
       (() => {
         try {
+          if (localStorage.getItem("loginID") === "OK") return;
+        } catch (_) {
+          /* Storage access failure is treated as unauthorized. */
+        }
+        window.location.replace("access-denied.html");
+      })();
+    </script>
+    <script>
+      (() => {
+        try {
           const storedTheme = localStorage.getItem("text2sql:console:theme:v2");
           if (storedTheme === "dark") {
             delete document.documentElement.dataset.theme;
@@ -18,7 +28,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260728-15" />
+    <link rel="stylesheet" href="styles.css?v=20260730-4" />
   </head>
   <body>
     <a class="skip-link" href="#questionInput">질문 입력으로 건너뛰기</a>
@@ -129,6 +139,10 @@
               <div class="hero-title">
                 <h3>기업영업 관련된 질문을 해주세요</h3>
                 <p>필요한 기간, 대상, 지표를 자연스럽게 질문하면 데이터를 조회하고 핵심만 정리해 드립니다.</p>
+                <button id="userGuideBtn" class="user-guide-trigger" type="button" aria-haspopup="dialog" aria-controls="userGuideDialog">
+                  <span aria-hidden="true">?</span>
+                  사용자 이용가이드
+                </button>
               </div>
               <div id="heroExamples" class="starter-grid" aria-label="예시 질문"></div>
             </div>
@@ -280,6 +294,89 @@
         </article>
       </aside>
     </div>
+
+    <dialog id="userGuideDialog" class="user-guide-dialog" aria-labelledby="userGuideTitle">
+      <div class="user-guide-shell">
+        <header class="user-guide-head">
+          <h2 id="userGuideTitle">사용자 이용가이드</h2>
+          <form method="dialog">
+            <button class="user-guide-close" type="submit" aria-label="사용자 이용가이드 닫기">×</button>
+          </form>
+        </header>
+
+        <div class="user-guide-content">
+          <section>
+            <h3>업무 질문 예시</h3>
+            <div class="user-guide-examples">
+              <article>
+                <h4>기업카드 이용 분석</h4>
+                <ul>
+                  <li>2025년 월별 법인카드 이용금액 합계와 전월 대비 증감률을 보여줘.</li>
+                  <li>2025년 12월 업종별 이용금액 상위 10개를 알려줘.</li>
+                </ul>
+              </article>
+              <article>
+                <h4>기업·가맹점 분석</h4>
+                <ul>
+                  <li>2025년 12월 한빛테크놀로지의 매출과 대손비용률을 분석해줘.</li>
+                  <li>최근 6개월 브랜드별 가맹점 매출 추이를 비교해줘.</li>
+                </ul>
+              </article>
+              <article>
+                <h4>리스크 현황</h4>
+                <ul>
+                  <li>2025년 12월 말 기준 연체 회원 수를 알려줘.</li>
+                  <li>같은 기준일에 여신한도가 큰 기업 상위 10개를 보여줘.</li>
+                </ul>
+              </article>
+            </div>
+          </section>
+
+          <section>
+            <h3>좋은 질문을 하는 방법</h3>
+            <article class="user-guide-tip">
+              <h4>기간 · 대상 · 지표를 함께 적기</h4>
+              <div class="user-guide-comparison">
+                <div class="guide-before">
+                  <strong>이런 질문 대신</strong>
+                  <p>법인카드 이용금액 알려줘.</p>
+                </div>
+                <div class="guide-after">
+                  <strong>이렇게 질문하세요</strong>
+                  <p>2025년 1월부터 6월까지 업종별 법인카드 이용금액 합계를 보여줘.</p>
+                </div>
+              </div>
+            </article>
+            <article class="user-guide-tip">
+              <h4>비교 기준을 구체적으로 적기</h4>
+              <div class="user-guide-comparison">
+                <div class="guide-before">
+                  <strong>이런 질문 대신</strong>
+                  <p>매출이 많이 늘어난 곳 알려줘.</p>
+                </div>
+                <div class="guide-after">
+                  <strong>이렇게 질문하세요</strong>
+                  <p>2025년 12월 매출액이 전월 대비 가장 많이 증가한 업종 상위 10개를 보여줘.</p>
+                </div>
+              </div>
+            </article>
+            <article class="user-guide-tip">
+              <h4>한 번에 하나씩 묻기</h4>
+              <p>첫 결과를 확인한 뒤 후속 질문으로 기간, 대상 또는 지표를 바꾸면 더 정확하게 분석할 수 있습니다.</p>
+            </article>
+          </section>
+
+          <aside class="user-guide-notice">
+            <strong>질문 전 확인해주세요</strong>
+            <p>기업명과 브랜드명은 정확히 입력하고, 주민등록번호 등 고객 민감 정보는 입력하지 마세요.</p>
+          </aside>
+        </div>
+
+        <form class="user-guide-actions" method="dialog">
+          <button type="submit">확인</button>
+        </form>
+      </div>
+    </dialog>
 
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <script>
@@ -440,6 +537,8 @@ const followupBox = $("#followupBox");
 const suggestionList = $("#suggestionList");
 const threadBody = $(".thread-body");
 const heroExamples = $("#heroExamples");
+const userGuideBtn = $("#userGuideBtn");
+const userGuideDialog = $("#userGuideDialog");
 const promptCoach = $("#promptCoach");
 const promptCoachMessage = $("#promptCoachMessage");
 const copyTableBtn = $("#copyTableBtn");
@@ -1797,8 +1896,7 @@ function renderSessions(sessions) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const groups = [
     { label: "오늘", maxDays: 0, sessions: [] },
-    { label: "최근 3일", maxDays: 3, sessions: [] },
-    { label: "최근 1주일", maxDays: 7, sessions: [] },
+    { label: "이전 7일", maxDays: 7, sessions: [] },
     { label: "이전 30일", maxDays: 30, sessions: [] },
   ];
 
@@ -2945,6 +3043,10 @@ document.addEventListener("click", (event) => {
   const exampleButton = event.target.closest("[data-example]");
   if (!exampleButton) return;
   chooseExample(exampleButton.dataset.example || exampleButton.textContent || "");
+});
+
+userGuideBtn.addEventListener("click", () => {
+  if (!userGuideDialog.open) userGuideDialog.showModal();
 });
 
 answerBox.addEventListener("click", (event) => {

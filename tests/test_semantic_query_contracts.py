@@ -42,6 +42,12 @@ from text2sql_agent.schema import (
             "merchant_sales",
             ["tbdaaus01"],
         ),
+        (
+            "2026년 6월 기준 법인회원의 유실적 업체수를 알려주세요",
+            "corporate_member_with_monthly_usage_count",
+            "corporate_sales_targeting",
+            ["tbdaa1d12"],
+        ),
     ],
 )
 def test_semantic_contracts_route_paraphrases_without_exact_verified_query_text(
@@ -82,6 +88,10 @@ def test_semantic_contracts_route_paraphrases_without_exact_verified_query_text(
             "2026년 4월 현재 신용카드 없이 기업 체크카드만 갖고 있고 올해 월평균 5천만원 넘게 쓴 기업",
             "corporate_check_card_only_high_monthly_avg",
         ),
+        (
+            "2026년 6월 기준 법인회원의 유실적 업체수를 알려주세요",
+            "corporate_member_with_usage_count",
+        ),
     ],
 )
 def test_semantic_contracts_select_bound_verified_queries(
@@ -92,6 +102,29 @@ def test_semantic_contracts_select_bound_verified_queries(
 
     assert capability is not None
     assert capability["matched_query_name"] == verified_query
+
+
+def test_corporate_member_with_usage_count_uses_month_latest_snapshot() -> None:
+    question = "2026년 6월 기준 법인회원의 유실적 업체수를 알려주세요"
+    selection = workflow._select_verified_query_capability(question, {})
+
+    assert workflow._rule_classify_question(question)
+    assert selection is not None
+    result = workflow.extract_and_apply_params(
+        {
+            "question": question,
+            "matched_query_name": selection["matched_query_name"],
+            "matched_query_sql": selection["matched_query_sql"],
+            "matched_query_params": selection["matched_query_params"],
+        }
+    )
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"]["기준년월"] == "202606"
+    assert 'COUNT(DISTINCT r."고객식별자") AS "유실적업체수"' in result["final_sql"]
+    assert "BETWEEN CONCAT('202606', '01') AND CONCAT('202606', '31')" in result["final_sql"]
+    assert 'ROW_NUMBER() OVER (PARTITION BY a."고객식별자"' in result["final_sql"]
+    assert 'COALESCE(r."금월신용카드이용금액", 0)' in result["final_sql"]
 
 
 def test_supported_contract_execution_bindings_are_valid() -> None:

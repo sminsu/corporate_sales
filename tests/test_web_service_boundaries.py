@@ -53,6 +53,15 @@ def test_health_endpoint_does_not_expose_provider_or_internal_details() -> None:
     with (
         patch.object(web_service, "_LLM_HEALTH_CACHE", {"checked_at": 0.0, "data": None}),
         patch.object(web_service.agent, "probe_llm", return_value=probe),
+        patch.object(
+            web_service.agent_db,
+            "probe_database",
+            return_value={
+                "database_ready": False,
+                "database_status": "credentials_unavailable",
+                "database_source": "secrets_manager",
+            },
+        ),
         patch.object(web_service._SESSION_STORE, "status", return_value=session_status),
         TestClient(web_service.app) as client,
     ):

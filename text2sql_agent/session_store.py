@@ -436,6 +436,7 @@ class PostgresSessionStore:
             self._pool.closeall()
 
     def status(self) -> dict[str, Any]:
+        self._ensure_schema()
         return {
             "kind": self.kind,
             "persistent": True,
@@ -449,6 +450,8 @@ class PostgresSessionStore:
         from . import config as agent_config
 
         if self._pool is None or self._pool.closed:
+            if agent_config.DB_DSN_ERROR:
+                raise RuntimeError("PostgreSQL 접속 정보를 Secrets Manager에서 불러오지 못했습니다.")
             dsn = _env("WEBAPP_POSTGRES_DSN", "SESSION_POSTGRES_DSN", "DATABASE_URL", "DB_DSN", "POSTGRES_DSN", "KBCARD_POSTGRES_DSN")
             maxconn = int(_env("WEBAPP_DB_POOL_MAX", "DB_POOL_MAX", default=str(agent_config.DB_POOL_MAX)))
             if dsn:
@@ -472,6 +475,7 @@ class PostgresSessionStore:
                 from psycopg2 import sql
 
                 with conn.cursor() as cur:
+                    cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(self.schema)))
                     cur.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(self.schema)))
                     cur.execute("SELECT current_schema()")
                     current_schema = cur.fetchone()[0]

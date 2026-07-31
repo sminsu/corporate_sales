@@ -22,6 +22,8 @@ from .config import (
     ATHENA_WORKGROUP,
     DB_BACKEND,
     DB_DSN,
+    DB_DSN_ERROR,
+    DB_DSN_SOURCE,
     DB_HOST,
     DB_NAME,
     DB_PASSWORD,
@@ -29,6 +31,7 @@ from .config import (
     DB_PORT,
     DB_SCHEMA,
     DB_USER,
+    SESSION_STORE_BACKEND,
 )
 
 
@@ -236,6 +239,8 @@ def _get_pool():
     import psycopg2.pool  # 지연 import: athena 전용 배포에서 psycopg2 미설치를 허용.
 
     if _pool is None or _pool.closed:
+        if DB_DSN_ERROR:
+            raise RuntimeError("PostgreSQL 접속 정보를 Secrets Manager에서 불러오지 못했습니다.")
         if DB_DSN:
             _pool = psycopg2.pool.ThreadedConnectionPool(1, DB_POOL_MAX, DB_DSN)
         else:
@@ -253,6 +258,34 @@ def _get_pool():
 
 def get_db_connection():
     return _get_pool().getconn()
+
+
+def probe_database() -> dict[str, object]:
+    """Return a public-safe PostgreSQL connectivity result."""
+    if DB_BACKEND != "postgres" and SESSION_STORE_BACKEND != "postgres":
+        return {"database_ready": False, "database_status": "not_applicable", "database_source": "none"}
+    if DB_DSN_ERROR:
+        return {
+            "database_ready": False,
+            "database_status": "credentials_unavailable",
+            "database_source": "secrets_manager",
+            "database_error_type": DB_DSN_ERROR,
+        }
+    try:
+        _, rows = _execute_postgres("SELECT 1")
+        ready = bool(rows and rows[0][0] == 1)
+        return {
+            "database_ready": ready,
+            "database_status": "ready" if ready else "unavailable",
+            "database_source": DB_DSN_SOURCE,
+        }
+    except Exception as exc:
+        return {
+            "database_ready": False,
+            "database_status": "unavailable",
+            "database_source": DB_DSN_SOURCE,
+            "database_error_type": type(exc).__name__,
+        }
 
 
 def _return_connection(conn, *, close: bool = False):

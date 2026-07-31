@@ -344,7 +344,7 @@ def _looks_like_schema_question(question: str) -> bool:
 def _rule_classify_question(question: str) -> bool:
     """Deterministically route obvious data lookup/aggregation questions to SQL."""
     q = question or ""
-    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|가맹점\s*(수|개수)|가맹점수|승인율|연체|한도|비율|률|순위|정렬", q))
+    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|(?:가맹점|업체|기업|법인|회사|회원|고객)\s*(?:수|개수)|가맹점수|(?:유효)?카드\s*(?:수|개수)|몇\s*좌|좌\s*수|발급|승인율|연체|한도|비율|률|순위|정렬", q))
     has_entity_or_group = bool(re.search(r"가맹점|기업|회사|고객|상호|브랜드|업종|별|도미노피자", q))
     has_time_or_order = bool(re.search(r"저번\s*달|지난\s*달|전월|이번\s*달|이번\s*월|최근|기준|20\d{2}\s*년|\d{1,2}\s*월|높은\s*순|낮은\s*순|정렬", q))
     return has_metric and (has_entity_or_group or has_time_or_order)
@@ -790,6 +790,14 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
 
     now = datetime.now()
     current = f"{now.year}{now.month:02d}"
+    half_year = re.search(r"(?:(20\d{2})\s*년\s*)?(상반기|하반기)", text)
+    if half_year:
+        year = int(half_year.group(1) or now.year)
+        return (
+            (f"{year}01", f"{year}06", explicit_day)
+            if half_year.group(2) == "상반기"
+            else (f"{year}07", f"{year}12", explicit_day)
+        )
     recent = re.search(r"(?:최근|지난)\s*(\d+)\s*(?:개월|달)", text)
     if recent:
         span = max(1, min(int(recent.group(1)), 120))
@@ -823,6 +831,40 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     if re.search(r"이번\s*(?:달|월)|현재(?:\s*(?:월|시점))?|최근", text):
         return current, current, explicit_day
     return "", "", explicit_day
+
+
+def _extract_card_issue_cancel_periods_by_rule(question: str) -> tuple[str, str, str, str]:
+    """Extract separate issue and cancellation month ranges from one sentence."""
+    text = re.sub(r"\s+", " ", question or "").strip()
+    month_spec = r"[0-9월,·~\-\s]+"
+    patterns = (
+        (
+            rf"발급(?:을|한|하고|일)?\s*(?P<year>20\d{{2}}|\d{{2}})\s*년\s*"
+            rf"(?P<issued>{month_spec})(?:에|중에)?\s*(?:하고|후|뒤|이후)\s*"
+            rf"(?P<cancelled>{month_spec})(?:안에|내에|중에|에)?\s*해지"
+        ),
+        (
+            rf"(?P<year>20\d{{2}}|\d{{2}})\s*년\s*(?P<issued>{month_spec})"
+            rf"(?:에|중에)?\s*발급.{0,20}?(?:하고|후|뒤|이후)\s*"
+            rf"(?P<cancelled>{month_spec})(?:안에|내에|중에|에)?\s*해지"
+        ),
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        year = int(match.group("year"))
+        year = year + 2000 if year < 100 else year
+        issued = [int(value) for value in re.findall(r"\d{1,2}", match.group("issued"))]
+        cancelled = [int(value) for value in re.findall(r"\d{1,2}", match.group("cancelled"))]
+        if issued and cancelled and all(1 <= month <= 12 for month in issued + cancelled):
+            return (
+                f"{year}{min(issued):02d}",
+                f"{year}{max(issued):02d}",
+                f"{year}{min(cancelled):02d}",
+                f"{year}{max(cancelled):02d}",
+            )
+    return "", "", "", ""
 
 
 _AMOUNT_UNIT = {
@@ -1030,6 +1072,35 @@ def _extract_company_name_by_rule(question: str) -> str:
     return candidate if candidate and candidate not in generic and len(candidate) <= 80 else ""
 
 
+def _extract_card_product_name_by_rule(question: str) -> str:
+    """Extract a card product name from product-specific portfolio questions."""
+    text = re.sub(r"\s+", " ", question or "").strip()
+    token = r"[0-9A-Za-z가-힣&()._-]+"
+    patterns = (
+        (
+            rf"^(?:현재\s*기준|현재|최신\s*기준)?\s*"
+            rf"(?P<name>{token}(?:\s+{token}){{0,5}}?)\s+"
+            rf"(?:기업|법인)카드\s+유효\s*카드\s*(?:수|개수)"
+        ),
+        (
+            rf"(?:(?:20\d{{2}}\s*년\s*)?(?:상반기|하반기))\s+"
+            rf"(?P<name>{token}(?:\s+{token}){{0,5}}?)\s+체크카드"
+        ),
+    )
+    generic = {
+        "기업", "법인", "기업카드", "법인카드", "체크", "체크카드",
+        "상품", "카드상품", "해당", "특정", "전체", "모든",
+    }
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        candidate = match.group("name").strip()
+        if candidate and candidate not in generic and len(candidate) <= 80:
+            return candidate
+    return ""
+
+
 def _is_named_merchant_sales_question(question: str) -> bool:
     """Return whether a question unambiguously asks named merchant sales."""
     return bool(
@@ -1144,6 +1215,10 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
         company_name = _extract_company_name_by_rule(question)
         if company_name:
             params["기업명"] = company_name
+    if "상품명" in names:
+        product_name = _extract_card_product_name_by_rule(question)
+        if product_name:
+            params["상품명"] = product_name
     for name in ("LS", "IS"):
         if name in names:
             match = re.search(rf"(?<![A-Za-z]){name}\s*(?:[:=은는])?\s*(-?\d+(?:\.\d+)?)", question or "", re.IGNORECASE)
@@ -1159,6 +1234,15 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
                 break
     if "이름정확일치" in names and _is_exact_name_match_requested(question):
         params["이름정확일치"] = True
+    issue_start, issue_end, cancel_start, cancel_end = _extract_card_issue_cancel_periods_by_rule(question)
+    for name, value in {
+        "발급기간_시작": issue_start,
+        "발급기간_종료": issue_end,
+        "해지기간_시작": cancel_start,
+        "해지기간_종료": cancel_end,
+    }.items():
+        if name in names and value:
+            params[name] = value
     return params
 
 
@@ -1964,14 +2048,16 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
     base_sql = state["matched_query_sql"]
     vq_name = state.get("matched_query_name", "")
     vq_params_def = state.get("matched_query_params", {})
-    base_specs = VQ_PARAM_SPECS.get(vq_name, [
-        {"name": "기간_시작", "type": "string", "description": "조회 시작 기준년월 (YYYYMM)"},
-        {"name": "기간_종료", "type": "string", "description": "조회 종료 기준년월 (YYYYMM)"},
-        {"name": "기업명", "type": "string", "description": "기업/상호명 (부분일치)"},
-        {"name": "가맹점명", "type": "string", "description": "가맹점명 (부분일치)"},
-        {"name": "업종", "type": "string", "description": "업종명/업종 대분류 (부분일치)"},
-        {"name": "limit", "type": "integer", "description": "결과 행수 제한"},
-    ])
+    base_specs = VQ_PARAM_SPECS.get(vq_name)
+    if base_specs is None:
+        base_specs = [] if vq_params_def else [
+            {"name": "기간_시작", "type": "string", "description": "조회 시작 기준년월 (YYYYMM)"},
+            {"name": "기간_종료", "type": "string", "description": "조회 종료 기준년월 (YYYYMM)"},
+            {"name": "기업명", "type": "string", "description": "기업/상호명 (부분일치)"},
+            {"name": "가맹점명", "type": "string", "description": "가맹점명 (부분일치)"},
+            {"name": "업종", "type": "string", "description": "업종명/업종 대분류 (부분일치)"},
+            {"name": "limit", "type": "integer", "description": "결과 행수 제한"},
+        ]
     param_specs = [dict(spec) for spec in base_specs]
     for pname, pinfo in vq_params_def.items():
         info = pinfo if isinstance(pinfo, dict) else {}
