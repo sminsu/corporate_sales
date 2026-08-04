@@ -9,6 +9,13 @@ import web_service
 from text2sql_agent import workflow
 
 
+def test_basis_date_continuation_normalizes_month_to_month_end() -> None:
+    missing = [{"name": "기준년월일", "type": "string"}]
+
+    assert web_service._natural_params_by_rule("2026년 7월", missing) == {"기준년월일": "20260731"}
+    assert web_service._natural_params_by_rule("2026년 7월 15일", missing) == {"기준년월일": "20260715"}
+
+
 def test_progress_payload_includes_public_routing_context() -> None:
     payload = web_service._progress_payload(
         "route_domain",
@@ -53,15 +60,6 @@ def test_health_endpoint_does_not_expose_provider_or_internal_details() -> None:
     with (
         patch.object(web_service, "_LLM_HEALTH_CACHE", {"checked_at": 0.0, "data": None}),
         patch.object(web_service.agent, "probe_llm", return_value=probe),
-        patch.object(
-            web_service.agent_db,
-            "probe_database",
-            return_value={
-                "database_ready": False,
-                "database_status": "credentials_unavailable",
-                "database_source": "secrets_manager",
-            },
-        ),
         patch.object(web_service._SESSION_STORE, "status", return_value=session_status),
         TestClient(web_service.app) as client,
     ):
@@ -78,6 +76,17 @@ def test_health_endpoint_does_not_expose_provider_or_internal_details() -> None:
         assert sensitive not in serialized
     for internal_key in ("base_url", "endpoint_path", "provider_error", "config_path", "dsn", "file_path"):
         assert internal_key not in serialized
+
+
+def test_session_delete_only_hides_when_postgres_delete_is_disabled() -> None:
+    with (
+        patch.object(web_service._SESSION_STORE, "delete_enabled", False, create=True),
+        patch.object(web_service._SESSION_STORE, "delete_session") as delete_session,
+    ):
+        result = web_service.delete_session("session-a", "user-a")
+
+    assert result == {"deleted": False, "hidden": True, "session_id": "session-a"}
+    delete_session.assert_not_called()
 
 
 def _base_followup_result() -> dict:

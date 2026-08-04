@@ -336,12 +336,48 @@ def _tokenize_text(text: str) -> set[str]:
 
 _GENERIC_RETRIEVAL_TOKENS = {
     "가맹점", "거래", "고객", "기준", "기업", "금액", "기간", "매출", "분석", "보여줘",
-    "사용", "상태", "알려줘", "월별", "이용", "전체", "조회", "특정", "현황", "회원", "카드",
+    "법인", "사업체", "업체", "회사",
+    "과거", "당시", "사용", "상태", "시점별", "알려줘", "연도별", "월별", "이용", "일별",
+    "전체", "조회", "지금", "최근", "최신", "특정", "현재", "현시점", "현황", "회원", "카드",
+    "목록", "명단", "리스트", "찾아줘",
+    "이용금액", "사용금액", "매출금액", "카드이용금액", "카드사용금액",
 }
 
 
 def _compact_text(value: object) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣_]", "", str(value or "").lower())
+
+
+_HISTORICAL_PERIOD_RE = re.compile(
+    r"(?:"
+    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|20\d{2}[.-]\d{1,2}|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)|\d{1,2}\s*월|"
+    r"(?:최근|지난)\s*(?:\d+|일|반)\s*(?:개월|달|년)|"
+    r"당시|과거|월별|일별|연도별|시점별|기간별|분기|상반기|하반기|"
+    r"어제|내일|지난|전월|전년|작년|올해"
+    r")"
+)
+
+
+def _has_historical_period_expression(question: str) -> bool:
+    """Whether a question explicitly asks for a historical/as-of attribute."""
+    return bool(_HISTORICAL_PERIOD_RE.search(question or ""))
+
+
+def _phrase_in_text(question: str, phrase: object) -> bool:
+    """Match a Korean business phrase without crossing adjacent word boundaries."""
+    chunks = _TOKEN_RE.findall(str(phrase or ""))
+    if not chunks:
+        return False
+    body = r"[^0-9A-Za-z가-힣_]*".join(re.escape(chunk) for chunk in chunks)
+    particles = r"(?:으로|에서|에게|의|은|는|이|가|을|를|에|로|와|과|도|만|별|인)?"
+    return bool(
+        re.search(
+            rf"(?<![0-9A-Za-z가-힣_]){body}(?={particles}(?:[^0-9A-Za-z가-힣_]|$))",
+            question or "",
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def semantic_attribute_candidates(
@@ -357,7 +393,6 @@ def semantic_attribute_candidates(
     keeps physical-column selection and code-value resolution in the semantic
     layer while returning only a small prompt context for local models.
     """
-    q_compact = _compact_text(question)
     scored: list[tuple[int, int, int, dict]] = []
     for position, attribute in enumerate(schema.get("semantic_attributes", [])):
         domains = attribute.get("domains", attribute.get("domain", []))
@@ -374,11 +409,13 @@ def semantic_attribute_candidates(
             (
                 len(compact)
                 for term in terms
-                if (compact := _compact_text(term)) and len(compact) >= 2 and compact in q_compact
+                if (compact := _compact_text(term))
+                and len(compact) >= 2
+                and _phrase_in_text(question, term)
             ),
             default=0,
         )
-        overlap, specific = _retrieval_overlap(
+        overlap, _specific = _retrieval_overlap(
             question,
             _join_texts(
                 terms,
@@ -403,12 +440,15 @@ def semantic_attribute_candidates(
                         for term in value_terms
                         if (compact := _compact_text(term))
                         and len(compact) >= 2
-                        and compact in q_compact
+                        and _phrase_in_text(question, term)
                     ),
                     default=0,
                 ),
             )
-        if exact or value_hit or overlap >= 2 or specific:
+        # Attribute routing requires an explicit attribute phrase or a full
+        # code label.  Free-text overlap with definitions/cautions is too broad
+        # for selecting physical codebook tables.
+        if exact or value_hit:
             scored.append((max(exact, value_hit), overlap, -position, attribute))
     scored.sort(key=lambda item: item[:3], reverse=True)
     return [attribute for _, _, _, attribute in scored[: max(0, max_count)]]
@@ -422,6 +462,37 @@ def resolve_semantic_attribute_value(
     """Resolve a code value from a semantic attribute's labels and aliases."""
     q_compact = _compact_text(question)
     matches: list[tuple[int, str]] = []
+
+    def occurrences(term: str) -> list[tuple[int, int]]:
+        spans = []
+        start = 0
+        while term and (index := q_compact.find(term, start)) >= 0:
+            spans.append((index, index + len(term)))
+            start = index + 1
+        return spans
+
+    def semantic_value_terms(attribute: dict) -> set[str]:
+        return {
+            compact
+            for raw_value in (attribute.get("value_semantics") or {}).values()
+            for value_info in [raw_value if isinstance(raw_value, dict) else {"label": raw_value}]
+            for term in [value_info.get("label", ""), *value_info.get("aliases", [])]
+            if (compact := _compact_text(term))
+        }
+
+    def attribute_cues(attribute: dict) -> set[str]:
+        value_terms = semantic_value_terms(attribute)
+        return {
+            compact
+            for term in [
+                attribute.get("name", ""),
+                attribute.get("korean_name", ""),
+                attribute.get("parameter_name", ""),
+                *attribute.get("aliases", []),
+            ]
+            if (compact := _compact_text(term)) and compact not in value_terms
+        }
+
     for attribute in schema.get("semantic_attributes", []):
         names = {
             str(attribute.get("name") or ""),
@@ -429,12 +500,37 @@ def resolve_semantic_attribute_value(
         }
         if attribute_or_parameter not in names:
             continue
+        target_cue_hit = any(cue in q_compact for cue in attribute_cues(attribute))
+        foreign_attributes = [
+            other for other in schema.get("semantic_attributes", []) if other is not attribute
+        ]
+        foreign_terms = {
+            term for other in foreign_attributes for term in semantic_value_terms(other)
+        }
         for code, raw_value in (attribute.get("value_semantics") or {}).items():
             value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
             terms = [value_info.get("label", ""), *value_info.get("aliases", [])]
             for term in terms:
                 compact = _compact_text(term)
-                if compact and len(compact) >= 2 and compact in q_compact:
+                if len(compact) < 2:
+                    continue
+                # The same label can be a valid value in multiple business
+                # codebooks (for example 주부, 지점, 은행, 기타).  A bare
+                # duplicate is ambiguous, so resolve it only when the question
+                # names this attribute explicitly.
+                if compact in foreign_terms and not target_cue_hit:
+                    continue
+                target_spans = occurrences(compact)
+                shadow_spans = [
+                    span
+                    for foreign in foreign_terms
+                    if len(foreign) > len(compact) and compact in foreign
+                    for span in occurrences(foreign)
+                ]
+                if any(
+                    not any(start <= target_start and target_end <= end for start, end in shadow_spans)
+                    for target_start, target_end in target_spans
+                ):
                     matches.append((len(compact), str(code)))
     return max(matches)[1] if matches else ""
 
@@ -484,6 +580,23 @@ def build_semantic_attributes_summary(
             )
         if attribute.get("parameter_name"):
             lines.append(f"  parameter_name: {attribute.get('parameter_name')}")
+        if attribute.get("codebook_status"):
+            lines.append(f"  codebook_status: {attribute.get('codebook_status')}")
+        if attribute.get("value_semantics_provenance"):
+            lines.append(
+                "  value_semantics_provenance: "
+                + str(attribute.get("value_semantics_provenance"))
+            )
+        if attribute.get("codebook_validity"):
+            lines.append(
+                "  codebook_validity: "
+                + json.dumps(attribute.get("codebook_validity"), ensure_ascii=False)
+            )
+        if attribute.get("source_selection"):
+            lines.append(
+                "  source_selection: "
+                + json.dumps(attribute.get("source_selection"), ensure_ascii=False)
+            )
         mappings = attribute.get("source_mappings", [])
         if mappings:
             lines.append("  source_mappings:")
@@ -518,7 +631,18 @@ def _retrieval_overlap(question: str, evidence: str) -> tuple[int, bool]:
     for concise requests such as ``연체 알려줘``.
     """
     evidence_lower = str(evidence or "").lower()
-    question_tokens = _tokenize_text(question)
+    generic_suffixes = {
+        "의", "은", "는", "이", "가", "을", "를", "에", "에서", "에게",
+        "로", "으로", "와", "과", "도", "만", "별", "중", "인",
+    }
+    question_tokens = set()
+    for token in _tokenize_text(question):
+        normalized = token
+        for generic in sorted(_GENERIC_RETRIEVAL_TOKENS, key=len, reverse=True):
+            if token.startswith(generic) and token[len(generic) :] in generic_suffixes:
+                normalized = generic
+                break
+        question_tokens.add(normalized)
     matched = {token for token in question_tokens if token in evidence_lower}
     specific = any(token not in _GENERIC_RETRIEVAL_TOKENS and len(token) >= 2 for token in matched)
     return len(matched), specific
@@ -619,6 +743,10 @@ def _semantic_query_contract_score(schema: dict, question: str, contract: dict) 
 
     excluded = match.get("excluded", [])
     if any(phrase_hit(value) for value in excluded):
+        return 0
+    if match.get("exclude_explicit_period") and _has_historical_period_expression(question):
+        return 0
+    if match.get("require_explicit_period") and not _has_historical_period_expression(question):
         return 0
 
     required = match.get("required", [])

@@ -85,7 +85,7 @@ corporate-sales/
 
 - Python Tool은 `대손비용률_분석`만 유지합니다. 대손비용률과 보정계수 반영 대손율을 계산하고 Excel 결과를 생성합니다.
 - schema에 있던 verified query와 SQL 생성 템플릿은 `text2sql_agent/tools/sql_verified_queries.yaml`에서 한 곳에 관리합니다.
-- 런타임은 semantic schema의 물리 테이블 30개(정의서 28개, 호환 리스크 2개)에 맞는 쿼리만 활성화합니다. 관리기업 범위는 semantic table로 등록하지 않고 `관리기업목록` 요청 파라미터에서 실행 시 VALUES CTE로 생성합니다. 현재 스키마에 없는 물리 테이블을 참조하는 항목은 `disabled_verified_queries`로 분리되어 모델 매칭·실행 대상에서 제외됩니다.
+- 런타임은 semantic schema의 물리 테이블 31개(기존 정의서 30개 + 월 기업고객 스냅샷 1개)에 맞는 쿼리만 활성화합니다. 관리기업 범위는 semantic table로 등록하지 않고 `관리기업목록` 요청 파라미터에서 실행 시 VALUES CTE로 생성합니다. 현재 스키마에 없는 물리 테이블을 참조하는 항목은 `disabled_verified_queries`로 분리되어 모델 매칭·실행 대상에서 제외됩니다.
 - 다른 verified query 파일을 쓰려면 `VERIFIED_QUERY_FILE_PATH`를 지정하고, 배포 전에 `python scripts/run_quality_eval.py`로 테이블 정합성을 확인합니다.
 
 ### 관리기업 목록 파라미터 입력
@@ -201,6 +201,8 @@ WEBAPP_SESSION_STORE=postgres
 KBCARD_POSTGRES_SECRET_ID=keyscr-aihub-dev-ane2-agentifo
 AWS_REGION=ap-northeast-2
 WEBAPP_POSTGRES_SCHEMA=corporate_sales
+# 현재 PostgreSQL 계정에 DELETE 권한이 없으면 false. 권한 부여 후 true로 전환
+WEBAPP_POSTGRES_DELETE_ENABLED=false
 
 # 운영 로그는 DB에 저장하지 않고 stdout JSONL로 출력
 KBCARD_LOG_LEVEL=INFO
@@ -237,8 +239,12 @@ PostgreSQL에는 운영 로그를 적재하지 않습니다.
 브라우저 UI의 멀티턴 상태는 FastAPI worker 메모리가 아니라 저장소에 보관합니다. 운영에서는
 `WEBAPP_SESSION_STORE=postgres`와 `KBCARD_POSTGRES_SECRET_ID`를 지정하세요. Secret은
 `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`와 선택 항목인
-`POSTGRES_DB`를 JSON 키로 포함해야 합니다. 앱 시작 시 `corporate_sales` 스키마와 다음 테이블을
-`CREATE SCHEMA/TABLE IF NOT EXISTS`로 자동 준비합니다.
+`POSTGRES_DB`를 JSON 키로 포함해야 합니다. `corporate_sales` 스키마와 다음 테이블은 배포 전에
+미리 준비해야 하며, 애플리케이션은 스키마나 테이블을 생성하지 않습니다.
+
+`WEBAPP_POSTGRES_DELETE_ENABLED=false`이면 PostgreSQL에는 `DELETE`를 실행하지 않습니다. 세션 삭제 버튼은
+해당 브라우저의 목록에서만 세션을 숨기며 DB 행은 유지합니다. 권한 부여 후 `true`로 바꾸면 숨긴 세션이
+다시 표시되고 실제 삭제를 사용할 수 있습니다.
 
 - `webapp_sessions`: 사용자별 대화방, 마지막 결과, 누락 파라미터 continuation
 - `webapp_messages`: user/assistant 메시지 본문과 응답 payload
@@ -287,6 +293,7 @@ WEBAPP_SESSION_STORE=postgres
 KBCARD_POSTGRES_SECRET_ID=keyscr-aihub-dev-ane2-agentifo
 AWS_REGION=ap-northeast-2
 WEBAPP_POSTGRES_SCHEMA=corporate_sales
+WEBAPP_POSTGRES_DELETE_ENABLED=false
 
 # 운영 로그는 stdout JSONL
 KBCARD_LOG_LEVEL=INFO
@@ -389,7 +396,8 @@ athena_partition:
 
 회사 Athena DDL에서 파티션 키가 `daty`라면 `day` 대신 `name: daty`로 적으면 됩니다.
 
-기본 schema는 `semantic_layer.yaml`입니다. `테이블 내용 예시_001.xlsx`의 28개 테이블·2,009개 컬럼과
+기본 schema는 `semantic_layer.yaml`입니다. `테이블 내용 예시_001.xlsx`의 30개 테이블·2,061개 컬럼과
+`예시.xlsx`의 `tmdaa1d12` 월 스냅샷 79개 컬럼(`tbdaaat18`은 기존 정의 교차 검증)을 합쳐 총 31개 테이블·2,140개 원천 컬럼으로 구성합니다.
 `athena_text2sql_reference.xlsx`의 기본 9개·추가 3개 질의를 기준으로 기업영업 semantic contract를 구성하며,
 실행용 Athena VQ는 `text2sql_agent/tools/sql_verified_queries.yaml`에서 관리합니다.
 다른 schema를 쓰려면 다음 환경 변수를 지정하면 됩니다.

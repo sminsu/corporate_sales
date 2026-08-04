@@ -6,6 +6,23 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 INDEX_HTML = ROOT / "web" / "static" / "index.html"
 STYLES_CSS = INDEX_HTML.parent / "styles.css"
+FONT_DIR = INDEX_HTML.parent / "fonts"
+
+
+def test_all_frontend_fonts_use_bundled_kbfg_assets() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    css = STYLES_CSS.read_text(encoding="utf-8")
+    font_files = (
+        "KBfgTextB.ttf",
+        "KBfgTextM.ttf",
+        "KBfgTextL.ttf",
+    )
+
+    assert all((FONT_DIR / name).read_bytes()[:4] == b"\x00\x01\x00\x00" for name in font_files)
+    assert all(f'url("./fonts/{name}")' in css for name in font_files)
+    assert '--mono: "BodyFont", sans-serif;' in css
+    assert 'ctx.font = \'11px "BodyFont", sans-serif\';' in source
+    assert "Pretendard" not in f"{css}\n{source}"
 
 
 def test_frontend_uses_requested_branding_without_sidebar_logo() -> None:
@@ -46,6 +63,17 @@ def test_recent_sessions_are_grouped_by_last_activity() -> None:
     assert "session.updated_at || session.created_at" in source
     assert "ageDays <= group.maxDays" in source
     assert ".session-group-label" in css
+    assert "align-content: start;" in css.split(".session-list {")[-1].split("}", 1)[0]
+
+
+def test_session_delete_hides_locally_until_database_delete_is_enabled() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "HIDDEN_SESSION_IDS_KEY" in source
+    assert "!hiddenIds.has(session.id)" in source
+    assert "if (result.hidden)" in source
+    assert "localStorage.setItem(HIDDEN_SESSION_IDS_KEY" in source
+    assert "if (state.sessionDeleteEnabled) localStorage.removeItem(HIDDEN_SESSION_IDS_KEY)" in source
 
 
 def test_question_focus_uses_a_black_border_without_blue_outline() -> None:

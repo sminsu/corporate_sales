@@ -139,7 +139,7 @@ def _month_end_yyyymmdd(yyyymm: str) -> str:
 
 VQ_PARAM_SPECS: dict[str, list[dict]] = {
     "corporate_card_active_no_usage_members": [
-        {"name": "기준년월", "type": "string", "description": "카드 보유 여부를 판단할 기준년월 (YYYYMM)"},
+        {"name": "기준년월일", "type": "string", "description": "카드 보유 여부와 무실적을 판단할 기준일 (YYYYMMDD)"},
         {"name": "조회개월수", "type": "integer", "description": "기준월을 포함한 무실적 판정 개월 수"},
         {"name": "limit", "type": "integer", "description": "상세 목록 제한 건수"},
     ],
@@ -249,6 +249,23 @@ VQ_PARAM_SPECS: dict[str, list[dict]] = {
 def _apply_params_to_vq(base_sql: str, params: dict, vq_name: str, vq_params_def: dict) -> str:
     sql = _apply_name_placeholder_mode(base_sql, params or {})
     params = dict(params or {})
+    if vq_name == "brand_merchants_with_corporate_card":
+        card_kind = str(
+            params.get("기업카드종류")
+            or (vq_params_def.get("기업카드종류") or {}).get("default")
+            or "all"
+        ).lower()
+        card_filter = {
+            "credit": 'COALESCE(r."유효기업신용카드수", 0) > 0',
+            "check": 'COALESCE(r."유효기업체크카드수", 0) > 0',
+            "all": (
+                '(COALESCE(r."유효기업신용카드수", 0) + '
+                'COALESCE(r."유효기업체크카드수", 0)) > 0'
+            ),
+        }.get(card_kind)
+        if card_filter is None:
+            raise ValueError("기업카드종류는 credit, check, all 중 하나여야 합니다.")
+        sql = sql.replace("{기업카드보유조건}", card_filter)
     has_explicit_time_placeholders = any(
         placeholder in base_sql
         for placeholder in ("{기준년월}", "{기간_시작}", "{기간_종료}", "{시작일}", "{종료일}")
@@ -282,6 +299,27 @@ def _apply_params_to_vq(base_sql: str, params: dict, vq_name: str, vq_params_def
                 sql,
                 flags=re.IGNORECASE,
             )
+
+    daily_columns = (
+        "전표매출년월일",
+        "최종심사년월일",
+        "기준년월일",
+        "실적기준년월일",
+    )
+    daily_column_pattern = "|".join(map(re.escape, daily_columns))
+    explicit_daily_period = re.search(
+        rf'(?:{daily_column_pattern})"?\s+BETWEEN\s+[\'\"]?\{{기간_시작\}}[\'\"]?'
+        rf'\s+AND\s+[\'\"]?\{{기간_종료\}}[\'\"]?',
+        base_sql,
+        re.IGNORECASE,
+    )
+    if explicit_daily_period:
+        start = _sanitize_param(str(params.get("기간_시작") or ""))
+        end = _sanitize_param(str(params.get("기간_종료") or ""))
+        if re.fullmatch(r"\d{6}", start):
+            params["기간_시작"] = start + "01"
+        if re.fullmatch(r"\d{6}", end):
+            params["기간_종료"] = _month_end_yyyymmdd(end)
 
     for pname, pinfo in vq_params_def.items():
         placeholder = "{" + pname + "}"
@@ -325,7 +363,7 @@ def _apply_params_to_vq(base_sql: str, params: dict, vq_name: str, vq_params_def
         elif end:
             where_additions.append(f"{detected_time_col} <= '{end}'")
     company = params.get("기업명")
-    if company:
+    if company and "{기업명}" not in base_sql:
         company = _escape_like(company)
         company_pattern = company if _exact_name_match(params) else f"%{company}%"
         for col in ["상호명", "기업검색명", "기업명"]:
@@ -415,7 +453,7 @@ def _period_conds_daily(params: dict, col: str) -> list[str]:
     if e:
         e = _sanitize_param(e)
         if len(e) == 6:
-            e = e + "31"
+            e = _month_end_yyyymmdd(e)
     if s and e:
         conds.append(f"{col} BETWEEN '{s}' AND '{e}'" if s != e else f"{col} = '{s}'")
     elif s:
@@ -769,8 +807,8 @@ def _vq_sql_업종별매출(params: dict) -> str:
     return f"""SELECT b.업종대분류코드명, b.가맹점업종명,
     SUM(a.매출금액) AS 총매출금액, COUNT(DISTINCT a.매출전표번호) AS 매출건수,
     AVG(a.매출금액) AS 건당평균금액
-FROM tbdaabt30 a
-JOIN tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
+FROM card_system.tbdaabt30 a
+JOIN card_system.tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
 {where}
 GROUP BY b.업종대분류코드명, b.가맹점업종명 ORDER BY 총매출금액 DESC {limit}"""
 
@@ -955,54 +993,47 @@ LIMIT {limit}"""
 
 
 def _tool_sql_corporate_card_active_no_usage_members(params: dict) -> str:
-    기준년월 = _sanitize_param(params.get("기준년월", "202604"))
-    기간_시작 = _sanitize_param(params.get("기간_시작", _calc_months_back(기준년월, 5)))
-    기간_종료 = _sanitize_param(params.get("기간_종료", 기준년월))
-    limit = int(params.get("limit", 1000))
-    return f"""
+    기준년월일 = _sanitize_param(params.get("기준년월일") or datetime.now().strftime("%Y%m%d"))
+    기준년월 = 기준년월일[:6]
+    조회개월수 = max(int(params.get("조회개월수", 6)), 1)
+    시작년월 = _calc_months_back(기준년월, 조회개월수 - 1)
+    limit = int(params.get("limit", 100))
+    return f"""WITH ranked AS (
     SELECT
-        A."사업자등록번호",
-        A."기업명"
-    FROM tbdaa1d12 A
-    LEFT JOIN (
-        SELECT
-            "고객식별자",
-            SUM(
-                COALESCE("금월일시불이용금액", 0) +
-                COALESCE("금월할부이용금액", 0) +
-                COALESCE("금월CA이용금액", 0) +
-                COALESCE("금월듀얼페이먼트이용금액", 0)
-            ) AS 총이용금액
-        FROM tmdaa3e16
-        WHERE "기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
-        AND "개인기업구분코드" = '2'
-        GROUP BY "고객식별자"
-    ) B
-        ON A."고객식별자" = B."고객식별자"
-    WHERE SUBSTRING(a."기준년월일", 1, 6) = '{기준년월}'
-    AND COALESCE(A."유효기업신용카드수", 0) > 0
-    AND COALESCE(A."유효기업체크카드수", 0) > 0
-    AND COALESCE(B."총이용금액", 0) = 0
-    ORDER BY A."기업명"
-    LIMIT {limit}"""
-
-    '''
-    return f"""SELECT
-    a.사업자등록번호,
-    a.기업명
-FROM tbdaa1d12 a
-WHERE SUBSTRING(a.기준년월일, 1, 6) = '{기준년월}'
-  AND (COALESCE(a.유효기업신용카드수, 0) + COALESCE(a.유효기업체크카드수, 0)) > 0
+        a.기준년월일,
+        SUBSTR(a.기준년월일, 1, 6) AS 기준년월,
+        a.고객식별자,
+        a.사업자등록번호,
+        a.기업명,
+        a.유효기업신용카드수,
+        a.유효기업체크카드수,
+        a.금월신용카드이용금액,
+        a.금월체크카드이용금액,
+        ROW_NUMBER() OVER (
+            PARTITION BY a.고객식별자, SUBSTR(a.기준년월일, 1, 6)
+            ORDER BY a.기준년월일 DESC
+        ) AS rn
+    FROM tmdaa1d12 a
+    WHERE a.기준년월일 BETWEEN '{시작년월}01' AND '{기준년월일}'
+), monthly AS (
+    SELECT * FROM ranked WHERE rn = 1
+), current_snapshot AS (
+    SELECT * FROM monthly WHERE 기준년월 = '{기준년월}'
+)
+SELECT
+    c.고객식별자,
+    c.사업자등록번호,
+    c.기업명
+FROM current_snapshot c
+WHERE (COALESCE(c.유효기업신용카드수, 0) + COALESCE(c.유효기업체크카드수, 0)) > 0
   AND NOT EXISTS (
       SELECT 1
-      FROM tbdaa1d12 b
-      WHERE b.고객식별자 = a.고객식별자
-        AND SUBSTRING(b.기준년월일,1,6) BETWEEN '{기간_시작}' AND '{기간_종료}'
-        AND (COALESCE(b.금월신용카드이용금액, 0) + COALESCE(b.금월체크카드이용금액, 0)) > 0
+      FROM monthly h
+      WHERE h.고객식별자 = c.고객식별자
+        AND (COALESCE(h.금월신용카드이용금액, 0) + COALESCE(h.금월체크카드이용금액, 0)) > 0
   )
-ORDER BY a.기업명
+ORDER BY c.기업명, c.사업자등록번호
 LIMIT {limit}"""
-'''
 
 def _tool_sql_corporate_card_churned_after_usage_members(params: dict) -> str:
     기준년월 = _sanitize_param(params.get("기준년월", "202604"))

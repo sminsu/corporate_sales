@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import web_service
 from text2sql_agent import db
 
 
@@ -63,37 +61,6 @@ class session:
     assert result.stdout.strip() == "db.example|5433|sales|app|True|secrets_manager|False"
 
 
-def test_database_probe_reports_success_without_exposing_failures() -> None:
-    with (
-        patch.object(db, "DB_BACKEND", "athena"),
-        patch.object(db, "SESSION_STORE_BACKEND", "postgres"),
-        patch.object(db, "DB_DSN_ERROR", ""),
-        patch.object(db, "DB_DSN_SOURCE", "secrets_manager"),
-        patch.object(db, "_execute_postgres", return_value=(["?column?"], [(1,)])),
-    ):
-        assert db.probe_database() == {
-            "database_ready": True,
-            "database_status": "ready",
-            "database_source": "secrets_manager",
-        }
-
-    with (
-        patch.object(db, "DB_BACKEND", "athena"),
-        patch.object(db, "SESSION_STORE_BACKEND", "postgres"),
-        patch.object(db, "DB_DSN_ERROR", ""),
-        patch.object(db, "DB_DSN_SOURCE", "secrets_manager"),
-        patch.object(db, "_execute_postgres", side_effect=RuntimeError("password=do-not-expose")),
-    ):
-        result = db.probe_database()
-
-    assert result == {
-        "database_ready": False,
-        "database_status": "unavailable",
-        "database_source": "secrets_manager",
-        "database_error_type": "RuntimeError",
-    }
-
-
 def test_postgres_pool_uses_individual_connection_fields() -> None:
     with (
         patch.object(db, "_pool", None),
@@ -117,38 +84,3 @@ def test_postgres_pool_uses_individual_connection_fields() -> None:
         user="app",
         password="secret",
     )
-
-
-def test_startup_logs_database_connection_status() -> None:
-    events: list[tuple[int, str, dict[str, object]]] = []
-
-    def capture(level: int, event: str, **fields: object) -> None:
-        events.append((level, event, fields))
-
-    async def run_lifespan() -> None:
-        async with web_service._lifespan(web_service.app):
-            pass
-
-    with (
-        patch.object(
-            web_service.agent_db,
-            "probe_database",
-            return_value={
-                "database_ready": True,
-                "database_status": "ready",
-                "database_source": "secrets_manager",
-            },
-        ),
-        patch.object(web_service, "_stream_log", side_effect=capture),
-        patch.object(web_service.agent, "close_common_clients"),
-        patch.object(web_service._SESSION_STORE, "close"),
-    ):
-        asyncio.run(run_lifespan())
-
-    _, _, fields = next(item for item in events if item[1] == "database_connection_check")
-    assert fields == {
-        "database_ready": True,
-        "database_status": "ready",
-        "database_source": "secrets_manager",
-        "database_error_type": None,
-    }

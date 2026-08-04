@@ -186,6 +186,54 @@ def test_composed_sql_uses_correct_grains_roles_and_code_values() -> None:
     assert "대표고객식별자" not in bank_sql
 
 
+@pytest.mark.parametrize(
+    ("card_phrase", "card_kind", "expected_filter"),
+    [
+        (
+            "기업 신용카드",
+            "credit",
+            'AND COALESCE(r."유효기업신용카드수", 0) > 0',
+        ),
+        (
+            "기업 체크카드",
+            "check",
+            'AND COALESCE(r."유효기업체크카드수", 0) > 0',
+        ),
+        (
+            "기업카드",
+            "all",
+            'AND (COALESCE(r."유효기업신용카드수", 0) + '
+            'COALESCE(r."유효기업체크카드수", 0)) > 0',
+        ),
+    ],
+)
+def test_brand_card_holder_list_respects_requested_corporate_card_type(
+    card_phrase: str,
+    card_kind: str,
+    expected_filter: str,
+) -> None:
+    question = (
+        f"꾸석지 가맹점 중 {card_phrase} 보유 기업고객식별자 목록 알려줘. "
+        "2605 기준"
+    )
+
+    contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    result = _offline_vq_result(question)
+    sql = " ".join(result["final_sql"].split())
+
+    assert contracts[0]["name"] == "brand_merchant_corporate_card_customer_list"
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"]["기업카드종류"] == card_kind
+    assert 'SELECT DISTINCT r."기업고객식별자"' in sql
+    assert expected_filter in sql
+
+    if card_kind != "all":
+        assert (
+            'AND (COALESCE(r."유효기업신용카드수", 0) + '
+            'COALESCE(r."유효기업체크카드수", 0)) > 0'
+        ) not in sql
+
+
 def test_bare_merchant_bad_debt_rate_requests_only_the_snapshot_month() -> None:
     question = "꾸석지 가맹점주 대손율 알려줘"
     result = _offline_vq_result(question)

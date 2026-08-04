@@ -43,6 +43,38 @@ def _base_result(*, complete: bool = True) -> dict:
     }
 
 
+def _bad_debt_result() -> dict:
+    sql = """
+SELECT '202604' AS "기준년월", "구분", "대손비용률_퍼센트", "보정계수"
+FROM card_system.tmdaa5d01
+WHERE LOWER("가맹점명") LIKE LOWER('%꾸석지%')
+"""
+    result = {
+        "question": "2026년 4월 꾸석지의 대손비용률 분석해줘",
+        "selected_domain": "credit_risk",
+        "selected_tables": ["tmdaa5d01", "tbmewcm94", "tbmaisd06"],
+        "table_details": "name: tmdaa5d01",
+        "selected_tool": "대손비용률_분석",
+        "selected_capability_type": "tool",
+        "selected_capability_name": "대손비용률_분석",
+        "tool_params": {
+            "가맹점명": "꾸석지",
+            "기준년월": "202604",
+            "LS": 0.8,
+            "IS": 1.2,
+        },
+        "tool_completed": True,
+        "final_sql": sql,
+        "query_columns": ["기준년월", "구분", "대손비용률_퍼센트", "보정계수"],
+        "query_rows": [("202604", "1", 1.25, 0.5)],
+        "result_scope": build_result_scope(sql, fetched_row_count=1, displayed_row_count=1),
+        "answer": "꾸석지 대손비용률 결과입니다.",
+        "analysis_history": [],
+    }
+    result["query_frame"] = build_query_frame(result)
+    return result
+
+
 def test_query_frame_captures_inheritable_business_shape() -> None:
     frame = build_query_frame(_base_result())
 
@@ -217,7 +249,7 @@ def test_llm_context_resolution_reconstructs_elliptical_followup_for_sql() -> No
             "mode": "transform",
         }
     ]
-    question = "그럼 버거킹은?"
+    question = "버거킹 쪽은 어떻게 될까?"
     preliminary = plan_followup(
         question,
         COLUMNS,
@@ -254,6 +286,104 @@ def test_llm_context_resolution_reconstructs_elliptical_followup_for_sql() -> No
     assert state["question"] == "2025년 2월 버거킹 가맹점별 매출을 보여줘"
     assert state["followup_question"] == question
     assert state["selected_tables"] == ["tmdaa5e11"]
+
+
+def test_bad_debt_entity_followup_reuses_tool_and_replaces_only_entity() -> None:
+    result = _bad_debt_result()
+    question = "그럼 도미노 피자는?"
+    resolved_question = "2026년 4월 도미노 피자의 대손비용률 분석해줘"
+    resolution = {
+        "relation": "refine_query",
+        "source_strategy": "same_source",
+        "resolved_question": resolved_question,
+        "reason": "deterministic_entity_replacement",
+        "used_llm": False,
+    }
+    plan = plan_followup(
+        question,
+        result["query_columns"],
+        result["query_rows"],
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+        context_resolution=resolution,
+    )
+    state = web_service._followup_query_state(result, question, plan)
+
+    with patch.object(workflow, "_call_llm", side_effect=AssertionError("inherited tool must not call LLM")):
+        selected = workflow.select_tool(state)
+
+    assert state["question"] == resolved_question
+    assert plan["requires_sql"] is True
+    assert selected["selected_tool"] == "대손비용률_분석"
+    assert selected["tool_params"] == {
+        "가맹점명": "도미노 피자",
+        "기준년월": "202604",
+        "LS": 0.8,
+        "IS": 1.2,
+    }
+    assert state["query_frame"]["entities"] == [{"column": "가맹점명", "value": "도미노 피자"}]
+    assert workflow.check_tool_params({**state, **selected})["param_stage"] == "done"
+
+
+def test_entity_only_followup_uses_deterministic_context_without_router() -> None:
+    result = _bad_debt_result()
+    question = "그럼 도미노 피자는?"
+    preliminary = plan_followup(
+        question,
+        result["query_columns"],
+        result["query_rows"],
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+    )
+
+    with patch.object(web_service.agent, "_call_llm", side_effect=AssertionError("router must not run")):
+        resolution = web_service._resolve_followup_context(result, question, preliminary)
+
+    plan = plan_followup(
+        question,
+        result["query_columns"],
+        result["query_rows"],
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+        context_resolution=resolution,
+    )
+    compact = resolution["resolved_question"].replace(" ", "")
+
+    assert resolution["used_llm"] is False
+    assert resolution["relation"] == "refine_query"
+    assert resolution["source_strategy"] == "same_source"
+    assert "2026년4월" in compact
+    assert "도미노피자" in compact
+    assert "대손비용률" in compact
+    assert "꾸석지" not in compact
+    assert plan["requires_sql"] is True
+
+
+def test_entity_only_fallback_rejects_operations_and_non_entity_subjects() -> None:
+    result = _bad_debt_result()
+
+    for question in (
+        "그럼 월별로 보여줘",
+        "그럼 법인카드는?",
+        "그럼 상위 1개는?",
+        "그럼 억원 단위는?",
+        "그럼 요약은?",
+        "그럼 가장 높은 곳은?",
+        "그럼 LS는 0.9?",
+        "그럼 삼성전자 주가는?",
+        "그럼 전체는?",
+        "그럼 결측값은?",
+        "그럼 표는?",
+        "그럼 중앙값은?",
+        "그럼 표준편차는?",
+        "그럼 3줄 정리는?",
+        "그럼 점유율은?",
+        "그럼 성장률은?",
+        "그럼 전년 대비는?",
+        "그럼 상세는?",
+        "그럼 원본은?",
+    ):
+        assert web_service._entity_only_followup_change(result, question) == {}, question
 
 
 def test_llm_context_resolution_separates_independent_new_question() -> None:

@@ -258,7 +258,12 @@ def test_enterprise_size_attribute_uses_verified_business_codebook() -> None:
     assert attribute["codebook_status"] == "verified"
     assert attribute["value_semantics"] == expected_values
     assert all(
-        resolve_semantic_attribute_value(SCHEMA, "enterprise_size", label) == code
+        resolve_semantic_attribute_value(
+            SCHEMA,
+            "enterprise_size",
+            f"기업규모 {label}",
+        )
+        == code
         for code, label in expected_values.items()
     )
     assert {mapping["table"] for mapping in attribute["source_mappings"]} == {

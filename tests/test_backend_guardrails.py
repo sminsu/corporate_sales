@@ -31,7 +31,7 @@ REFERENCE_ROUTING_CASES = [
     (
         "KB국민 기업카드 보유회원 중에 현재 시점 기준 6개월 무실적인 기업 회원 명단을 알고 싶어",
         "corporate_sales_targeting",
-        {"tbdaa1d12"},
+        {"tmdaa1d12"},
     ),
     (
         "KB국민 기업카드 보유, 이용하였으나 현재 탈회 또는 해지한 기업 회원 명단을 알고 싶어",
@@ -44,7 +44,7 @@ REFERENCE_ROUTING_CASES = [
         {"tbdaa1d12"},
     ),
     (
-        "당사 가맹점 중 월 매출액이 1억원 이상이고, 법인사업자이며, KB국민 기업카드를 보유하고 있지 않은 기업 회원 명단을 알고 싶어",
+        "당사 가맹점 중 월 매출액이 1억원 이상이고, 법인사업자이며, KB국민카드를 보유하고 있지 않은 기업 회원 명단을 알고 싶어",
         "corporate_sales_targeting",
         {"tmdaa5e11", "tmdaaus01"},
     ),
@@ -191,6 +191,34 @@ def test_rule_params_extract_period_amount_ratio_and_limit() -> None:
     }
 
 
+def test_industry_card_usage_inherits_end_year_and_uses_daily_bounds() -> None:
+    question = "2026년 1월부터 6월까지 업종별 법인카드 이용금액 합계를 보여줘"
+
+    assert workflow._extract_period_by_rule(question) == ("202601", "202606", "")
+    contracts = schema.semantic_query_contract_candidates(schema.SCHEMA, question, max_count=1)
+    capability = workflow._select_verified_query_capability(question, {})
+
+    assert contracts[0]["name"] == "corporate_card_usage_by_merchant_industry"
+    assert capability is not None
+    assert capability["matched_query_name"] == "sales_by_industry"
+
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("offline")):
+        result = workflow.extract_and_apply_params(
+            {"question": question, **capability, "user_provided_params": {}}
+        )
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {
+        "기간_시작": "202601",
+        "기간_종료": "202606",
+    }
+    assert "BETWEEN '20260101' AND '20260630'" in result["final_sql"]
+    assert "SUM(a.매출금액)" in result["final_sql"]
+    assert not schema._validate_sql_against_schema(
+        result["final_sql"], ["tbdaabt30", "tbdaadb17"]
+    )
+
+
 def test_verified_query_numeric_placeholder_rejects_expression() -> None:
     with pytest.raises(ValueError, match="정수"):
         _apply_params_to_vq(
@@ -272,6 +300,13 @@ def test_reference_verified_queries_are_active_and_schema_valid_after_substituti
         assert not re.findall(r"\{[A-Za-z0-9가-힣_]+\}", sql), name
         issues = schema._validate_sql_against_schema(sql, [])
         assert not issues, f"{name}: {issues}\n{sql}"
+
+
+def test_reference_only_query_is_not_reenabled_by_tool_fallback() -> None:
+    name = "merchant_corporate_sales_target_no_corporate_card"
+    workflow._TOOL_SCHEMA_COMPATIBILITY.pop(name, None)
+
+    assert not workflow._tool_schema_compatible(workflow.TOOL_MAP[name])
 
 
 def test_schema_guard_rejects_unknown_qualified_column() -> None:
@@ -399,7 +434,7 @@ def test_reference_sql_is_not_runtime_verified_query(question: str) -> None:
 
 
 def test_corporate_card_no_usage_query_uses_verified_query_with_explicit_basis_month() -> None:
-    question = "KB카드 기업카드 보유회원 중에 2026년 5월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘"
+    question = "KB카드 기업카드 보유회원 중에 2026년 7월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘"
     state = {"question": question, "domain_context": "", "user_provided_params": {}}
     state.update(workflow.select_tool(state))
 
@@ -409,9 +444,26 @@ def test_corporate_card_no_usage_query_uses_verified_query_with_explicit_basis_m
     assert state["selected_capability_type"] == "verified_query"
     assert state["matched_query_name"] == "corporate_card_active_no_usage_members"
     assert result["param_stage"] == "done"
-    assert result["extracted_params"] == {"기준년월": "202605", "조회개월수": 6}
+    assert result["extracted_params"] == {"기준년월일": "20260731", "조회개월수": 6}
+    assert "tmdaa1d12" in result["final_sql"]
+    assert "tbdaa1d12" not in result["final_sql"]
+    assert "tmdaa3e16" not in result["final_sql"]
     assert not re.findall(r"\{[A-Za-z0-9가-힣_]+\}", result["final_sql"])
-    assert not schema._validate_sql_against_schema(result["final_sql"], ["tbdaa1d12"])
+    assert not schema._validate_sql_against_schema(result["final_sql"], ["tmdaa1d12"])
+
+
+def test_corporate_card_no_usage_query_requires_basis_date_when_omitted() -> None:
+    question = "KB카드 기업카드 보유회원 중에 6개월 무실적인 기업 회원 명단을 알려줘"
+    state = {"question": question, "domain_context": "", "user_provided_params": {}}
+    state.update(workflow.select_tool(state))
+
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        result = workflow.extract_and_apply_params(state)
+
+    assert state["matched_query_name"] == "corporate_card_active_no_usage_members"
+    assert result["param_stage"] == "need_params"
+    assert result["extracted_params"] == {"조회개월수": 6}
+    assert [item["name"] for item in result["missing_params"]] == ["기준년월일"]
 
 
 def test_check_card_only_query_requires_current_check_card_holding() -> None:

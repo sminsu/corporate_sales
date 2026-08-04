@@ -31,11 +31,13 @@ from .schema import (
     SCHEMA,
     VERIFIED_QUERIES,
     _build_domain_embedding_text,
+    _has_historical_period_expression,
     _keyword_rule_domain_scores,
     _metric_entity_domain_scores,
     _needs_domain_adjudication,
     _adjudicate_domain_with_llm,
     _result_summary,
+    _phrase_in_text,
     _extract_schema_tables,
     _validate_sql_against_schema,
     _weighted_domain_scores,
@@ -255,9 +257,82 @@ _AMBIGUOUS_TARGET_PATTERNS = [
 
 
 def _missing_ambiguous_target_params(question: str) -> list[dict]:
+    missing = []
     if any(re.search(pattern, question) for pattern in _AMBIGUOUS_TARGET_PATTERNS):
-        return [{"name": "대상명", "label": "조회 대상명(기업명/가맹점명/고객명)"}]
-    return []
+        missing.append({"name": "대상명", "label": "조회 대상명(기업명/가맹점명/고객명)"})
+
+    labels: dict[str, list[dict]] = {}
+    all_value_terms = set()
+    for attribute in SCHEMA.get("semantic_attributes", []):
+        for raw_value in (attribute.get("value_semantics") or {}).values():
+            value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
+            label = str(value_info.get("label") or "").strip()
+            compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", label.lower())
+            if len(compact) >= 2:
+                labels.setdefault(compact, []).append(attribute)
+                all_value_terms.add(compact)
+
+    question_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
+
+    def occurrences(term: str) -> list[tuple[int, int]]:
+        spans = []
+        start = 0
+        while term and (index := question_compact.find(term, start)) >= 0:
+            spans.append((index, index + len(term)))
+            start = index + 1
+        return spans
+
+    for compact, attributes in labels.items():
+        unique_attributes = list({str(item.get("name")): item for item in attributes}.values())
+        if len(unique_attributes) < 2:
+            continue
+        # Do not treat a duplicate substring inside a longer valid code label
+        # (for example 기타 in 기타제조업) as a standalone ambiguity.
+        target_spans = occurrences(compact)
+        shadow_spans = [
+            span
+            for term in all_value_terms
+            if len(term) > len(compact) and compact in term
+            for span in occurrences(term)
+        ]
+        if target_spans and all(
+            any(start <= target_start and target_end <= end for start, end in shadow_spans)
+            for target_start, target_end in target_spans
+        ):
+            continue
+        raw_label = next(
+            str((value if not isinstance(value, dict) else value.get("label")) or "")
+            for attribute in unique_attributes
+            for value in (attribute.get("value_semantics") or {}).values()
+            if re.sub(
+                r"[^0-9A-Za-z가-힣_]",
+                "",
+                str((value if not isinstance(value, dict) else value.get("label")) or "").lower(),
+            )
+            == compact
+        )
+        if not re.search(
+            rf"(?<![0-9A-Za-z가-힣]){re.escape(raw_label)}"
+            rf"(?=(?:의|은|는|이|가|을|를|에|에서|로|으로|와|과|도|만|별|인)?(?:[^0-9A-Za-z가-힣]|$))",
+            question or "",
+        ):
+            continue
+        if any(
+            resolve_semantic_attribute_value(SCHEMA, str(attribute.get("name")), question)
+            for attribute in unique_attributes
+        ):
+            continue
+        options = [
+            str(attribute.get("korean_name") or attribute.get("name") or "")
+            for attribute in unique_attributes
+        ]
+        missing.append(
+            {
+                "name": f"{raw_label}분류축",
+                "label": f"'{raw_label}' 분류 기준({' / '.join(options)})",
+            }
+        )
+    return missing
 
 
 def classify_question(state: Text2SQLState) -> dict:
@@ -756,6 +831,14 @@ def _month_end(yyyymm: str) -> str:
     return f"{yyyymm}{monthrange(year, month)[1]:02d}"
 
 
+def _extract_half_year_ranges_by_rule(question: str) -> list[tuple[str, str]]:
+    ranges = []
+    for match in re.finditer(r"(20\d{2})\s*년\s*(상반기|하반기)", question or ""):
+        year, half = match.groups()
+        ranges.append((f"{year}01", f"{year}06") if half == "상반기" else (f"{year}07", f"{year}12"))
+    return ranges
+
+
 def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     """Return ``(start_ym, end_ym, explicit_yyyymmdd)`` from Korean date text."""
     text = question or ""
@@ -767,6 +850,22 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
             datetime.strptime(explicit_day, "%Y%m%d")
         except ValueError:
             explicit_day = ""
+
+    inherited_year_range = re.search(
+        r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(?:부터|에서|~|～|-)\s*"
+        r"(\d{1,2})\s*월(?:\s*까지)?",
+        text,
+    )
+    if inherited_year_range:
+        year = inherited_year_range.group(1)
+        start_month = int(inherited_year_range.group(2))
+        end_month = int(inherited_year_range.group(3))
+        if 1 <= start_month <= 12 and 1 <= end_month <= 12:
+            return f"{year}{start_month:02d}", f"{year}{end_month:02d}", explicit_day
+
+    half_year_ranges = _extract_half_year_ranges_by_rule(text)
+    if half_year_ranges:
+        return half_year_ranges[0][0], half_year_ranges[-1][1], explicit_day
 
     months = [
         f"{match.group(1)}{int(match.group(2)):02d}"
@@ -1041,17 +1140,21 @@ def _extract_merchant_name_by_rule(question: str) -> str:
 
 
 def _extract_company_name_by_rule(question: str) -> str:
-    """Extract a named corporate customer from a timed card-usage question."""
+    """Extract a named corporate customer from a timed usage or limit question."""
     text = question or ""
     if (
-        not re.search(r"이용\s*(?:금액|액|실적)|사용\s*(?:금액|액)|카드\s*이용", text)
+        not re.search(
+            r"이용\s*(?:금액|액|실적)|사용\s*(?:금액|액)|카드\s*이용|"
+            r"총\s*한도|잔여\s*한도|가용\s*한도|한도(?:\s*(?:금액|현황|소진율|사용률))?",
+            text,
+        )
         or not _has_time_expression(text)
     ):
         return ""
 
     token = r"[0-9A-Za-z가-힣&()._-]+"
     time_phrase = (
-        r"작년|지난해|전년(?:도)?|올해|금년|"
+        r"현재(?:\s*기준)?|작년|지난해|전년(?:도)?|올해|금년|"
         r"최근|지난\s*\d+\s*(?:개월|달|년)|이번\s*(?:달|월|년)|"
         r"20\d{2}\s*년"
     )
@@ -1165,12 +1268,27 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
             params[name] = parse_business_number_list(question)
         except ManagedScopeParseError:
             pass
+    half_year_ranges = _extract_half_year_ranges_by_rule(question)
+    comparison_period_params = {}
+    if len(half_year_ranges) >= 2:
+        comparison_period_params = {
+            "기준기간_시작": half_year_ranges[0][0],
+            "기준기간_종료": half_year_ranges[0][1],
+            "대상기간_시작": half_year_ranges[1][0],
+            "대상기간_종료": half_year_ranges[1][1],
+        }
+        params.update({name: value for name, value in comparison_period_params.items() if name in names})
     start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
     for name in names:
         if not start_ym and not explicit_day:
             break
+        if name in comparison_period_params:
+            continue
         if name in {"기준년월일", "카드만료기준일"}:
-            params[name] = explicit_day or _month_end(end_ym)
+            use_today = name == "기준년월일" and re.search(
+                r"오늘|현재(?:\s*(?:시점|기준))?", question or ""
+            )
+            params[name] = explicit_day or (datetime.now().strftime("%Y%m%d") if use_today else _month_end(end_ym))
         elif name == "전월기준년월":
             params[name] = _months_back_ym(end_ym, 1)
         elif "최근6개월_시작" == name:
@@ -1415,10 +1533,18 @@ _TOOL_SCHEMA_COMPATIBILITY: dict[str, bool] = {}
 
 
 def _tool_schema_compatible(tool: dict) -> bool:
-    """Disable deterministic SQL tools whose physical tables are not deployed."""
+    """Disable non-runtime or schema-incompatible deterministic SQL tools."""
     name = str(tool.get("name") or "")
     if name in _TOOL_SCHEMA_COMPATIBILITY:
         return _TOOL_SCHEMA_COMPATIBILITY[name]
+    linked_query_name = str(tool.get("sql_query_name") or "")
+    linked_query = next(
+        (query for query in VERIFIED_QUERIES if query.get("name") == linked_query_name),
+        None,
+    )
+    if linked_query and not _verified_query_is_executable(linked_query):
+        _TOOL_SCHEMA_COMPATIBILITY[name] = False
+        return False
     if name == "대손비용률_분석":
         _TOOL_SCHEMA_COMPATIBILITY[name] = True
         return True
@@ -1457,6 +1583,11 @@ def _tag_hits(question: str, tags: list[str]) -> int:
 def _rank_tool_candidates(question: str) -> list[tuple[int, dict]]:
     scores: list[tuple[int, dict]] = []
     for tool in TOOLS:
+        if tool["name"] == "corporate_card_active_no_usage_members" and not re.search(
+            r"6\s*무|무실적|미이용|이용.{0,5}없|사용.{0,5}없|쓰지\s*않|한\s*번도\s*쓰지",
+            question or "",
+        ):
+            continue
         if not _tool_schema_compatible(tool):
             continue
         hits = _tag_hits(question, tool.get("tags", []))
@@ -2264,9 +2395,8 @@ def _visible_table_columns(table: dict, section: str) -> list[dict]:
     ]
 
 
-def _phrase_in_question(question_compact: str, phrase: object) -> bool:
-    normalized = re.sub(r"[^0-9A-Za-z가-힣_]", "", str(phrase or "").lower())
-    return len(normalized) >= 2 and normalized in question_compact
+def _phrase_in_question(question: str, phrase: object) -> bool:
+    return _phrase_in_text(question, phrase)
 
 
 def _contract_source_tables(question: str, contract: dict) -> list[str]:
@@ -2274,13 +2404,107 @@ def _contract_source_tables(question: str, contract: dict) -> list[str]:
     if not isinstance(policy, dict):
         return list(contract.get("source_tables", []))
 
-    q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
     current_snapshot_terms = policy.get("current_snapshot_when", [])
     use_current_snapshot = any(
-        _phrase_in_question(q_compact, term) for term in current_snapshot_terms
+        _phrase_in_question(question, term) for term in current_snapshot_terms
     )
     key = "current_snapshot" if use_current_snapshot else "period_snapshot"
     return list(policy.get(key) or policy.get("default") or contract.get("source_tables", []))
+
+
+def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
+    """Choose current or historical mappings from a declarative attribute policy."""
+    mappings = list(attribute.get("source_mappings", []))
+    policy = attribute.get("source_selection")
+    if not isinstance(policy, dict):
+        return mappings
+
+    q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
+    start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
+    historical_shape = _has_historical_period_expression(question)
+    has_period = bool(start_ym or end_ym or explicit_day or historical_shape)
+    current_terms = [
+        re.sub(r"[^0-9A-Za-z가-힣_]", "", str(term or "").lower())
+        for term in policy.get("current_terms", [])
+    ]
+    attribute_cues = [
+        re.sub(r"[^0-9A-Za-z가-힣_]", "", str(term or "").lower())
+        for term in [
+            attribute.get("korean_name", ""),
+            attribute.get("parameter_name", ""),
+            *attribute.get("aliases", []),
+        ]
+    ]
+    date_scope_tail = re.compile(
+        r"(?:20\d{2}년(?:\d{1,2}월)?|20\d{4}(?:\d{2})?|\d{1,2}월)(?:기준|의)?$"
+    )
+    explicitly_current_attribute = False
+    for current in current_terms:
+        for cue in attribute_cues:
+            if not current or not cue:
+                continue
+            for match in re.finditer(
+                rf"{re.escape(current)}(?:기준|의)?{re.escape(cue)}",
+                q_compact,
+            ):
+                if not date_scope_tail.search(q_compact[: match.start()]):
+                    explicitly_current_attribute = True
+                    break
+            if explicitly_current_attribute or re.search(
+                rf"{re.escape(cue)}(?:은|는|이|가|을|를)?{re.escape(current)}",
+                q_compact,
+            ):
+                explicitly_current_attribute = True
+                break
+        if explicitly_current_attribute:
+            break
+    generic_current = any(current and current in q_compact for current in current_terms)
+    compares_current_and_period = bool(
+        has_period
+        and any(current and current in q_compact for current in current_terms)
+        and re.search(r"비교|대비|변화|변동|추이", question or "")
+    )
+    if compares_current_and_period:
+        return mappings
+    use_period = has_period and not (
+        explicitly_current_attribute or (generic_current and not historical_shape)
+    )
+    prefix_key = "period_role_prefix" if use_period else "default_role_prefix"
+    prefix = str(policy.get(prefix_key) or "")
+    preferred = [
+        mapping
+        for mapping in mappings
+        if prefix and str(mapping.get("role") or "").startswith(prefix)
+    ]
+    return preferred or mappings
+
+
+def _attribute_snapshot_exclusions(question: str) -> set[str]:
+    """Return alternate snapshot tables forbidden by a matched attribute policy."""
+    if any(
+        str(contract.get("table_selection_mode") or "").lower() == "authoritative"
+        for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2)
+    ):
+        return set()
+
+    preferred_tables: set[str] = set()
+    alternate_tables: set[str] = set()
+    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
+        if not isinstance(attribute.get("source_selection"), dict):
+            continue
+        all_tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in attribute.get("source_mappings", [])
+            if mapping.get("table")
+        }
+        selected_tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in _attribute_source_mappings(question, attribute)
+            if mapping.get("table")
+        }
+        preferred_tables.update(selected_tables)
+        alternate_tables.update(all_tables - selected_tables)
+    return alternate_tables - preferred_tables
 
 
 def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
@@ -2310,12 +2534,15 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
 
     for metric in SCHEMA.get("canonical_metrics", []):
         terms = [metric.get("name", ""), *metric.get("synonyms", [])]
-        if any(_phrase_in_question(q_compact, term) for term in terms):
+        if any(_phrase_in_question(question, term) for term in terms):
             add(metric.get("source_table"), 20)
 
-    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
-        for mapping in attribute.get("source_mappings", []):
-            add(mapping.get("table"), 18)
+    for position, attribute in enumerate(
+        semantic_attribute_candidates(SCHEMA, question, max_count=6)
+    ):
+        attribute_score = 36 if position == 0 else max(3, 18 - position * 3)
+        for mapping in _attribute_source_mappings(question, attribute):
+            add(mapping.get("table"), attribute_score)
 
     for contract in matched_contracts:
         for table_name in _contract_source_tables(question, contract):
@@ -2330,7 +2557,11 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
             for token in re.findall(r"[0-9A-Za-z가-힣_]+", str(value))
             if len(token) >= 2
         }
-        exact_matches = sum(1 for phrase in ref.get("when_user_says", []) if _phrase_in_question(q_compact, phrase))
+        exact_matches = sum(
+            1
+            for phrase in ref.get("when_user_says", [])
+            if _phrase_in_question(question, phrase)
+        )
         score = sum(1 for token in tokens if token in q_compact) + 4 * exact_matches
         references.append((exact_matches, score, ref))
     references.sort(key=lambda item: (item[0], item[1]), reverse=True)
@@ -2352,14 +2583,15 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         physical = str(table.get("physical_table") or logical).rsplit(".", 1)[-1]
         order.setdefault(logical, index)
         identity_terms = [logical, physical, table.get("korean_name", ""), *table.get("synonyms", [])]
-        if any(_phrase_in_question(q_compact, term) for term in identity_terms):
+        if any(_phrase_in_question(question, term) for term in identity_terms):
             add(logical, 14)
         column_hits = 0
         for section in ("dimensions", "measures", "time_dimensions"):
             for column in _visible_table_columns(table, section):
                 terms = [column.get("name", ""), *column.get("synonyms", [])]
                 if any(
-                    str(term or "") not in _GENERIC_TABLE_TERMS and _phrase_in_question(q_compact, term)
+                    str(term or "") not in _GENERIC_TABLE_TERMS
+                    and _phrase_in_question(question, term)
                     for term in terms
                 ):
                     column_hits += 1
@@ -2376,6 +2608,8 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         logical = known_by_physical.get(name, name)
         if logical:
             normalized_scores[logical] = normalized_scores.get(logical, 0) + score
+    for excluded in _attribute_snapshot_exclusions(question):
+        normalized_scores.pop(known_by_physical.get(excluded, excluded), None)
     ranked = sorted(normalized_scores, key=lambda name: (-normalized_scores[name], order.get(name, 10_000), name))
     return [name for name in ranked if normalized_scores[name] >= 3][:max_tables]
 
@@ -2410,18 +2644,29 @@ def _parse_table_selection(raw: object) -> list[str]:
     return selected
 
 
-def _compact_table_catalog(rule_tables: list[str]) -> str:
+def _compact_table_catalog(
+    rule_tables: list[str],
+    excluded_tables: set[str] | None = None,
+) -> str:
     """Build a small selection catalog instead of serializing every column."""
+    excluded = {
+        str(name or "").rsplit(".", 1)[-1]
+        for name in (excluded_tables or set())
+        if name
+    }
     candidate_names = set(rule_tables)
     if candidate_names:
         for path in semantic_join_paths_for_tables(SCHEMA, candidate_names, require_both=False):
             candidate_names.update(
                 name for name in (path.get("from_table"), path.get("to_table")) if name
             )
+    candidate_names.difference_update(excluded)
     tables = [
         table
         for table in SCHEMA.get("tables", [])
-        if _is_semantic_table_visible(table) and (not candidate_names or table.get("name") in candidate_names)
+        if _is_semantic_table_visible(table)
+        and str(table.get("name") or "") not in excluded
+        and (not candidate_names or table.get("name") in candidate_names)
     ]
     # Direct-neighbour expansion can be large around customer master tables.
     if candidate_names and len(tables) > 10:
@@ -2452,7 +2697,9 @@ def _column_evidence(question: str, table_names: list[str]) -> str:
     q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
     for metric in SCHEMA.get("canonical_metrics", []):
         terms = [metric.get("name", ""), *metric.get("synonyms", [])]
-        if metric.get("source_table") in table_names and any(_phrase_in_question(q_compact, term) for term in terms):
+        if metric.get("source_table") in table_names and any(
+            _phrase_in_question(question, term) for term in terms
+        ):
             evidence.extend(
                 [
                     metric.get("name", ""),
@@ -2594,7 +2841,7 @@ def _table_details(
                 if semantic_role == "시간":
                     score += 35 if _has_time_expression(question) else 18
                 terms = [name, *column.get("synonyms", [])]
-                if any(_phrase_in_question(question_compact, term) for term in terms):
+                if any(_phrase_in_question(question, term) for term in terms):
                     score += 70
                 if name and name.lower() in evidence_lower:
                     score += 45
@@ -2664,6 +2911,8 @@ def _table_details(
                 metadata.append("format=" + str(column.get("format")))
             if column.get("role"):
                 metadata.append("time_role=" + str(column.get("role")))
+            if column.get("codebook_ref"):
+                metadata.append("codebook_ref=" + str(column.get("codebook_ref")))
             if column.get("value_semantics"):
                 value_text = json.dumps(column.get("value_semantics"), ensure_ascii=False)
                 provenance = str(column.get("value_semantics_provenance") or "")
@@ -2697,6 +2946,22 @@ def analyze_question(state: Text2SQLState) -> dict:
     semantic_contract = build_semantic_contract_summary(SCHEMA)
     join_context = build_semantic_join_context(SCHEMA, selected_domain, question, max_paths=5)
     rule_tables = _rule_rank_tables(question)
+    authoritative_contract = any(
+        str(contract.get("table_selection_mode") or "").lower() == "authoritative"
+        for contract in semantic_query_contract_candidates(
+            SCHEMA,
+            question,
+            domain_name=selected_domain,
+            max_count=2,
+        )
+    )
+    if authoritative_contract and rule_tables:
+        table_names = rule_tables[:4]
+        return {
+            "selected_tables": table_names,
+            "table_details": _table_details(table_names, question),
+        }
+    excluded_snapshot_tables = _attribute_snapshot_exclusions(question)
     prompt = f"""당신은 KB카드 기업영업 데이터베이스 전문가입니다.
 사용자의 질문을 분석하여 필요한 테이블을 선택하세요.
 
@@ -2716,7 +2981,7 @@ def analyze_question(state: Text2SQLState) -> dict:
 {', '.join(rule_tables) if rule_tables else "(명확한 후보 없음)"}
 
 ## 사용 가능한 테이블 (후보 및 직접 연결 테이블)
-{_compact_table_catalog(rule_tables)}
+{_compact_table_catalog(rule_tables, excluded_snapshot_tables)}
 
 ## 비즈니스 용어집
 {build_glossary_summary(SCHEMA, question, selected_domain)}
@@ -2750,9 +3015,15 @@ def analyze_question(state: Text2SQLState) -> dict:
         if not rule_tables:
             raise
         llm_tables = []
-    # A parseable explicit selection is the model's adjudication; rules are a
-    # deterministic fallback for malformed/empty small-model output.
-    table_names = llm_tables[:4] if llm_tables else rule_tables[:4]
+    llm_tables = [name for name in llm_tables if name not in excluded_snapshot_tables]
+    if excluded_snapshot_tables:
+        # A matched current/monthly attribute policy is deterministic.  Keep
+        # its allowed rule tables ahead of any model-selected join additions.
+        table_names = list(dict.fromkeys([*rule_tables, *llm_tables]))[:4]
+    else:
+        # A parseable explicit selection is the model's adjudication; rules are
+        # a deterministic fallback for malformed/empty small-model output.
+        table_names = llm_tables[:4] if llm_tables else rule_tables[:4]
     return {"selected_tables": table_names, "table_details": _table_details(table_names, question)}
 
 
@@ -2764,7 +3035,7 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
     needed = _missing_ambiguous_target_params(question)
     query_frame = state.get("query_frame") or {}
     if needed and query_frame.get("entities"):
-        needed = []
+        needed = [item for item in needed if item.get("name") != "대상명"]
 
     if needed:
         return {

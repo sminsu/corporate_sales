@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SESSION_STORE_PATH = Path(__file__).resolve().parents[1] / "text2sql_agent" / "session_store.py"
@@ -19,60 +19,30 @@ SessionOwnershipError = session_store_module.SessionOwnershipError
 
 
 class SessionStoreTest(unittest.TestCase):
-    def test_postgres_status_creates_missing_schema_and_tables(self) -> None:
-        statements: list[str] = []
-
-        class Cursor:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return None
-
-            def execute(self, query, *_):
-                statements.append(str(query))
-
-            def fetchone(self):
-                return ("corporate_sales",)
-
-            def close(self):
-                return None
-
-        class Connection:
-            closed = False
-
-            def cursor(self, **_):
-                return Cursor()
-
-            def commit(self):
-                return None
-
-            def rollback(self):
-                return None
-
-        class Pool:
-            closed = False
-
-            def __init__(self):
-                self.connection = Connection()
-
-            def getconn(self):
-                return self.connection
-
-            def putconn(self, *_):
-                return None
-
+    def test_postgres_status_does_not_run_schema_ddl(self) -> None:
         store = PostgresSessionStore()
-        pool = Pool()
 
-        with patch.object(store, "_get_pool", return_value=pool):
+        with patch.object(store, "_get_pool") as get_pool:
             status = store.status()
 
-        rendered = "\n".join(statements)
         self.assertEqual(status["schema"], "corporate_sales")
-        self.assertIn("CREATE SCHEMA IF NOT EXISTS", rendered)
-        self.assertIn("CREATE TABLE IF NOT EXISTS webapp_sessions", rendered)
-        self.assertIn("CREATE TABLE IF NOT EXISTS webapp_saved_queries", rendered)
+        get_pool.assert_not_called()
+
+    def test_postgres_delete_sql_is_disabled_without_permission(self) -> None:
+        store = PostgresSessionStore()
+        store.delete_enabled = False
+        cursor = Mock()
+
+        store._delete_expired_rows(cursor)
+        store._prune_sessions_for_user(cursor, "user-a")
+        store._prune_messages_for_session(cursor, "session-a")
+
+        cursor.execute.assert_not_called()
+        with patch.object(store, "_conn") as get_connection:
+            self.assertFalse(store.delete_session("session-a", "user-a"))
+            self.assertEqual(store.prune_empty_sessions("user-a"), 0)
+            self.assertFalse(store.delete_saved_query("query-a", "user-a"))
+        get_connection.assert_not_called()
 
     def test_sessions_are_scoped_by_user(self) -> None:
         store = InMemorySessionStore()

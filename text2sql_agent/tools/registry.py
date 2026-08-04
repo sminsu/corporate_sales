@@ -26,11 +26,11 @@ def _make_verified_query_tool_fn(sql_query_name: str):
 EXCEL_CASE_SQL_TOOLS: list[dict] = [
         {
             'name': 'corporate_card_active_no_usage_members',
-            'description': '기준월 현재 유효 기업카드를 보유하고 있으나, 지정 기간 동안 신용/체크 이용금액이 없는 기업회원 명단을 조회합니다. Excel CASE 1번 SAS/Oracle 쿼리를 Athena SELECT-only 패턴으로 변환했습니다.',
-            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '현재 카드 보유 여부 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '기간_시작', 'type': 'string', 'description': '무실적 판단 시작 기준년월(YYYYMM). 기준월 포함 최근 6개월이면 기준월-5개월', 'required': True, 'default': '202511'}, {'name': '기간_종료', 'type': 'string', 'description': '무실적 판단 종료 기준년월(YYYYMM). 보통 기준년월과 동일', 'required': True, 'default': '202604'}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
+            'description': '입력 기준년월일 현재 유효 기업카드를 보유하고 있으나 최근 6개월 신용/체크 이용금액이 없는 기업회원 명단을 tmdaa1d12에서 조회합니다.',
+            'parameters': [{'name': '기준년월일', 'type': 'string', 'description': '현재 카드 보유 여부와 무실적 판단 기준일(YYYYMMDD)', 'required': True, 'default': '20260731'}, {'name': '조회개월수', 'type': 'integer', 'description': '기준월을 포함한 무실적 판정 개월 수', 'required': False, 'default': 6}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'corporate_card_active_no_usage_members',
             'execution_mode': 'athena_select_only',
-            'tags': ['신규영업', '6무', '무실적', '기업회원', '기업카드', '보유', '명단', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['신규영업', '6무', '무실적', '기업회원', '기업카드', '보유', '명단', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _tool_sql_corporate_card_active_no_usage_members,
         },
         {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -67,11 +69,11 @@ def test_source_inventory_matches_every_physical_business_column() -> None:
         if table.get("relation_type") != "request_scoped_values_cte"
     ]
     assert inventory == {
-        "physical_tables": 30,
+        "physical_tables": 31,
         "logical_relations": 0,
-        "source_columns": 2061,
-        "queryable_business_columns": 1993,
-        "excluded_technical_columns": 68,
+        "source_columns": 2140,
+        "queryable_business_columns": 2068,
+        "excluded_technical_columns": 72,
     }
     assert len(physical_tables) == inventory["physical_tables"]
     assert all(table.get("relation_type") != "request_scoped_values_cte" for table in RAW_SEMANTIC["tables"])
@@ -105,6 +107,430 @@ def test_source_inventory_matches_every_physical_business_column() -> None:
     assert business_total == inventory["queryable_business_columns"]
     assert excluded_total == inventory["excluded_technical_columns"]
     assert source_total == business_total + excluded_total
+
+
+@pytest.mark.parametrize(
+    (
+        "attribute_name",
+        "column_name",
+        "expected_tables",
+        "expected_count",
+        "sample_code",
+        "sample_label",
+    ),
+    [
+        ("occupation_type", "직업유형구분코드", {"tbdaaat01", "tmdaa1d01"}, 9, "7", "주부"),
+        ("stock_listing_status", "주식상장비상장구분코드", {"tbdaaat01", "tmdaa1d01"}, 2, "2", "비상장"),
+        ("customer_industry_classification", "업종구분코드", {"tbdaaat01", "tmdaa1d01"}, 58, "05", "주부"),
+        ("head_office_classification", "본사구분코드", {"tbdaaat01", "tmdaa1d01"}, 2, "1", "지점"),
+        ("corporate_legal_form", "기업형태구분코드", {"tbdaaat01", "tmdaa1d01"}, 12, "01", "주식회사"),
+        ("branch_classification", "부점구분코드", {"tbdaacb02"}, 27, "03", "지점"),
+        ("branch_store_type", "점포유형구분코드", {"tbdaacb02"}, 6, "3", "직장인 특화점포(오피스 밀집지역)"),
+        ("branch_holding_company", "지주회사구분코드", {"tbdaacb02"}, 22, "01", "은행"),
+    ],
+)
+def test_user_provided_detail_codebooks_are_bound_to_real_columns(
+    attribute_name: str,
+    column_name: str,
+    expected_tables: set[str],
+    expected_count: int,
+    sample_code: str,
+    sample_label: str,
+) -> None:
+    attribute = next(
+        item for item in RAW_SEMANTIC["semantic_attributes"] if item["name"] == attribute_name
+    )
+    mapped_tables = {mapping["table"] for mapping in attribute["source_mappings"]}
+    mapped_columns = {
+        (mapping["table"], mapping["column"])
+        for mapping in attribute["source_mappings"]
+    }
+
+    assert attribute["parameter_name"] == column_name
+    assert attribute["codebook_status"] == "verified"
+    assert attribute["codebook_validity"]["valid_to"] == "9999-12-31"
+    assert attribute["value_semantics_provenance"] == "user_provided_business_codebook"
+    assert len(attribute["value_semantics"]) == expected_count
+    assert attribute["value_semantics"][sample_code] == sample_label
+    assert all(isinstance(code, str) for code in attribute["value_semantics"])
+    assert mapped_tables == expected_tables
+    assert mapped_columns == {(table, column_name) for table in expected_tables}
+    if expected_tables == {"tbdaaat01", "tmdaa1d01"}:
+        roles = {mapping["table"]: mapping["role"] for mapping in attribute["source_mappings"]}
+        assert roles["tbdaaat01"].startswith("current_")
+        assert roles["tmdaa1d01"].startswith("monthly_")
+
+    for table_name in expected_tables:
+        column = next(
+            item for item in _business_columns(_raw_table(table_name)) if item["name"] == column_name
+        )
+        assert column["codebook_ref"] == attribute_name
+
+    assert schema.resolve_semantic_attribute_value(
+        schema.SCHEMA,
+        attribute_name,
+        f"{column_name} {sample_label}",
+    ) == sample_code
+    context = schema.build_semantic_attributes_summary(
+        schema.SCHEMA,
+        f"{sample_label} {column_name}",
+    )
+    assert column_name in context
+    assert f'"{sample_code}"' in context
+
+
+def test_detail_codebooks_match_the_complete_verified_content() -> None:
+    expected_hashes = {
+        "occupation_type": "b0b1196c91980647ce63b11fd4d9901eb6acab1587744a167135f7d47c5e82c5",
+        "stock_listing_status": "6cf7a35e7d365a60e1c150492bf05c400f5db63c836f6d9626c58b5d665118a6",
+        "customer_industry_classification": "b075b9c161c09d239f5905a048b0f1eb3688eceb8c2b2a8681f87c49b0965528",
+        "head_office_classification": "5fa828bad8a2e7171d7d54582ff638dc31576bec4ab44e64dc2fa8d3d60fe103",
+        "corporate_legal_form": "2b96fdff0e00aa453f6b49d21fc7cb17acb4194c2ca4d5aeef9e6f332a9cdd68",
+        "branch_classification": "0895b2e24201c0494d23fa8d415ae325a42e8964c1bca8b450cdc0565abbbbdb",
+        "branch_store_type": "4e0a086b9268fcd85d67f68655c3ab7355d41f52bd32ea6831640e4764173da4",
+        "branch_holding_company": "583312b64e50c9e357ad853d9872de0b359d1eddf16f949547b078f31fe45368",
+    }
+    attributes = {item["name"]: item for item in RAW_SEMANTIC["semantic_attributes"]}
+
+    actual_hashes = {}
+    for name in expected_hashes:
+        attribute = attributes[name]
+        payload = {
+            "values": attribute["value_semantics"],
+            "validity": attribute["codebook_validity"],
+        }
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        actual_hashes[name] = hashlib.sha256(canonical).hexdigest()
+
+    assert actual_hashes == expected_hashes
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_table", "wrong_snapshot"),
+    [
+        ("주식회사 고객 목록", "tbdaaat01", "tmdaa1d01"),
+        ("2025년 6월 주식회사 고객 목록", "tmdaa1d01", "tbdaaat01"),
+        ("2025년 6월 기준 최신 주식회사 고객 목록", "tmdaa1d01", "tbdaaat01"),
+        ("현재 주식회사 고객 목록", "tbdaaat01", "tmdaa1d01"),
+        ("2025년 이용 고객 중 현재 기업형태가 주식회사", "tbdaaat01", "tmdaa1d01"),
+        ("2025년 6월 현재 기업형태가 주식회사 고객", "tmdaa1d01", "tbdaaat01"),
+        ("기업형태를 기준으로 주식회사 고객 목록", "tbdaaat01", "tmdaa1d01"),
+    ],
+)
+def test_customer_detail_codebooks_choose_the_right_snapshot(
+    question: str,
+    expected_table: str,
+    wrong_snapshot: str,
+) -> None:
+    ranked = workflow._rule_rank_tables(question)
+
+    assert ranked[0] == expected_table
+    assert wrong_snapshot not in ranked
+
+
+def test_verified_codebook_metadata_and_reference_reach_the_prompt() -> None:
+    context = schema.build_semantic_attributes_summary(
+        schema.SCHEMA,
+        "2025년 6월 주식회사 기업형태 고객 목록",
+    )
+    details = workflow._table_details(
+        ["tbdaaat01"],
+        "주식회사 기업형태구분코드",
+        max_columns=48,
+    )
+
+    assert "codebook_status: verified" in context
+    assert "value_semantics_provenance: user_provided_business_codebook" in context
+    assert '"default_valid_from": "2018-05-28"' in context
+    assert '"period_role_prefix": "monthly_"' in context
+    assert "codebook_ref=corporate_legal_form" in details
+
+
+def test_company_own_industry_does_not_retrieve_the_legacy_customer_codebook() -> None:
+    candidates = schema.semantic_attribute_candidates(
+        schema.SCHEMA,
+        "기업업종별 카드 이용금액",
+        domain_name="card_usage",
+        max_count=12,
+    )
+
+    assert "customer_industry_classification" not in {
+        item["name"] for item in candidates
+    }
+    assert workflow._rule_rank_tables("기업업종별 카드 이용금액")[0] == "tbdaabt30"
+
+
+def test_temporal_cautions_do_not_retrieve_unrelated_attributes() -> None:
+    candidates = schema.semantic_attribute_candidates(
+        schema.SCHEMA,
+        "2025년 당시 주식회사 고객 목록",
+        max_count=12,
+    )
+
+    assert "corporate_legal_form" in {item["name"] for item in candidates}
+    assert "enterprise_size" not in {item["name"] for item in candidates}
+    assert workflow._rule_rank_tables("2025년 당시 주식회사 고객 목록")[0] == "tmdaa1d01"
+    assert "tbdaaat01" not in workflow._rule_rank_tables("2025년 당시 주식회사 고객 목록")
+
+
+def test_inflected_generic_words_do_not_retrieve_unrelated_attributes() -> None:
+    candidates = schema.semantic_attribute_candidates(
+        schema.SCHEMA,
+        "고객의 현재 주식회사 목록",
+        max_count=12,
+    )
+
+    assert [item["name"] for item in candidates] == ["corporate_legal_form"]
+    assert schema.semantic_attribute_candidates(
+        schema.SCHEMA,
+        "고객의 카드 이용금액",
+        max_count=12,
+    ) == []
+    assert schema.semantic_attribute_candidates(
+        schema.SCHEMA,
+        "법인 고객의 이용금액",
+        max_count=12,
+    ) == []
+
+
+def test_business_number_is_not_mistaken_for_a_historical_period() -> None:
+    question = "사업자번호 2012345678인 대기업 고객 목록"
+
+    assert not schema._has_historical_period_expression(question)
+    assert workflow._rule_rank_tables(question)[0] == "tbdaaat01"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["2025년 당시 대기업 고객 목록", "2025년 6월 대기업 고객 목록"],
+)
+def test_historical_enterprise_size_list_uses_monthly_snapshot(question: str) -> None:
+    contracts = {
+        item["name"]
+        for item in schema.semantic_query_contract_candidates(
+            schema.SCHEMA,
+            question,
+            max_count=6,
+        )
+    }
+    ranked = workflow._rule_rank_tables(question)
+
+    assert "current_enterprise_size_customer_list" not in contracts
+    assert "historical_enterprise_size_customer_list" in contracts
+    assert ranked[0] == "tmdaa1d01"
+    assert "tbdaaat01" not in ranked
+    assert ranked == ["tmdaa1d01"]
+
+
+def test_analyze_question_rejects_llm_alternate_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workflow, "_call_llm", lambda *_args, **_kwargs: "tbdaaat01")
+    question = "2025년 6월 주식회사 고객 목록"
+
+    catalog = workflow._compact_table_catalog(
+        workflow._rule_rank_tables(question),
+        workflow._attribute_snapshot_exclusions(question),
+    )
+    result = workflow.analyze_question(
+        {
+            "question": question,
+            "selected_domain": "customer_card_portfolio",
+            "domain_context": "테스트 도메인",
+            "domain_routing_trace": "테스트 라우팅",
+        }
+    )
+
+    assert "tmdaa1d01" in catalog
+    assert not any(line.startswith("- tbdaaat01 (") for line in catalog.splitlines())
+    assert result["selected_tables"][0] == "tmdaa1d01"
+    assert "tbdaaat01" not in result["selected_tables"]
+
+
+def test_analyze_question_does_not_let_llm_override_authoritative_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        workflow,
+        "_call_llm",
+        lambda *_args, **_kwargs: pytest.fail("authoritative selection must bypass the LLM"),
+    )
+
+    result = workflow.analyze_question(
+        {
+            "question": "2026년 대기업 기업카드 이용금액 뽑아줘",
+            "selected_domain": "card_usage",
+            "domain_context": "테스트 도메인",
+            "domain_routing_trace": "테스트 라우팅",
+        }
+    )
+
+    assert result["selected_tables"] == ["tbdaaat01", "tmdaa3e16"]
+
+
+@pytest.mark.parametrize(
+    ("label", "question_label"),
+    [("주부", "주부"), ("주부", "주부인"), ("지점", "지점"), ("은행", "은행"), ("기타", "기타")],
+)
+def test_bare_duplicate_code_label_requests_the_classification_axis(
+    label: str,
+    question_label: str,
+) -> None:
+    result = workflow.check_sql_gen_params(
+        {
+            "question": f"{question_label} 고객 목록",
+            "query_frame": {"entities": [{"type": "customer"}]},
+        }
+    )
+
+    assert result["param_stage"] == "need_params"
+    assert [item["name"] for item in result["missing_params"]] == [f"{label}분류축"]
+
+
+def test_explicit_duplicate_code_axis_does_not_request_clarification() -> None:
+    result = workflow.check_sql_gen_params(
+        {"question": "직업유형 주부 고객 목록"}
+    )
+
+    assert result == {"missing_params": [], "param_stage": "done"}
+
+
+def test_standalone_duplicate_still_clarifies_next_to_a_longer_label() -> None:
+    result = workflow.check_sql_gen_params(
+        {"question": "기타 고객과 기타 제조업 고객 목록"}
+    )
+
+    assert [item["name"] for item in result["missing_params"]] == ["기타분류축"]
+
+
+@pytest.mark.parametrize(
+    ("label", "attribute_names"),
+    [
+        ("주부", ["occupation_type", "customer_industry_classification"]),
+        ("지점", ["head_office_classification", "branch_classification"]),
+        ("은행", ["customer_industry_classification", "branch_holding_company"]),
+        ("기타", ["enterprise_size", "corporate_legal_form"]),
+    ],
+)
+def test_bare_duplicate_labels_do_not_guess_a_code(
+    label: str,
+    attribute_names: list[str],
+) -> None:
+    assert all(
+        schema.resolve_semantic_attribute_value(schema.SCHEMA, name, label) == ""
+        for name in attribute_names
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "target", "expected_code", "competitor"),
+    [
+        ("직업유형 주부 고객", "occupation_type", "7", "customer_industry_classification"),
+        ("고객업종구분 주부 고객", "customer_industry_classification", "05", "occupation_type"),
+        ("고객 본사구분 지점", "head_office_classification", "1", "branch_classification"),
+        ("부점구분 지점", "branch_classification", "03", "head_office_classification"),
+        ("고객업종구분 은행", "customer_industry_classification", "14", "branch_holding_company"),
+        ("부점 계열사구분 은행", "branch_holding_company", "01", "customer_industry_classification"),
+    ],
+)
+def test_duplicate_labels_resolve_with_an_explicit_attribute_cue(
+    question: str,
+    target: str,
+    expected_code: str,
+    competitor: str,
+) -> None:
+    assert schema.resolve_semantic_attribute_value(schema.SCHEMA, target, question) == expected_code
+    assert schema.resolve_semantic_attribute_value(schema.SCHEMA, competitor, question) == ""
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_table"),
+    [
+        ("도/소매업 업종구분코드 고객 목록", "tbdaaat01"),
+        ("비상장 법인 고객 목록", "tbdaaat01"),
+        ("기업형복합점 부점 목록", "tbdaacb02"),
+        ("KB금융지주 부점 목록", "tbdaacb02"),
+    ],
+)
+def test_detail_codebooks_prioritize_their_mapped_table(
+    question: str,
+    expected_table: str,
+) -> None:
+    assert workflow._rule_rank_tables(question)[0] == expected_table
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "급여생활자(대기업이상) 고객 목록",
+        "대기업금융지점 부점 목록",
+        "기타제조업 고객 목록",
+        "개인/가계서비스업 고객 목록",
+        "기타 계열사 부점 목록",
+        "2026년 급여생활자(대기업이상) 고객의 기업카드 이용금액",
+    ],
+)
+def test_longer_foreign_code_labels_do_not_trigger_enterprise_size_contracts(
+    question: str,
+) -> None:
+    assert schema.resolve_semantic_attribute_value(schema.SCHEMA, "enterprise_size", question) == ""
+    contract_names = {
+        contract["name"]
+        for contract in schema.semantic_query_contract_candidates(
+            schema.SCHEMA,
+            question,
+            max_count=6,
+        )
+    }
+    assert {
+        "enterprise_size_corporate_card_usage",
+        "current_enterprise_size_customer_list",
+    }.isdisjoint(contract_names)
+
+
+def test_explicit_enterprise_size_survives_a_longer_foreign_code_label() -> None:
+    question = "대기업 중 기타제조업 고객 목록"
+
+    assert schema.resolve_semantic_attribute_value(
+        schema.SCHEMA,
+        "enterprise_size",
+        question,
+    ) == "1"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["기업형태 기타 고객 목록", "기타 기업형태 고객 목록"],
+)
+def test_equal_code_labels_follow_the_explicit_attribute_cue(question: str) -> None:
+    assert schema.resolve_semantic_attribute_value(
+        schema.SCHEMA,
+        "corporate_legal_form",
+        question,
+    ) == "99"
+    assert schema.resolve_semantic_attribute_value(schema.SCHEMA, "enterprise_size", question) == ""
+    assert "current_enterprise_size_customer_list" not in {
+        contract["name"]
+        for contract in schema.semantic_query_contract_candidates(
+            schema.SCHEMA,
+            question,
+            max_count=6,
+        )
+    }
+
+
+def test_explicit_enterprise_size_wins_the_equal_other_label() -> None:
+    question = "기업규모 기타 고객 목록"
+
+    assert schema.resolve_semantic_attribute_value(schema.SCHEMA, "enterprise_size", question) == "9"
+    assert schema.resolve_semantic_attribute_value(
+        schema.SCHEMA,
+        "corporate_legal_form",
+        question,
+    ) == ""
 
 
 def test_encrypted_customer_table_matches_source_contract_and_stays_restricted() -> None:
@@ -163,6 +589,54 @@ def test_encrypted_customer_table_matches_source_contract_and_stays_restricted()
         "계좌번호",
         "BC카드결제계좌번호",
     } <= set(table["restricted_columns"])
+
+
+def test_monthly_corporate_customer_table_matches_excel_contract() -> None:
+    table = _raw_table("tmdaa1d12")
+    columns = {column["name"]: column for column in _business_columns(table)}
+    technical_columns = {
+        "시스템최종갱신일시",
+        "시스템최종갱신식별자",
+        "시스템최종거래일시",
+        "ADW시스템최종갱신일시",
+    }
+
+    assert table["korean_name"] == "월기업고객기본"
+    assert table["primary_key"] == ["기준년월", "기준년월일", "고객식별자"]
+    assert table["grain"].startswith("기준년월 × 기준년월일 × 고객식별자")
+    assert len(columns) == 75
+    assert technical_columns.isdisjoint(columns)
+    assert all(column.get("physical_data_type") for column in columns.values())
+    assert {
+        "기준년월": "VARCHAR2(6)",
+        "기준년월일": "VARCHAR2(8)",
+        "고객식별자": "VARCHAR2(10)",
+        "기업총한도금액": "NUMBER(15)",
+        "유효기업신용카드수": "NUMBER(7)",
+        "금월신용카드이용금액": "NUMBER(15)",
+    } == {
+        name: columns[name]["physical_data_type"]
+        for name in (
+            "기준년월",
+            "기준년월일",
+            "고객식별자",
+            "기업총한도금액",
+            "유효기업신용카드수",
+            "금월신용카드이용금액",
+        )
+    }
+    assert table["source_metadata"] == {
+        "workbook_entity": "DAA월기업고객기본",
+        "source_file": "예시.xlsx",
+        "source_column_count": 79,
+        "queryable_column_count": 75,
+        "excluded_technical_columns": [
+            "시스템최종갱신일시",
+            "시스템최종갱신식별자",
+            "시스템최종거래일시",
+            "ADW시스템최종갱신일시",
+        ],
+    }
 
 
 def test_all_safe_paths_have_valid_endpoints_and_quoted_korean_join_columns() -> None:

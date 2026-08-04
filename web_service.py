@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import uuid
+from calendar import monthrange
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import date, datetime
@@ -28,7 +29,6 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import text2sql_agent as agent  # noqa: E402
-import text2sql_agent.db as agent_db  # noqa: E402
 import webapp_compatible_api as webapp_api  # noqa: E402
 from text2sql_agent import config as agent_config  # noqa: E402
 from text2sql_agent.followup_ops import build_chart_spec, plan_followup  # noqa: E402
@@ -67,16 +67,6 @@ async def _lifespan(_: FastAPI):
             error_type=type(exc).__name__,
             error_message=str(exc),
         )
-    database_status = agent_db.probe_database()
-    database_ready = bool(database_status.get("database_ready"))
-    _stream_log(
-        logging.INFO if database_ready or database_status.get("database_status") == "not_applicable" else logging.ERROR,
-        "database_connection_check",
-        database_ready=database_ready,
-        database_status=database_status.get("database_status", "unavailable"),
-        database_source=database_status.get("database_source", "unknown"),
-        database_error_type=database_status.get("database_error_type"),
-    )
     _stream_log(
         logging.INFO,
         "service_started",
@@ -880,6 +870,27 @@ def _normalize_korean_ym(text: str) -> str:
     return stripped
 
 
+def _normalize_korean_ymd(text: str) -> str:
+    stripped = text.strip()
+    match = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", stripped)
+    if match:
+        candidate = f"{match.group(1)}{int(match.group(2)):02d}{int(match.group(3)):02d}"
+    else:
+        match = re.search(r"\b(20\d{2})[-./\s](\d{1,2})[-./\s](\d{1,2})\b", stripped)
+        candidate = f"{match.group(1)}{int(match.group(2)):02d}{int(match.group(3)):02d}" if match else stripped
+    if re.fullmatch(r"20\d{6}", candidate):
+        try:
+            datetime.strptime(candidate, "%Y%m%d")
+            return candidate
+        except ValueError:
+            return stripped
+    ym = _normalize_korean_ym(stripped)
+    if re.fullmatch(r"20\d{4}", ym):
+        year, month = int(ym[:4]), int(ym[4:])
+        return f"{ym}{monthrange(year, month)[1]:02d}"
+    return stripped
+
+
 def _normalize_korean_year(text: str) -> str:
     import re
 
@@ -926,7 +937,7 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         return f"{target // 12:04d}{target % 12 + 1:02d}"
 
     is_previous = bool(re.search(r"전월|지난\s*달|저번\s*달", natural_input))
-    is_current = bool(re.search(r"이번\s*달|이번\s*월|현재\s*월|금월", natural_input))
+    is_current = bool(re.search(r"이번\s*달|이번\s*월|현재(?:\s*(?:월|기준|시점))?|오늘|금월", natural_input))
     recent_span = re.search(r"최근\s*(\d+)\s*개월", natural_input)
     is_recent = is_current or bool(re.search(r"최근", natural_input))
     if is_previous:
@@ -935,6 +946,13 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         ym_value = current_ym
     else:
         ym_value = _normalize_korean_ym(natural_input)
+    if is_current or is_recent:
+        ymd_value = datetime.now().strftime("%Y%m%d")
+    elif is_previous:
+        year, month = int(ym_value[:4]), int(ym_value[4:])
+        ymd_value = f"{ym_value}{monthrange(year, month)[1]:02d}"
+    else:
+        ymd_value = _normalize_korean_ymd(natural_input)
     year_value = _normalize_korean_year(natural_input)
 
     for name in names:
@@ -948,11 +966,14 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         # 1) '이름=값' 등 명시적 패턴이 있으면 최우선 채택 (LS/IS 같은 자유 숫자 파라미터 포함).
         named = _extract_named_value(name, natural_input)
         if named:
-            parsed[name] = named
-            continue
+            if name != "기준년월일" or re.fullmatch(r"20\d{6}", named):
+                parsed[name] = named
+                continue
 
         lowered = name.lower()
-        if any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
+        if name == "기준년월일":
+            parsed[name] = ymd_value
+        elif any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
             parsed[name] = ym_value
         elif any(key in lowered for key in ["기간_시작", "start", "from", "시작"]):
             if recent_span:
@@ -1031,6 +1052,7 @@ def _natural_params_by_llm(natural_input: str, missing_params: list[Any], contin
 - JSON object만 반환하세요.
 - key는 필요한 파라미터의 name을 그대로 사용하세요.
 - 기준년월/년월은 YYYYMM 형식으로 변환하세요. 예: 2025년 12월 -> 202512
+- 기준년월일은 YYYYMMDD 형식으로 변환하세요. 월만 주어지면 해당 월 말일을 사용하세요. 예: 2026년 7월 -> 20260731
 - "최근", "이번달", "이번 월"은 이번달({datetime.now().year}{datetime.now().month:02d})로 변환하세요.
 - 기간 시작/종료가 연도만 주어졌으면 시작은 YYYY01, 종료는 YYYY12로 변환하세요.
 - 모르는 값은 포함하지 마세요.
@@ -1333,6 +1355,8 @@ def _param_example_value(name: str) -> str:
     lowered = name.lower()
     if name == MANAGED_SCOPE_PARAMETER or "사업자등록번호" in lowered:
         return "123-45-67890, 234-56-78901"
+    if name == "기준년월일":
+        return f"{name}={datetime.now().strftime('%Y%m%d')}"
     if any(key in lowered for key in ["년월", "기준월", "ym", "base_ym"]):
         return f"{name}={datetime.now().year}{datetime.now().month:02d}"
     if any(key in lowered for key in ["기간_시작", "start", "시작", "from"]):
@@ -1916,7 +1940,105 @@ def _classify_followup_intent(question: str, columns: list[Any] | None = None, r
     return str(plan_followup(question, columns or [], rows or [])["mode"])
 
 
-def _fallback_followup_context(question: str, plan: dict[str, Any]) -> dict[str, Any]:
+_ENTITY_ONLY_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:그럼|그러면|그렇다면|이번에는|이번엔)\s+"
+    r"(?P<entity>.+?)(?:"
+    r"(?:은|는|이|가)\s*[?!.]*"
+    r"|(?:은|는|이|가)?\s*(?:어때(?:요)?|어떻게\s*돼(?:요)?|어떤가요?)\s*[?!.]*"
+    r")\s*$"
+)
+_NON_ENTITY_FOLLOWUP_SUBJECTS = {
+    "전체",
+    "결측값",
+    "표",
+    "중앙값",
+    "표준편차",
+    "분산",
+    "3줄정리",
+    "점유율",
+    "성장률",
+    "전년대비",
+    "상세",
+    "원본",
+    "데이터",
+    "통계",
+    "분포",
+    "백분위",
+    "평균값",
+    "총합",
+    "소계",
+    "목록",
+    "테이블",
+    "컬럼",
+}
+
+
+def _entity_only_followup_change(base_result: dict[str, Any], question: str) -> dict[str, str]:
+    """Return one high-confidence entity replacement from an elliptical follow-up."""
+
+    entities = [
+        item
+        for item in ensure_query_frame(base_result).get("entities", []) or []
+        if item.get("column") and item.get("value")
+    ]
+    match = _ENTITY_ONLY_FOLLOWUP_RE.fullmatch(question or "")
+    if len(entities) != 1 or not match:
+        return {}
+    candidate = " ".join(match.group("entity").strip(" \"'").split())
+    compact_candidate = re.sub(r"\s+", "", candidate).lower()
+    if (
+        not re.search(r"[A-Za-z가-힣]", candidate)
+        or compact_candidate in _NON_ENTITY_FOLLOWUP_SUBJECTS
+        or re.search(r"(?:^|\s)(?:전월|지난달|이번달|최근|\d{1,2}\s*월|20\d{2}\s*년)(?:$|\s)", candidate)
+        or re.search(
+            r"대손|매출|연체|한도|분석|조회|차트|그래프|카드|가맹점|기업|회사|업종|"
+            r"회원|고객|월별|연도별|상위|하위|합계|평균|요약|단위|억원|이상치|최대|"
+            r"최소|가장|높은|낮은|결과|정렬|필터|추이|변동|비율|증감|건수|금액|"
+            r"비교|인구|주가|환율|날씨|뉴스|보여|알려|해줘|다른",
+            candidate,
+        )
+    ):
+        return {}
+    current = entities[0]
+    if compact_candidate == re.sub(r"\s+", "", str(current["value"])).lower():
+        return {}
+    return {
+        "column": str(current["column"]),
+        "old_value": str(current["value"]),
+        "new_value": candidate,
+    }
+
+
+def _resolved_entity_followup_question(
+    base_result: dict[str, Any],
+    question: str,
+    change: dict[str, str],
+) -> str:
+    base_question = str(
+        base_result.get("question")
+        or ensure_query_frame(base_result).get("source_question")
+        or ""
+    )
+    old_value = change.get("old_value", "")
+    if base_question and old_value and old_value in base_question:
+        return base_question.replace(old_value, change["new_value"], 1)
+    return question
+
+
+def _fallback_followup_context(
+    base_result: dict[str, Any],
+    question: str,
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    entity_change = _entity_only_followup_change(base_result, question)
+    if entity_change and plan.get("mode") == "analysis":
+        return {
+            "relation": "refine_query",
+            "source_strategy": "same_source",
+            "resolved_question": _resolved_entity_followup_question(base_result, question, entity_change),
+            "reason": "deterministic_entity_replacement",
+            "used_llm": False,
+        }
     mode = str(plan.get("mode") or "")
     return {
         "relation": "refine_query" if plan.get("requires_sql") else "existing_result",
@@ -1986,7 +2108,9 @@ def _resolve_followup_context(
 반환 형식:
 {{"relation":"existing_result|refine_query|new_query","source_strategy":"current_result|same_source|rediscover","resolved_question":"완전한 질문","reason":"짧은 판단 근거"}}
 """
-    fallback = _fallback_followup_context(question, preliminary_plan)
+    fallback = _fallback_followup_context(base_result, question, preliminary_plan)
+    if fallback.get("reason") == "deterministic_entity_replacement":
+        return fallback
     try:
         parsed = _parse_llm_json(agent._call_llm(prompt, max_tokens=700))
     except Exception:
@@ -2036,6 +2160,31 @@ def _table_details_for_names(table_names: list[str]) -> str:
     return _bounded_table_details(table_names)
 
 
+def _replace_query_frame_entity(
+    frame: dict[str, Any],
+    change: dict[str, str],
+) -> dict[str, Any]:
+    if not change:
+        return frame
+    next_frame = dict(frame)
+    entities = [dict(item) for item in frame.get("entities", []) or []]
+    for item in entities:
+        if item.get("column") == change["column"] and str(item.get("value")) == change["old_value"]:
+            item["value"] = change["new_value"]
+            break
+    next_frame["entities"] = entities
+    return next_frame
+
+
+def _inherited_tool_params(
+    base_result: dict[str, Any],
+    entity_change: dict[str, str],
+) -> dict[str, Any]:
+    inherited = dict(base_result.get("tool_params") or {})
+    inherited[entity_change["column"]] = entity_change["new_value"]
+    return inherited
+
+
 def _followup_query_state(
     base_result: dict[str, Any],
     question: str,
@@ -2053,11 +2202,33 @@ def _followup_query_state(
     reroute_sources = mode.startswith("new_sql")
     relation = str(plan.get("context_relation") or "")
     resolved_question = str(plan.get("resolved_question") or question)
+    entity_change = (
+        _entity_only_followup_change(base_result, question)
+        if plan.get("context_reason") == "deterministic_entity_replacement"
+        else {}
+    )
+    reuse_tool = bool(
+        relation == "refine_query"
+        and not reroute_sources
+        and plan.get("source_strategy") != "rediscover"
+        and base_result.get("selected_tool") == "대손비용률_분석"
+        and entity_change.get("column") == "가맹점명"
+    )
     state = agent._new_initial_state(resolved_question)
     state["question_type"] = "need_sql"
-    state["skip_tool_selection"] = relation != "new_query"
+    state["skip_tool_selection"] = relation != "new_query" and not reuse_tool
     state["skip_verified_query_matching"] = relation != "new_query"
-    state["query_frame"] = plan.get("next_query_frame") or frame
+    state["query_frame"] = _replace_query_frame_entity(
+        plan.get("next_query_frame") or frame,
+        entity_change,
+    )
+    if reuse_tool:
+        state["selected_tool"] = str(base_result["selected_tool"])
+        state["tool_params"] = _inherited_tool_params(base_result, entity_change)
+        state["selected_capability_type"] = "tool"
+        state["selected_capability_name"] = str(
+            base_result.get("selected_capability_name") or base_result["selected_tool"]
+        )
     if relation != "new_query":
         history = list(base_result.get("analysis_history") or [])
         previous_turn = history[-1] if history else {}
@@ -2271,9 +2442,6 @@ def _stream_followup(
     if not base_result:
         yield _sse("error", {"detail": "이전 결과를 찾을 수 없습니다."})
         return
-    if not base_result.get("query_columns") or not base_result.get("query_rows"):
-        yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
-        return
 
     yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다.", "query": req.question})
     try:
@@ -2318,6 +2486,12 @@ def _stream_followup(
                 "requires_sql": bool(followup_plan["requires_sql"]),
                 "context_relation": followup_plan.get("context_relation", ""),
             }
+
+        if (
+            not base_result.get("query_columns") or not base_result.get("query_rows")
+        ) and not followup_plan["requires_sql"]:
+            yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
+            return
 
         if followup_plan["requires_sql"]:
             sql_intent = "new_sql" if intent.startswith("new_sql") else "rewrite_sql"
@@ -2691,7 +2865,11 @@ def list_sessions(
     agent_name = _request_agent_name(x_agent_name)
     pruned = _SESSION_STORE.prune_empty_sessions(user_id, agent_name)
     sessions = _SESSION_STORE.list_sessions(user_id, agent_name)
-    return {"sessions": [_session_summary(session) for session in sessions], "pruned_empty_sessions": pruned}
+    return {
+        "sessions": [_session_summary(session) for session in sessions],
+        "pruned_empty_sessions": pruned,
+        "session_delete_enabled": bool(getattr(_SESSION_STORE, "delete_enabled", True)),
+    }
 
 
 @app.get("/api/sessions/{session_id}")
@@ -2714,6 +2892,8 @@ def delete_session(
     session_id: str,
     x_user_id: str | None = Header(None, alias="X-User-ID"),
 ):
+    if not getattr(_SESSION_STORE, "delete_enabled", True):
+        return {"deleted": False, "hidden": True, "session_id": session_id}
     deleted = _SESSION_STORE.delete_session(session_id, _request_user_id(x_user_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
@@ -2764,6 +2944,8 @@ def delete_saved_query(
     query_id: str,
     x_user_id: str | None = Header(None, alias="X-User-ID"),
 ):
+    if not getattr(_SESSION_STORE, "delete_enabled", True):
+        raise HTTPException(status_code=403, detail="PostgreSQL DELETE 권한이 비활성화되어 있습니다.")
     deleted = _SESSION_STORE.delete_saved_query(query_id, _request_user_id(x_user_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="저장 쿼리를 찾을 수 없습니다.")
@@ -2911,8 +3093,11 @@ def index_head():
 
 @app.get("/{full_path:path}")
 def static_fallback(full_path: str):
-    file_path = STATIC_DIR / full_path
-    if file_path.is_file():
-        headers = {"Cache-Control": "no-store"} if file_path.suffix == ".html" else None
-        return FileResponse(str(file_path), headers=headers)
+    static_root = STATIC_DIR.resolve()
+    path_parts = Path(full_path).parts
+    for offset in range(len(path_parts)):
+        file_path = STATIC_DIR.joinpath(*path_parts[offset:]).resolve()
+        if file_path.is_relative_to(static_root) and file_path.is_file():
+            headers = {"Cache-Control": "no-store"} if file_path.suffix == ".html" else None
+            return FileResponse(str(file_path), headers=headers)
     return FileResponse(str(STATIC_DIR / "index.html"), headers={"Cache-Control": "no-store"})

@@ -1,3 +1,21 @@
+@font-face {
+  font-family: "LargeFont";
+  src: url("./fonts/KBfgTextB.ttf") format("truetype");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "BodyFont";
+  src: url("./fonts/KBfgTextM.ttf") format("truetype");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SmallFont";
+  src: url("./fonts/KBfgTextL.ttf") format("truetype");
+  font-display: swap;
+}
+
 :root {
   --bg: #0e1117;
   --panel: #151922;
@@ -19,7 +37,7 @@
   --radius-sm: 9px;
   --shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
   --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.3);
-  --mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  --mono: "BodyFont", sans-serif;
   --rail-bg: #10141b;
   --inspector-bg: rgba(13, 16, 21, 0.6);
   --control-bg: #171c25;
@@ -50,6 +68,9 @@
   --toast-bg: #f4f7fb;
   --toast-text: #0c0e12;
   color-scheme: dark;
+  --font-large: "LargeFont", sans-serif;
+  --font-body: "BodyFont", sans-serif;
+  --font-small: "SmallFont", sans-serif;
 }
 
 html[data-theme="light"] {
@@ -101,6 +122,9 @@ html[data-theme="light"] {
   --toast-bg: #1a1a1a;
   --toast-text: #ffffff;
   color-scheme: light;
+  --font-large: "LargeFont", sans-serif;
+  --font-body: "BodyFont", sans-serif;
+  --font-small: "SmallFont", sans-serif;
 }
 
 * {
@@ -116,7 +140,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", Inter, system-ui, sans-serif;
+  font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -215,6 +239,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 380px;
   height: 100vh;
+  font-family: var(--font-body);
   overflow: hidden;
   background: var(--bg);
 }
@@ -232,6 +257,7 @@ button:disabled {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  font-family: var(--font-small);
   gap: 12px;
   padding: 16px 12px 12px;
   background: var(--rail-bg);
@@ -553,6 +579,7 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   display: grid;
+  font-family: var(--font-small);
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0;
   overflow: hidden;
@@ -984,6 +1011,7 @@ button:disabled {
 .hero {
   position: relative;
   width: min(760px, 100%);
+  font-family: var(--font-large);
   display: grid;
   gap: 16px;
 }
@@ -1169,7 +1197,7 @@ button:disabled {
   line-height: 1.7;
 }
 
-.message-body p { margin: 0 0 6px; }
+.message-body p { margin: 0 0 5px; }
 .message-body p:last-child { margin-bottom: 0; }
 
 .message-body h2,
@@ -2383,7 +2411,8 @@ summary:focus-visible,
 .rail-new-session {
   width: auto;
   grid-template-columns: 32px auto;
-  gap: 7px;
+  gap: 4px;
+  align-content: start;
   flex-basis: auto;
   padding: 0 10px 0 0;
 }
@@ -2411,6 +2440,7 @@ summary:focus-visible,
 
 .session-list {
   max-height: none;
+  align-content: start;
 }
 
 .session-group {
@@ -2432,7 +2462,7 @@ summary:focus-visible,
 }
 
 .session-item {
-  padding: 5px 6px 5px 12px;
+  padding: 3px 6px 3px 12px;
   border-radius: 10px;
 }
 
@@ -2560,6 +2590,7 @@ summary:focus-visible,
   min-height: 88px;
   align-items: center;
   justify-content: center;
+  font-family: var(--font-small);
   padding: 16px 24px;
   border-bottom: 0;
 }

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 import web_service
 from text2sql_agent import config as agent_config
 
@@ -15,22 +17,47 @@ def test_stylesheet_path_works_for_file_preview_and_web_server() -> None:
     source = INDEX_HTML.read_text(encoding="utf-8")
 
     assert STYLES_CSS.is_file()
-    assert 'href="styles.css?v=' in source
+    assert 'href="styles.css"' in source
     assert 'href="static/styles.css' not in source
     response = web_service.static_fallback("styles.css")
     assert Path(response.path) == STYLES_CSS
     assert response.media_type == "text/css"
 
 
-def test_frontend_redirects_users_without_login_id_ok() -> None:
+def test_prefix_path_without_trailing_slash_keeps_relative_assets_working() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    base_script_index = source.index('const base = document.createElement("base")')
+
+    assert base_script_index < source.index("window.location.replace")
+    assert base_script_index < source.index('href="styles.css')
+    assert 'base.href = `${path}/`' in source
+    with TestClient(web_service.app) as client:
+        response = client.get("/8080", follow_redirects=False)
+        stylesheet = client.get("/8080/styles.css")
+        logo = client.get("/8080/kb-logo-transparent.png")
+        font = client.get("/8080/fonts/KBfgTextM.ttf")
+    assert response.status_code == 200
+    assert response.headers.get("location") is None
+    assert stylesheet.status_code == 200
+    assert stylesheet.headers["content-type"].startswith("text/css")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"].startswith("image/png")
+    assert font.status_code == 200
+    assert font.content[:4] == b"\x00\x01\x00\x00"
+
+
+def test_frontend_uses_allowed_login_id_for_access_and_request_user_id() -> None:
     source = INDEX_HTML.read_text(encoding="utf-8")
     denied = ACCESS_DENIED_HTML.read_text(encoding="utf-8")
 
     auth_guard = source.split("<title>기업영업지원 에이전트</title>", 1)[1].split(
         "text2sql:console:theme:v2", 1
     )[0]
-    assert 'localStorage.getItem("loginID") === "OK"' in auth_guard
+    assert '.includes(localStorage.getItem("loginID"))' in auth_guard
     assert 'window.location.replace("access-denied.html")' in auth_guard
+    assert 'const loginId = String(localStorage.getItem("loginID") || "").trim();' in source
+    assert 'if (loginId) return loginId;' in source
+    assert '"X-User-ID": WEBAPP_USER_ID' in source
     assert "접속 권한이 없습니다" in denied
     assert Path(web_service.static_fallback("access-denied.html").path) == ACCESS_DENIED_HTML
 
@@ -94,6 +121,7 @@ def test_completed_query_keeps_composer_in_followup_flow() -> None:
 
     assert "else if (state.lastResultId && state.canFollowup)" in submit_handler
     assert "submitFollowup(question" in submit_handler
+    assert "data.result_id && !data.error && (data.rows?.length || data.sql" in render_result
     assert "syncQueryModeUi()" in render_result
     assert 'id="submitBtn"' not in source
     assert 'event.key === "Enter" && !event.shiftKey' in source

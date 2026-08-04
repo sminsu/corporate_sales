@@ -5,11 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="자연어 질문으로 기업영업 및 프랜차이즈 데이터를 조회하고 후속 분석하는 업무용 에이전트" />
     <meta name="theme-color" content="#fbfaf7" />
+    <script>
+      (() => {
+        const path = window.location.pathname;
+        const lastSegment = path.split("/").at(-1) || "";
+        if (path !== "/" && !path.endsWith("/") && !lastSegment.includes(".")) {
+          const base = document.createElement("base");
+          base.href = `${path}/`;
+          document.head.appendChild(base);
+        }
+      })();
+    </script>
     <title>기업영업지원 에이전트</title>
     <script>
       (() => {
-        try {
-          if (localStorage.getItem("loginID") === "OK") return;
+        try {if(
+          ["K000895", "K100286", "K108641", "K110632", "K113703", "K113794", "K114289","K114681","K115725","K116650","K116980","K118485",
+            "K118849","K120879","K123371","K503417", "K120883","K120329","K116865","112745","K115141","K001117","K120501","K122939"].includes(localStorage.getItem("loginID"))) return;
         } catch (_) {
           /* Storage access failure is treated as unauthorized. */
         }
@@ -28,7 +40,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260730-4" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <a class="skip-link" href="#questionInput">질문 입력으로 건너뛰기</a>
@@ -322,13 +334,6 @@
                   <li>최근 6개월 브랜드별 가맹점 매출 추이를 비교해줘.</li>
                 </ul>
               </article>
-              <article>
-                <h4>리스크 현황</h4>
-                <ul>
-                  <li>2025년 12월 말 기준 연체 회원 수를 알려줘.</li>
-                  <li>같은 기준일에 여신한도가 큰 기업 상위 10개를 보여줘.</li>
-                </ul>
-              </article>
             </div>
           </section>
 
@@ -401,6 +406,7 @@ const state = {
   failedRequest: null,
   tableCatalog: [],
   tableCatalogLoaded: false,
+  sessionDeleteEnabled: false,
 };
 
 const WEBAPP_AGENT_NAME = "corporate_sales";
@@ -411,6 +417,8 @@ const PREFIXLESS_API_HOSTS = new Set(configuredPrefixlessHosts.map((host) => hos
 const CORPORATE_SALES_SEGMENT = "/corporate-sales";
 const API_BASE = String(window.TEXT2SQL_API_BASE || "").replace(/\/$/, "");
 const WEBAPP_USER_ID = (() => {
+  const loginId = String(localStorage.getItem("loginID") || "").trim();
+  if (loginId) return loginId;
   const configured = String(window.TEXT2SQL_USER_ID || "").trim();
   if (configured) return configured;
   const key = "text2sql:console:user-id";
@@ -422,6 +430,7 @@ const WEBAPP_USER_ID = (() => {
   }
   return stored;
 })();
+const HIDDEN_SESSION_IDS_KEY = `text2sql:console:hidden-sessions:${WEBAPP_USER_ID}`;
 const WEBAPP_QUERY_STREAM_PATH = `api/v1/agent/${encodeURIComponent(WEBAPP_AGENT_NAME)}/query/stream`;
 const DEFAULT_EXAMPLES = [
   "2025년 월별 법인카드 이용금액 합계와 전월 대비 증감률을 보여줘",
@@ -1879,15 +1888,28 @@ async function createSession() {
 async function loadSessions() {
   try {
     const data = await api("api/sessions");
+    state.sessionDeleteEnabled = Boolean(data.session_delete_enabled);
+    if (state.sessionDeleteEnabled) localStorage.removeItem(HIDDEN_SESSION_IDS_KEY);
     renderSessions(data.sessions || []);
   } catch {
     sessionList.innerHTML = "";
   }
 }
 
+function hiddenSessionIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(HIDDEN_SESSION_IDS_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
 function renderSessions(sessions) {
   sessionList.innerHTML = "";
-  const visibleSessions = (sessions || []).filter((session) => Number(session.message_count || 0) > 0);
+  const hiddenIds = hiddenSessionIds();
+  const visibleSessions = (sessions || []).filter(
+    (session) => Number(session.message_count || 0) > 0 && !hiddenIds.has(session.id),
+  );
   if (!visibleSessions.length) {
     sessionList.innerHTML = `<div class="session-empty">아직 세션이 없습니다.</div>`;
     return;
@@ -1958,16 +1980,22 @@ function renderSessions(sessions) {
 
 async function deleteSession(sessionId) {
   if (!sessionId) return;
-  if (!window.confirm("이 세션을 삭제할까요?")) return;
+  const action = state.sessionDeleteEnabled ? "삭제" : "목록에서 숨김";
+  if (!window.confirm(`이 세션을 ${action} 처리할까요?`)) return;
   try {
-    await api(`api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    const result = await api(`api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (result.hidden) {
+      const hiddenIds = hiddenSessionIds();
+      hiddenIds.add(sessionId);
+      localStorage.setItem(HIDDEN_SESSION_IDS_KEY, JSON.stringify([...hiddenIds]));
+    }
     if (state.sessionId === sessionId) {
       resetSessionDraft();
       stopProgress();
       clearInlineError();
     }
     await loadSessions();
-    showToast("세션을 삭제했습니다.");
+    showToast(result.deleted ? "세션을 삭제했습니다." : "세션을 목록에서 숨겼습니다.");
   } catch (error) {
     showToast(error.message);
   }
@@ -2325,7 +2353,7 @@ function drawChart(chart) {
     chartCssColor("--red", "#ff7a70"),
     "#b18cff", "#ff9f67", "#66c7f2", "#d6cf5f", "#ef7fb1", "#70d6a8", "#8b9cff",
   ];
-  ctx.font = '11px "Pretendard", sans-serif';
+  ctx.font = '11px "BodyFont", sans-serif';
   ctx.fillStyle = text;
   ctx.strokeStyle = grid;
   const chartNumber = (value) => {
@@ -2758,7 +2786,9 @@ function renderResult(data, context = {}) {
   state.retryAction = null;
   state.failedRequest = null;
   state.lastResultId = data.result_id;
-  state.canFollowup = Boolean(data.columns?.length && data.rows?.length);
+  state.canFollowup = Boolean(
+    data.result_id && !data.error && (data.rows?.length || data.sql || data.selected_tool || data.matched_query_name),
+  );
   state.recommendedQuestions = normalizedQuestions(data.suggestions).slice(0, 3);
   if (data.session_id) state.sessionId = data.session_id;
   state.continuation = null;
