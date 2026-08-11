@@ -43,7 +43,7 @@ from text2sql_v2.sql_contract import (  # noqa: E402
     ATHENA_RULES_V2,
     GRAIN_RULES_V2,
     OUTPUT_CONTRACT_V2,
-    RESOLUTION_DEFAULTS_V2,
+    AMBIGUITY_RULES_V2,
     PROMPT_LIST_RENDER_LIMIT,
 )
 
@@ -184,9 +184,9 @@ def apply_sql_contract(schema: dict) -> dict:
     contract["output_contract"] = list(OUTPUT_CONTRACT_V2)
     contract["athena_rules"] = list(ATHENA_RULES_V2)
     contract["grain_and_aggregation_rules"] = list(GRAIN_RULES_V2)
-    # 되묻기를 지시하던 ambiguity_rules 를 기본값 해석 규칙으로 교체한다.
-    contract.pop("ambiguity_rules", None)
-    contract["resolution_defaults"] = list(RESOLUTION_DEFAULTS_V2)
+    # ambiguity_rules 는 키를 유지하고 내용만 바꾼다. schema._with_contract_compatibility()
+    # 가 레거시 llm_semantic_contract.ambiguity_policy 를 이 키에서 파생시킨다.
+    contract["ambiguity_rules"] = list(AMBIGUITY_RULES_V2)
 
     # output_contract 를 evidence_order 앞으로 옮겨 프롬프트 맨 위에 오게 한다.
     order = [
@@ -195,7 +195,7 @@ def apply_sql_contract(schema: dict) -> dict:
         "evidence_order",
         "athena_rules",
         "grain_and_aggregation_rules",
-        "resolution_defaults",
+        "ambiguity_rules",
         "time_resolution",
         "result_defaults",
     ]

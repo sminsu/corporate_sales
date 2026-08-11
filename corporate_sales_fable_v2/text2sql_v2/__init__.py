@@ -27,7 +27,7 @@ from .sql_contract import (
     GRAIN_RULES_V2,
     OUTPUT_CONTRACT_V2,
     PROMPT_LIST_RENDER_LIMIT,
-    RESOLUTION_DEFAULTS_V2,
+    AMBIGUITY_RULES_V2,
 )
 from .sql_dialect_guard import (
     audit_sql,
@@ -44,7 +44,7 @@ __all__ = [
     "GRAIN_RULES_V2",
     "OUTPUT_CONTRACT_V2",
     "PROMPT_LIST_RENDER_LIMIT",
-    "RESOLUTION_DEFAULTS_V2",
+    "AMBIGUITY_RULES_V2",
     "audit_sql",
     "compact",
     "derive_column_synonyms",

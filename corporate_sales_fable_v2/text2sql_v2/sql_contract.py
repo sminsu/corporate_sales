@@ -9,7 +9,7 @@ goldenset v2 실패에서 역산한 변경점:
 guard 332건 — "해당 컬럼이 스키마에 없습니다" 자연어 응답
     v1 ambiguity_rules[0] 이 "확정할 수 없으면 추가 입력을 요청한다" 였다.
     프롬프트 규칙 16번("순수 SQL만 반환")과 충돌하는데, 모델은 되묻는 쪽을 골랐다.
-    → output_contract 로 대체하고, 되묻기를 명시적으로 금지한다.
+    → 키는 유지하고 내용을 기본값 해석으로 바꾸고, output_contract 로 되묻기를 금지한다.
 
 syntax 10건 + EXPRESSION_NOT_SCALAR 2건
     QUALIFY 4건, expr::type 2건, WHERE 절 ROW_NUMBER 3건, 출력 잘림 3건.
@@ -37,7 +37,7 @@ OUTPUT_CONTRACT_V2: tuple[str, ...] = (
     "찾는 속성이 프롬프트의 테이블 상세에 안 보이면, 질문의 용어에서 접미사(구분/코드/여부/명)를 떼거나 붙인 형태로 다시 대조한다. "
     "예: '가맹점 상태구분' → \"가맹점상태구분코드\", '배달 가능' → \"가맹점배달가능여부\", '상품중분류' → \"상품중분류구분코드\".",
     "그래도 대응 컬럼을 찾지 못하면 되묻지 말고, 같은 의미에 가장 가까운 컬럼을 골라 SQL을 만들고 근거를 SQL 주석 한 줄로만 남긴다.",
-    "질문에 없는 값(기간·코드·이름)은 resolution_defaults의 기본값 해석을 적용한다. 기본값이 없으면 필터를 생략하고 전체 기간·전체 대상으로 집계한다.",
+    "질문에 없는 값(기간·코드·이름)은 ambiguity rules의 기본값 해석을 적용한다. 기본값이 없으면 필터를 생략하고 전체 기간·전체 대상으로 집계한다.",
     "'컬럼이 없습니다', '알려주시면', '스키마에 정의되어 있지 않습니다' 같은 문장은 어떤 경우에도 출력하지 않는다.",
     "SQL은 끝까지 완성해서 반환한다. 길어지더라도 CTE·GROUP BY·ORDER BY를 중간에 끊지 않는다.",
 )
@@ -87,9 +87,14 @@ GRAIN_RULES_V2: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# 기본값 해석 — v1 ambiguity_rules 를 "되묻지 말고 이렇게 해석한다"로 재작성
+# 모호성 해석 — v1 ambiguity_rules 를 "되묻지 말고 이렇게 해석한다"로 재작성
+#
+# 키 이름은 ambiguity_rules 로 유지한다. schema._with_contract_compatibility() 가
+# 레거시 llm_semantic_contract.ambiguity_policy 를 이 키에서 파생시키므로, 키를
+# 없애면 그 뷰가 비어 기존 계약 검사(test_nl2sql_quality_contract)가 깨진다.
+# 바꿔야 할 것은 키가 아니라 "추가 입력을 요청한다" 라는 내용이었다.
 # ---------------------------------------------------------------------------
-RESOLUTION_DEFAULTS_V2: tuple[str, ...] = (
+AMBIGUITY_RULES_V2: tuple[str, ...] = (
     "기간이 없으면 월 스냅샷·월 집계는 실행일이 속한 기준년월, 일 이벤트는 실행일을 기본값으로 쓴다. 되묻지 않는다.",
     "코드값을 확정할 수 없으면 코드 컬럼을 그대로 GROUP BY·SELECT에 노출하고 이름 변환은 생략한다. 임의 코드값으로 필터하지 않는다.",
     "코드 의미는 value_semantics와 provenance를 따른다. value_semantics에 없는 코드는 만들지 않는다.",
@@ -112,5 +117,5 @@ def contract_lists() -> dict[str, tuple[str, ...]]:
         "output_contract": OUTPUT_CONTRACT_V2,
         "athena_rules": ATHENA_RULES_V2,
         "grain_and_aggregation_rules": GRAIN_RULES_V2,
-        "resolution_defaults": RESOLUTION_DEFAULTS_V2,
+        "ambiguity_rules": AMBIGUITY_RULES_V2,
     }

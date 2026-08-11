@@ -149,7 +149,20 @@ def test_contract_no_longer_tells_the_model_to_ask(v2: dict) -> None:
     contract = json.dumps(v2["sql_generation_contract"], ensure_ascii=False)
     for phrase in FORBIDDEN_CONTRACT_PHRASES:
         assert phrase not in contract, f"되묻기 지시가 남아 있다: {phrase}"
-    assert "ambiguity_rules" not in v2["sql_generation_contract"]
+
+
+def test_ambiguity_rules_key_is_kept_for_the_legacy_view(v2: dict) -> None:
+    """키는 남기고 내용만 바꾼다.
+
+    schema._with_contract_compatibility() 가 레거시
+    llm_semantic_contract.ambiguity_policy 를 이 키에서 파생시킨다. 키를 없애면 그
+    뷰가 비어 기존 계약 검사(test_nl2sql_quality_contract)가 깨진다.
+    """
+    rules = v2["sql_generation_contract"]["ambiguity_rules"]
+    assert rules, "ambiguity_rules 가 비면 레거시 ambiguity_policy 도 빈다"
+    assert any("되묻지 않는다" in rule for rule in rules)
+    # v1 이 갖고 있던 업무 규칙은 계속 남아 있어야 한다.
+    assert any("현금카드결제기관구분코드" in rule for rule in rules)
 
 
 def test_contract_requires_sql_only_output(v2: dict) -> None:
@@ -176,6 +189,7 @@ def test_output_contract_is_rendered_before_other_rules(v2: dict) -> None:
     keys = list(v2["sql_generation_contract"])
     assert keys.index("output_contract") < keys.index("athena_rules")
     assert keys.index("output_contract") < keys.index("evidence_order")
+    assert keys.index("output_contract") < keys.index("ambiguity_rules")
 
 
 @pytest.mark.parametrize("banned", ["QUALIFY", "expr::type", "윈도함수"])
