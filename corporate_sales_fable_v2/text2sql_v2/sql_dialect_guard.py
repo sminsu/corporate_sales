@@ -92,8 +92,9 @@ def _operand_start(sql: str, end: int) -> int:
         start = sql.rfind('"', 0, index - 1)
         return start if start >= 0 else index
 
+    # 맨몸 식별자: a.연체금액::FLOAT. 한글 컬럼명도 isalnum() 이 참이라 함께 걸린다.
     start = index
-    while start > 0 and (sql[start - 1].isalnum() or sql[start - 1] in "_.-￿" or ord(sql[start - 1]) > 127):
+    while start > 0 and (sql[start - 1].isalnum() or sql[start - 1] in "_."):
         start -= 1
     return start
 

@@ -48,6 +48,17 @@ def test_drops_generic_stems() -> None:
     assert "고객" not in derive_column_synonyms("고객구분코드")
 
 
+def test_keeps_spacing_variants_of_the_column_name_itself() -> None:
+    """'통합 BSS 평점' 은 compact 하면 컬럼명과 같지만 v1 매처에는 새로운 표면형이다.
+
+    v1 매처는 동의어에 적힌 띄어쓰기를 그대로 요구하므로, semantic layer 만 교체하는
+    1단계 적용에서는 이 변형이 있어야 매칭된다. 중복으로 보고 버리면 안 된다.
+    """
+    derived = derive_column_synonyms("통합BSS평점")
+    assert "통합 BSS 평점" in derived
+    assert all(compact(term) == "통합BSS평점" for term in derived)
+
+
 def test_derivation_is_stable() -> None:
     first = derive_column_synonyms("사업자자산건전성구분코드")
     second = derive_column_synonyms("사업자자산건전성구분코드")
