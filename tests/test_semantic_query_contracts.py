@@ -179,6 +179,7 @@ def test_account_type_semantic_gap_blocks_hallucinated_sql_generation() -> None:
     assert candidates[0]["source_tables"] == []
 
     selection = workflow.select_tool({"question": question, "domain_context": ""})
+    assert selection["question_type"] == "reject"
     assert selection["selected_tool"] == ""
     assert selection["matched_query_name"] == ""
     assert "계좌 종류 컬럼" in selection["answer"]

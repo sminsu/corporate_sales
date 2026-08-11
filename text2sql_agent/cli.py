@@ -11,6 +11,7 @@ from .exports import (
     export_to_text,
     export_to_word,
     format_number_for_report as format_number,
+    prepare_export_result,
 )
 from .config import ENABLE_EMBEDDING_PRECOMPUTE
 from .tools.registry import TOOLS
@@ -101,22 +102,23 @@ def main():
                 fmt = "all"
             print("\n보고서 생성 중...")
             try:
+                export_result = prepare_export_result(last_result) if fmt in {"all", "excel", "csv", "text"} else last_result
                 if fmt == "all":
-                    paths = export_all(last_result)
+                    paths = export_all(export_result)
                     print("\n[보고서 저장 완료]")
                     for ftype, fpath in paths.items():
                         print(f"  {ftype.upper()}: {fpath}")
                 elif fmt == "word":
-                    path = export_to_word(last_result)
+                    path = export_to_word(export_result)
                     print(f"\n[Word 저장 완료] {path}")
                 elif fmt == "excel":
-                    path = export_to_excel(last_result)
+                    path = export_to_excel(export_result)
                     print(f"\n[Excel 저장 완료] {path}")
                 elif fmt == "text":
-                    path = export_to_text(last_result)
+                    path = export_to_text(export_result)
                     print(f"\n[Text 저장 완료] {path}")
                 elif fmt == "csv":
-                    path = export_to_csv(last_result)
+                    path = export_to_csv(export_result)
                     print(f"\n[CSV 저장 완료] {path}")
             except ImportError:
                 print("python-docx 패키지가 필요합니다: pip install python-docx")

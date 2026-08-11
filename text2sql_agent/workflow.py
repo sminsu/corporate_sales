@@ -13,6 +13,8 @@ from langgraph.graph import END, StateGraph
 from .config import (
     DB_BACKEND,
     DB_SCHEMA_PREFIX,
+    DEFAULT_QUERY_ROW_LIMIT,
+    DISPLAY_ROW_LIMIT,
     EMBED_MATCH_THRESHOLD,
     ENABLE_EMBEDDING_PRECOMPUTE,
     ENABLE_VERIFIED_QUERY_LLM_FALLBACK,
@@ -21,12 +23,13 @@ from .config import (
     VERIFIED_QUERY_MIN_LEXICAL_SCORE,
     VERIFIED_QUERY_RULE_MATCH_MARGIN,
     VERIFIED_QUERY_RULE_MATCH_THRESHOLD,
+    MAX_QUERY_ROW_LIMIT,
 )
 from .db import execute_sql, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
 from .managed_scope import ManagedScopeParseError, parse_business_number_list
-from .query_frame import build_result_scope, query_frame_prompt
+from .query_frame import DEFAULT_FETCH_ROW_LIMIT, build_result_scope, query_frame_prompt
 from .schema import (
     SCHEMA,
     VERIFIED_QUERIES,
@@ -57,7 +60,12 @@ from .schema import (
 )
 from .state import Text2SQLState
 from .tools.registry import TOOLS, TOOL_MAP, _build_tool_descriptions
-from .tools.sql_builders import VQ_PARAM_SPECS, _apply_params_to_vq, _current_date_context
+from .tools.sql_builders import (
+    VQ_PARAM_SPECS,
+    _apply_params_to_vq,
+    _current_date_context,
+    _name_like_pattern,
+)
 
 # ---------------------------------------------------------------------------
 # 9. 그래프 노드
@@ -68,7 +76,7 @@ VQ_EMBEDDINGS: list[list[float]] = []
 DOMAIN_EMBEDDINGS_AVAILABLE = False
 DOMAIN_EMBEDDINGS: dict[str, list[float]] = {}
 _EMBEDDINGS_INITIALIZED = False
-_DISPLAY_ROW_LIMIT = 100
+_DISPLAY_ROW_LIMIT = DISPLAY_ROW_LIMIT
 
 
 def _coerce_llm_text(value: object) -> str:
@@ -396,6 +404,83 @@ need_sql 또는 direct 또는 reject"""
     return {"question_type": qtype}
 
 
+def _normalize_retrieval_query(value: object, fallback: str) -> str:
+    """Normalize a one-line retrieval rewrite without changing the source question."""
+    parsed = _parse_llm_json(value)
+    candidate = (
+        parsed.get("retrieval_query") or parsed.get("resolved_question")
+        if parsed
+        else value
+    )
+    text = " ".join(_strip_llm_code_fence(candidate).split()).strip(" \"'“”‘’")
+    text = re.sub(
+        r"^(?:검색(?:용)?|정제(?:된)?)?\s*질의\s*[:：]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    source_numbers = set(re.findall(r"\d[\d,./:~-]*", fallback))
+    refined_numbers = set(re.findall(r"\d[\d,./:~-]*", text))
+    if (
+        not text
+        or text.upper() in {"NONE", "N/A"}
+        or not re.search(r"[0-9A-Za-z가-힣]", text)
+        or _looks_like_direct_sql(text)
+        or not refined_numbers.issubset(source_numbers)
+    ):
+        return fallback
+    return text[:1200]
+
+
+def refine_search_query(state: Text2SQLState) -> dict:
+    """Create an internal retrieval query while preserving the user question."""
+    question = str(state.get("question") or "").strip()
+    if state.get("retrieval_query"):
+        return {"retrieval_query": state["retrieval_query"]}
+    if not question or any(
+        state.get(key)
+        for key in (
+            "previous_question",
+            "followup_question",
+            "selected_domain",
+            "selected_tool",
+            "matched_query_name",
+            "selected_tables",
+        )
+    ):
+        return {"retrieval_query": question}
+
+    prompt = f"""당신은 KB카드 기업영업 데이터 검색을 위한 질의 정제기입니다.
+원문의 의미와 사실을 바꾸지 말고, 검색 후보를 찾기 좋은 완전한 한국어 질의 한 문장으로 정리하세요.
+
+규칙:
+1. 기업명·가맹점명·브랜드명·코드·숫자·금액·날짜·기간을 원문 그대로 유지하세요.
+2. 비교 조건, 부정 표현, 집계 단위, 정렬 조건을 빠뜨리지 마세요.
+3. 최근·전월·올해 같은 상대 기간은 구체적인 날짜로 바꾸지 말고 그대로 유지하세요.
+4. 인사말·군더더기·말투만 제거하고, 원문에 없는 대상·조건·사실은 추가하지 마세요.
+5. 답변이나 SQL, 설명은 반환하지 마세요.
+
+원문 질문:
+{question[:4000]}
+
+반환 형식:
+{{"retrieval_query":"검색용 질의 한 문장"}}"""
+    try:
+        refined = _normalize_retrieval_query(_call_llm(prompt, max_tokens=256), question)
+    except Exception:
+        refined = question
+    return {"retrieval_query": refined}
+
+
+def _retrieval_question(state: Text2SQLState | dict) -> str:
+    """Use the rewrite for recall and retain the source text for exact constraints."""
+    question = str(state.get("question") or "").strip()
+    refined = str(state.get("retrieval_query") or "").strip()
+    if not refined or refined == question:
+        return question
+    return f"{refined}\n{question}"
+
+
 def _looks_like_direct_sql(question: str) -> bool:
     """Recognize a user-authored read query without treating surrounding prose as SQL."""
     stripped = _strip_llm_code_fence(question)
@@ -419,7 +504,7 @@ def _looks_like_schema_question(question: str) -> bool:
 def _rule_classify_question(question: str) -> bool:
     """Deterministically route obvious data lookup/aggregation questions to SQL."""
     q = question or ""
-    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|(?:가맹점|업체|기업|법인|회사|회원|고객)\s*(?:수|개수)|가맹점수|(?:유효)?카드\s*(?:수|개수)|몇\s*좌|좌\s*수|발급|승인율|연체|한도|비율|률|순위|정렬", q))
+    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|(?:가맹점|업체|기업|법인|회사|회원|고객)\s*(?:수|개수)|가맹점수|(?:유효)?카드\s*(?:수|개수)|몇\s*좌|좌\s*수|발급|승인율|연체|잔액|한도|비율|률|순위|정렬", q))
     has_entity_or_group = bool(re.search(r"가맹점|기업|회사|고객|상호|브랜드|업종|별|도미노피자", q))
     has_time_or_order = bool(re.search(r"저번\s*달|지난\s*달|전월|이번\s*달|이번\s*월|최근|기준|20\d{2}\s*년|\d{1,2}\s*월|높은\s*순|낮은\s*순|정렬", q))
     return has_metric and (has_entity_or_group or has_time_or_order)
@@ -500,6 +585,7 @@ def route_domain(state: Text2SQLState) -> dict:
         }
 
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     domains = SCHEMA.get("canonical_domains", [])
     if not domains:
         return {
@@ -509,13 +595,13 @@ def route_domain(state: Text2SQLState) -> dict:
             "domain_context": "(선택된 도메인 없음)",
         }
 
-    keyword_scores = _keyword_rule_domain_scores(SCHEMA, question)
-    metric_entity_scores = _metric_entity_domain_scores(SCHEMA, question)
+    keyword_scores = _keyword_rule_domain_scores(SCHEMA, retrieval_question)
+    metric_entity_scores = _metric_entity_domain_scores(SCHEMA, retrieval_question)
     embedding_scores: dict[str, float] = {}
     embedding_note = "embedding=OFF"
     if DOMAIN_EMBEDDINGS_AVAILABLE and DOMAIN_EMBEDDINGS:
         try:
-            q_emb = _get_embedding(question)
+            q_emb = _get_embedding(retrieval_question)
             embedding_scores = {
                 domain_name: _cosine_similarity(q_emb, emb)
                 for domain_name, emb in DOMAIN_EMBEDDINGS.items()
@@ -526,16 +612,23 @@ def route_domain(state: Text2SQLState) -> dict:
 
     candidates = _weighted_domain_scores(keyword_scores, metric_entity_scores, embedding_scores)
     reference_domain = _reference_domain_by_rule(question)
+    if (
+        not reference_domain
+        and state.get("retrieval_query")
+        and state["retrieval_query"] != question
+    ):
+        reference_domain = _reference_domain_by_rule(state["retrieval_query"])
     selected = reference_domain or (candidates[0]["domain"] if candidates else "")
     adjudicated = False
     if not reference_domain and _needs_domain_adjudication(candidates):
-        selected = _adjudicate_domain_with_llm(question, candidates, SCHEMA)
+        selected = _adjudicate_domain_with_llm(retrieval_question, candidates, SCHEMA)
         adjudicated = True
 
     domain_context = build_domain_context(SCHEMA, selected)
     trace_lines = [
         f"selected_domain={selected}",
         f"{embedding_note}",
+        f"query_refinement={'ON' if state.get('retrieval_query') and state.get('retrieval_query') != question else 'OFF'}",
         f"reference_domain={'ON(' + reference_domain + ')' if reference_domain else 'OFF'}",
         f"adjudication={'ON' if adjudicated else 'OFF'}",
         "top_candidates:",
@@ -645,6 +738,7 @@ def _apply_name_filter_mode(question: str, sql: str) -> str:
     def adjusted(raw: str) -> str:
         if exact:
             return raw[1:-1] if len(raw) >= 2 and raw.startswith("%") and raw.endswith("%") else raw
+        raw = _name_like_pattern(raw)
         return raw if raw.startswith("%") and raw.endswith("%") else f"%{raw}%"
 
     if not exact:
@@ -730,9 +824,10 @@ def _time_resolution_instruction(question: str) -> str:
         return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자가 명시한 월/기간/상대시점만 날짜 조건으로 반영합니다.
     - "2605 기준" 같은 YYMM 축약은 2000년대 YYYYMM인 "202605"로 해석합니다.
-    - "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석합니다.
+    - 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석합니다.
     - 이때 기준년월 컬럼은 "{current_ym}" 조건을 사용합니다.
     - 이때 기준년월일/실적기준년월일 컬럼은 SUBSTR(일자컬럼, 1, 6) = "{current_ym}" 범위 안의 최신 기준일을 사용합니다.
+    - "최근 N개월/N달", "최근 반년/N년"은 1개월이 아닌 기간 표현입니다. 명시 기준월이 있으면 그 월을 종료월로, 없으면 현재일/현재월을 종료로 사용합니다.
     - "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 지난달 1개월 기준으로 해석하고, 기준년월 컬럼은 "{previous_ym}" 조건을 사용합니다.
     - "전월 대비", "전월비", "전월과 비교"의 전월은 조회기간이 아니라 비교 기준입니다. 명시된 연/월 기간을 유지하고 LAG 등으로 전월 값을 계산합니다.
     - "가맹점별/각 가맹점별"은 가맹점번호와 가맹점명을 SELECT/GROUP BY에 포함합니다.
@@ -1058,6 +1153,11 @@ def _extract_recent_closed_merchant_name_by_rule(question: str) -> str:
     return ""
 
 
+def _extract_merchant_number_by_rule(question: str) -> str:
+    match = re.search(r"가맹점\s*(?:번호|ID)\s*(?:[:=]\s*)?[\"']?(\d+)", question or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
 def _extract_merchant_name_by_rule(question: str) -> str:
     """Extract a merchant/brand name from high-confidence question shapes.
 
@@ -1066,6 +1166,8 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     매출액``. Generic subjects remain for the LLM/clarification path.
     """
     text = question or ""
+    if _extract_merchant_number_by_rule(text):
+        return ""
     recent_closed_name = _extract_recent_closed_merchant_name_by_rule(text)
     if recent_closed_name:
         return recent_closed_name
@@ -1074,9 +1176,9 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     text = re.sub(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?=기준|월)(?!\d)", " ", text)
     token = r"[0-9A-Za-z가-힣&()._-]+"
     patterns = [
-        rf"({token}(?:\s+{token}){{0,4}}?)\s+(?:가맹점\s*주|가맹점주|점주|대표자)",
+        rf"({token}(?:\s+{token}){{0,4}}?)\s+(?:가맹점\s*주|가맹점주|점주|대표자|점포별(?:의)?|매장별(?:의)?)",
         rf"({token}(?:\s+{token}){{0,4}})\s+브랜드\s+가맹점",
-        rf"({token}(?:\s+{token}){{0,4}})\s+가맹점",
+        rf"({token}(?:\s+{token}){{0,4}}?)\s+가맹점",
     ]
     generic = {
         "당사", "해당", "특정", "전체", "모든", "사용중인", "사용 중인",
@@ -1209,7 +1311,7 @@ def _is_named_merchant_sales_question(question: str) -> bool:
     return bool(
         _has_time_expression(question)
         and re.search(r"매출(?:액|금액)?|매출\s*추이", question or "")
-        and _extract_merchant_name_by_rule(question)
+        and (_extract_merchant_number_by_rule(question) or _extract_merchant_name_by_rule(question))
     )
 
 
@@ -1306,7 +1408,7 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
     if not limit_match:
         limit_match = re.search(r"(\d+)\s*(?:개|곳|건|명)(?!월)", question or "")
     if "limit" in names and limit_match:
-        params["limit"] = min(max(int(limit_match.group(1)), 1), 500)
+        params["limit"] = min(max(int(limit_match.group(1)), 1), MAX_QUERY_ROW_LIMIT)
 
     amount_specs = {
         "월평균금액": ("월평균", "월 평균", "평균 이용금액", "평균금액"),
@@ -1325,6 +1427,10 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
         month_span = re.search(r"(?:최근|현재\s*시점\s*기준)?\s*(\d{1,3})\s*개월", question or "")
         if month_span:
             params["조회개월수"] = max(1, min(int(month_span.group(1)), 120))
+    if "가맹점번호" in names:
+        merchant_number = _extract_merchant_number_by_rule(question)
+        if merchant_number:
+            params["가맹점번호"] = merchant_number
     if "가맹점명" in names:
         merchant_name = _extract_merchant_name_by_rule(question)
         if merchant_name:
@@ -1379,7 +1485,7 @@ def _normalize_params(params: dict, param_specs: list[dict]) -> dict:
                 if not re.fullmatch(r"[+-]?\d+", raw):
                     continue
                 number = int(raw)
-                normalized[name] = min(max(number, 1), 500) if name == "limit" else number
+                normalized[name] = min(max(number, 1), MAX_QUERY_ROW_LIMIT) if name == "limit" else number
             elif param_type in {"number", "float", "decimal"}:
                 raw = str(value).replace(",", "").strip().removesuffix("%")
                 if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", raw):
@@ -1399,9 +1505,10 @@ def _normalize_params(params: dict, param_specs: list[dict]) -> dict:
 
 
 def _relative_month_target(question: str) -> tuple[str, str]:
-    if re.search(r"저번\s*달|지난\s*달|전월", question):
+    if _has_previous_month_lookup(question):
         return _previous_ym(), "저번달/지난달/전월"
-    if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", question):
+    lookup_text = re.sub(_RECENT_CLOSURE_PERIOD_PATTERN, " ", question or "")
+    if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", lookup_text):
         return _current_ym(), "최근/이번달/최근 기준"
     return "", ""
 
@@ -1685,7 +1792,8 @@ def _extract_tool_selection_with_llm(question: str, candidate_tools: list[dict],
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작: "202501", 기간_종료: "202512"
    "올해" → 기간_시작: "{datetime.now().year}01", 기간_종료: "{datetime.now().year}{datetime.now().month:02d}"
-3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
+3. 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"만 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
+   "최근 N개월/N달/반년/N년"은 기간 조건으로 유지하고, 명시 기준월이 있으면 그 월을 종료월로 사용하세요.
 4. "상위 N개", "톱 N" → limit: N
 5. "등급별", "신용등급별" → 등급별: true
 6. 언급되지 않은 파라미터는 포함하지 마세요.
@@ -1763,8 +1871,9 @@ def select_tool(state: Text2SQLState) -> dict:
         )
 
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     domain_context = state.get("domain_context", "")
-    semantic_contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    semantic_contracts = semantic_query_contract_candidates(SCHEMA, retrieval_question, max_count=1)
     if semantic_contracts:
         contract = semantic_contracts[0]
         support_status = str(contract.get("support_status") or "supported").lower()
@@ -1774,6 +1883,7 @@ def select_tool(state: Text2SQLState) -> dict:
                 reasons = [reasons]
             details = "\n".join(f"- {reason}" for reason in reasons if reason)
             result = _empty_capability_selection()
+            result["question_type"] = "reject"
             result["answer"] = (
                 "현재 semantic layer만으로는 이 지표를 안전하게 계산할 수 없습니다.\n\n"
                 f"{details or '- 필요한 원천 컬럼 또는 코드 의미가 정의되지 않았습니다.'}"
@@ -1791,11 +1901,11 @@ def select_tool(state: Text2SQLState) -> dict:
     if verified_query:
         return verified_query
 
-    forced_tool = _rule_match_tool(question)
+    forced_tool = _rule_match_tool(retrieval_question)
     if forced_tool:
         return _select_tool_capability(question, [], forced_tool, domain_context)
 
-    candidate_tools = _tool_candidates(question)
+    candidate_tools = _tool_candidates(retrieval_question)
     if candidate_tools:
         return _select_tool_capability(question, candidate_tools, domain_context=domain_context)
     return _empty_capability_selection()
@@ -1866,7 +1976,7 @@ def run_tool_query(state: Text2SQLState) -> dict:
     if not sql:
         return {"query_columns": [], "query_rows": [], "query_error": "SQL이 생성되지 않았습니다.", "selected_tool": "", "final_sql": ""}
     prepared_sql = prepare_sql_for_backend(sql)
-    columns, rows, error = execute_sql(prepared_sql)
+    columns, rows, error = execute_sql(prepared_sql, max_rows=DEFAULT_FETCH_ROW_LIMIT)
     if error:
         return {
             "query_columns": [],
@@ -1889,7 +1999,11 @@ def run_tool_query(state: Text2SQLState) -> dict:
     }
 
 
-def _match_vq_by_embedding(question: str) -> dict | None:
+def _match_vq_by_embedding(
+    question: str,
+    *,
+    intent_question: str = "",
+) -> dict | None:
     """Embedding cosine similarity로 Verified Query 매칭. 실패 시 None 반환."""
     if not EMBEDDINGS_AVAILABLE or not VQ_EMBEDDINGS:
         return None
@@ -1900,7 +2014,11 @@ def _match_vq_by_embedding(question: str) -> dict | None:
         best_score = scores[best_idx]
         if best_score >= EMBED_MATCH_THRESHOLD:
             matched = VERIFIED_QUERIES[best_idx]
-            if not _verified_query_matches_intent(question, matched):
+            if not _verified_query_matches_intent(
+                intent_question or question,
+                matched,
+                contract_question=question,
+            ):
                 return None
             return {
                 "matched_query_name": matched["name"],
@@ -1912,7 +2030,12 @@ def _match_vq_by_embedding(question: str) -> dict | None:
     return None
 
 
-def _verified_query_matches_intent(question: str, matched: dict) -> bool:
+def _verified_query_matches_intent(
+    question: str,
+    matched: dict,
+    *,
+    contract_question: str = "",
+) -> bool:
     """Reject broad semantic matches when the user's metric intent differs."""
     if not _verified_query_is_executable(matched):
         return False
@@ -1934,7 +2057,7 @@ def _verified_query_matches_intent(question: str, matched: dict) -> bool:
             str(contract.get("name") or "")
             for contract in semantic_query_contract_candidates(
                 SCHEMA,
-                question_text,
+                contract_question or question_text,
                 max_count=max(1, len(SCHEMA.get("semantic_query_contracts", []))),
             )
         }
@@ -1993,7 +2116,11 @@ def _semantic_contract_bindings_satisfied(question: str, contract: dict, vq: dic
     return all(extracted.get(str(binding["parameter"])) not in (None, "") for binding in required)
 
 
-def _match_vq_by_semantic_contract(question: str) -> dict | None:
+def _match_vq_by_semantic_contract(
+    question: str,
+    *,
+    intent_question: str = "",
+) -> dict | None:
     """Select a VQ through reusable semantic-layer intent contracts."""
     contracts = semantic_query_contract_candidates(
         SCHEMA,
@@ -2005,7 +2132,11 @@ def _match_vq_by_semantic_contract(question: str) -> dict | None:
         if str(contract.get("support_status") or "supported").lower().startswith("blocked"):
             continue
         matched = queries_by_name.get(str(contract.get("verified_query") or ""))
-        if not matched or not _verified_query_matches_intent(question, matched):
+        if not matched or not _verified_query_matches_intent(
+            intent_question or question,
+            matched,
+            contract_question=question,
+        ):
             continue
         return {
             "matched_query_name": matched["name"],
@@ -2056,7 +2187,7 @@ def _rank_vq_candidates(question: str) -> list[dict]:
     return [vq for _, vq in scored[:VERIFIED_QUERY_LLM_CANDIDATE_LIMIT]]
 
 
-def _match_vq_by_rules(question: str) -> dict | None:
+def _match_vq_by_rules(question: str, *, intent_question: str = "") -> dict | None:
     scored = _rank_vq_candidate_scores(question)
     if not scored:
         return None
@@ -2065,7 +2196,11 @@ def _match_vq_by_rules(question: str) -> dict | None:
         return None
     if len(scored) > 1 and top_score - scored[1][0] < VERIFIED_QUERY_RULE_MATCH_MARGIN:
         return None
-    if not _verified_query_matches_intent(question, matched):
+    if not _verified_query_matches_intent(
+        intent_question or question,
+        matched,
+        contract_question=question,
+    ):
         return None
     return {
         "matched_query_name": matched["name"],
@@ -2074,7 +2209,7 @@ def _match_vq_by_rules(question: str) -> dict | None:
     }
 
 
-def _match_vq_by_llm(question: str) -> dict:
+def _match_vq_by_llm(question: str, *, intent_question: str = "") -> dict:
     """LLM으로 Verified Query 매칭 (embedding 폴백)."""
     vqs = _rank_vq_candidates(question)
     if not vqs:
@@ -2114,7 +2249,11 @@ def _match_vq_by_llm(question: str) -> dict:
         return {"matched_query_name": ""}
     idx = valid_indices[0]
     matched = vqs[idx]
-    if not _verified_query_matches_intent(question, matched):
+    if not _verified_query_matches_intent(
+        intent_question or question,
+        matched,
+        contract_question=question,
+    ):
         return {"matched_query_name": ""}
     return {
         "matched_query_name": matched["name"],
@@ -2126,24 +2265,25 @@ def _match_vq_by_llm(question: str) -> dict:
 def _select_verified_query_capability(question: str, state: Text2SQLState | dict) -> dict | None:
     if not ENABLE_VERIFIED_QUERY_MATCHING or state.get("skip_verified_query_matching"):
         return None
-    contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    retrieval_question = _retrieval_question({**state, "question": question})
+    contracts = semantic_query_contract_candidates(SCHEMA, retrieval_question, max_count=1)
     if contracts and str(contracts[0].get("execution_mode") or "").lower() == "semantic_generation":
         return None
 
-    result = _match_vq_by_semantic_contract(question)
+    result = _match_vq_by_semantic_contract(retrieval_question, intent_question=question)
     if result:
         return _verified_query_capability_result(result)
 
-    result = _match_vq_by_embedding(question)
+    result = _match_vq_by_embedding(retrieval_question, intent_question=question)
     if result:
         return _verified_query_capability_result(result)
 
-    result = _match_vq_by_rules(question)
+    result = _match_vq_by_rules(retrieval_question, intent_question=question)
     if result:
         return _verified_query_capability_result(result)
 
     if ENABLE_VERIFIED_QUERY_LLM_FALLBACK:
-        result = _match_vq_by_llm(question)
+        result = _match_vq_by_llm(retrieval_question, intent_question=question)
         if result.get("matched_query_name"):
             return _verified_query_capability_result(result)
     return None
@@ -2219,7 +2359,7 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작:"202501", 기간_종료:"202512"
    "올해" → 기간_시작:"{datetime.now().year}01", 기간_종료:"{datetime.now().year}{datetime.now().month:02d}"
-3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_current_ym()}"
+3. 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"만 현재월 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_current_ym()}"
 4. "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 지난달 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_previous_ym()}"
    단, "전월 대비", "전월비", "전월과 비교"의 전월은 비교 기준이므로 조회기간 파라미터로 추출하지 마세요.
 5. "최근 N개월/N달"은 기준년월을 종료월로 보고 N개월 구간으로 해석합니다.
@@ -2283,13 +2423,16 @@ JSON:"""
 def run_matched_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", "")
     prepared_sql = prepare_sql_for_backend(sql)
-    columns, rows, error = execute_sql(prepared_sql)
+    columns, rows, error = execute_sql(prepared_sql, max_rows=DEFAULT_FETCH_ROW_LIMIT)
     if error:
+        retry = state.get("retry_count", 0) + 1
         return {
             "query_columns": [],
             "query_rows": [],
             "query_error": error,
-            "matched_query_name": "",
+            "validation_result": f"Verified Query DB 실행 오류: {error}",
+            "is_valid": False,
+            "retry_count": retry,
             "final_sql": prepared_sql,
         }
     visible_rows = rows[:_DISPLAY_ROW_LIMIT]
@@ -2806,8 +2949,15 @@ def _table_details(
         relationship_lines.append(line)
         join_text += " " + str(path.get("sql") or "")
 
+    prompt_column_budget = max(
+        (
+            int(contract.get("prompt_column_budget") or 0)
+            for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2)
+        ),
+        default=0,
+    )
     per_table_limit = min(
-        max_columns,
+        max(max_columns, prompt_column_budget),
         max(8, max_total_columns // max(len(selected_tables), 1)),
     )
     blocks = []
@@ -2940,17 +3090,18 @@ def analyze_question(state: Text2SQLState) -> dict:
         return {"selected_tables": state["selected_tables"], "table_details": state["table_details"]}
 
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     selected_domain = state.get("selected_domain", "")
     domain_context = state.get("domain_context") or build_domain_context(SCHEMA, selected_domain)
     domain_trace = state.get("domain_routing_trace", "")
     semantic_contract = build_semantic_contract_summary(SCHEMA)
-    join_context = build_semantic_join_context(SCHEMA, selected_domain, question, max_paths=5)
-    rule_tables = _rule_rank_tables(question)
+    join_context = build_semantic_join_context(SCHEMA, selected_domain, retrieval_question, max_paths=5)
+    rule_tables = _rule_rank_tables(retrieval_question)
     authoritative_contract = any(
         str(contract.get("table_selection_mode") or "").lower() == "authoritative"
         for contract in semantic_query_contract_candidates(
             SCHEMA,
-            question,
+            retrieval_question,
             domain_name=selected_domain,
             max_count=2,
         )
@@ -2959,9 +3110,9 @@ def analyze_question(state: Text2SQLState) -> dict:
         table_names = rule_tables[:4]
         return {
             "selected_tables": table_names,
-            "table_details": _table_details(table_names, question),
+            "table_details": _table_details(table_names, retrieval_question),
         }
-    excluded_snapshot_tables = _attribute_snapshot_exclusions(question)
+    excluded_snapshot_tables = _attribute_snapshot_exclusions(retrieval_question)
     prompt = f"""당신은 KB카드 기업영업 데이터베이스 전문가입니다.
 사용자의 질문을 분석하여 필요한 테이블을 선택하세요.
 
@@ -2984,19 +3135,19 @@ def analyze_question(state: Text2SQLState) -> dict:
 {_compact_table_catalog(rule_tables, excluded_snapshot_tables)}
 
 ## 비즈니스 용어집
-{build_glossary_summary(SCHEMA, question, selected_domain)}
+{build_glossary_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 재사용 가능한 Semantic Attribute
-{build_semantic_attributes_summary(SCHEMA, question, selected_domain)}
+{build_semantic_attributes_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 사전 정의된 메트릭
-{build_metrics_summary(SCHEMA, question, selected_domain)}
+{build_metrics_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 재사용 가능한 Semantic Query Contract
-{find_relevant_semantic_query_contracts(SCHEMA, question, selected_domain)}
+{find_relevant_semantic_query_contracts(SCHEMA, retrieval_question, selected_domain)}
 
 ## 질문과 가까운 질의 작성 Reference
-{find_relevant_references(SCHEMA, question, domain_name=selected_domain)}
+{find_relevant_references(SCHEMA, retrieval_question, domain_name=selected_domain)}
 
 ## 규칙
 1. 필요한 테이블만 선택. 2. JOIN 필요 시 관련 테이블 포함.
@@ -3024,7 +3175,10 @@ def analyze_question(state: Text2SQLState) -> dict:
         # A parseable explicit selection is the model's adjudication; rules are
         # a deterministic fallback for malformed/empty small-model output.
         table_names = llm_tables[:4] if llm_tables else rule_tables[:4]
-    return {"selected_tables": table_names, "table_details": _table_details(table_names, question)}
+    return {
+        "selected_tables": table_names,
+        "table_details": _table_details(table_names, retrieval_question),
+    }
 
 
 def check_sql_gen_params(state: Text2SQLState) -> dict:
@@ -3102,16 +3256,17 @@ def _multiturn_sql_context(state: Text2SQLState | dict) -> str:
 
 def generate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     table_details = state["table_details"]
     retry_count = state.get("retry_count", 0)
     validation_result = state.get("validation_result", "")
     selected_domain = state.get("selected_domain", "")
     selected_tables = state.get("selected_tables", [])
-    relevant_queries = find_relevant_queries(SCHEMA, question, domain_name=selected_domain)
-    relevant_references = find_relevant_references(SCHEMA, question, domain_name=selected_domain)
+    relevant_queries = find_relevant_queries(SCHEMA, retrieval_question, domain_name=selected_domain)
+    relevant_references = find_relevant_references(SCHEMA, retrieval_question, domain_name=selected_domain)
     relevant_semantic_contracts = find_relevant_semantic_query_contracts(
         SCHEMA,
-        question,
+        retrieval_question,
         selected_domain,
     )
     domain_context = state.get("domain_context") or build_domain_context(SCHEMA, selected_domain)
@@ -3120,7 +3275,7 @@ def generate_sql(state: Text2SQLState) -> dict:
     join_context = build_semantic_join_context(
         SCHEMA,
         selected_domain,
-        question,
+        retrieval_question,
         max_paths=5,
         table_names=selected_tables,
     )
@@ -3154,16 +3309,16 @@ def generate_sql(state: Text2SQLState) -> dict:
 {table_details}
 
 ## 사전 정의된 메트릭
-{build_metrics_summary(SCHEMA, question, selected_domain)}
+{build_metrics_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 재사용 가능한 Semantic Attribute
-{build_semantic_attributes_summary(SCHEMA, question, selected_domain)}
+{build_semantic_attributes_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 재사용 가능한 Semantic Query Contract
 {relevant_semantic_contracts}
 
 ## 비즈니스 용어집
-{build_glossary_summary(SCHEMA, question, selected_domain)}
+{build_glossary_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 질문과 가까운 질의 작성 Reference
 {relevant_references}
@@ -3185,7 +3340,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 10. 질문에 없는 테이블명은 절대 만들지 말고, 위 테이블 상세/Reference/도메인 컨텍스트에 있는 실테이블만 사용.
 11. "신규/가입/등록 고객"은 tbdaaat01.최초등록년월일 기준으로 해석.
 12. "여성 고객"은 성별구분코드 = '2'를 기본값으로 사용.
-13. 상세 목록 조회는 LIMIT 100 이하를 기본으로 둡니다. 집계 결과는 의미있는 순서로 정렬합니다.
+13. 상세 목록 조회는 요청 개수가 없으면 LIMIT {DEFAULT_QUERY_ROW_LIMIT}을 적용합니다. 집계 결과는 의미있는 순서로 정렬하고, CTE와 서브쿼리를 포함해 SELECT * 대신 필요한 컬럼만 명시합니다.
 14. 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본적으로 LIKE '%이름%' 부분일치를 사용합니다. 사용자가 "이름 고정", "이름만으로", "정확 일치"를 명시한 경우에만 앞뒤 % 없이 정확히 비교합니다.
 15. 읽기 쉬운 alias. 16. 순수 SQL만 반환.
 {_time_resolution_instruction(question)}
@@ -3227,12 +3382,13 @@ def _validate_required_semantic_tables(
 
 def validate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     sql = _apply_recent_month_sql_fix(question, state["generated_sql"])
     sql = _apply_name_filter_mode(question, sql)
     sql = prepare_sql_for_backend(sql)
     selected_tables = state["selected_tables"]
     issues = _validate_sql_against_schema(sql, selected_tables)
-    issues.extend(_validate_required_semantic_tables(question, sql, selected_tables))
+    issues.extend(_validate_required_semantic_tables(retrieval_question, sql, selected_tables))
     issues.extend(_validate_recent_month_semantics(question, sql))
     implicit_time_basis = _implicit_time_basis_note(question, sql)
     current_ym = _current_ym()
@@ -3274,9 +3430,9 @@ SQL:
 {sql}
 사용 테이블: {', '.join(selected_tables)}
 검증 기준:
-- 이 앱에서 "최근", "최근 기준", "이번달", "이번 월"은 반드시 현재월({current_ym}) 기준입니다.
-- 위 표현이 있는 질문에서 SQL이 현재월({current_ym}) 조건을 포함하면 날짜 해석은 올바릅니다.
-- 위 표현이 있는 질문에서 전체 데이터의 MAX(기준년월/기준년월일)만 사용하면 잘못입니다.
+- 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"은 현재월({current_ym}) 1개월 기준입니다.
+- "최근 N개월/N달", "최근 반년/N년"은 기간 표현입니다. 명시 기준월이 있으면 그 월을 종료로, 없으면 CURRENT_DATE/현재월을 종료로 사용한 SQL이 올바릅니다.
+- 기준월의 사전 집계 "최근N개월" 지표를 사용하는 경우에도 질문의 명시 기준월을 유지하면 올바릅니다.
 - "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 {_current_date_context()}의 지난달 기준으로 해석합니다.
 - "전월 대비", "전월비", "전월과 비교"는 조회기간이 아닌 비교 연산입니다. 질문의 명시 기간을 유지한 SQL이어야 합니다.
 - 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본 LIKE '%이름%'여야 합니다. "이름 고정", "이름만으로", "정확 일치"가 명시된 경우에만 앞뒤 %가 없어야 합니다.
@@ -3284,10 +3440,10 @@ SQL:
 - 질문에 특정 시점/기간 표현이 없고 "소지/보유/현황/유효" 같은 스냅샷성 질문이면 데이터 최신 MAX(기준년월/기준년월일) 또는 현재 실행일 기준 유효성 조건을 사용할 수 있습니다.
 - 시스템이 정한 기준시점이 SQL에 있으면 결과 답변에서 그 기준시점을 명시하면 됩니다.
 메트릭 정의:
-{build_metrics_summary(SCHEMA, question, state.get('selected_domain', ''))}
+{build_metrics_summary(SCHEMA, retrieval_question, state.get('selected_domain', ''))}
 
 Semantic Query Contract:
-{find_relevant_semantic_query_contracts(SCHEMA, question, state.get('selected_domain', ''))}
+{find_relevant_semantic_query_contracts(SCHEMA, retrieval_question, state.get('selected_domain', ''))}
 
 스키마 기반 사전 검증 결과:
 {chr(10).join(issues) if issues else "사전 검증 이슈 없음"}
@@ -3315,7 +3471,7 @@ Semantic Query Contract:
 def run_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", state.get("generated_sql", ""))
     prepared_sql = prepare_sql_for_backend(sql)
-    columns, rows, error = execute_sql(prepared_sql)
+    columns, rows, error = execute_sql(prepared_sql, max_rows=DEFAULT_FETCH_ROW_LIMIT)
     if error:
         retry = state.get("retry_count", 0) + 1
         return {
@@ -3502,7 +3658,7 @@ def prepare_direct_sql(state: Text2SQLState) -> dict:
 
 def route_by_question_type(
     state: Text2SQLState,
-) -> Literal["route_domain", "prepare_direct_sql", "direct_answer", "reject_answer"]:
+) -> Literal["refine_search_query", "prepare_direct_sql", "direct_answer", "reject_answer"]:
     qtype = state.get("question_type", "need_sql")
     if qtype == "direct_sql":
         return "prepare_direct_sql"
@@ -3510,7 +3666,7 @@ def route_by_question_type(
         return "direct_answer"
     if qtype == "reject":
         return "reject_answer"
-    return "route_domain"
+    return "refine_search_query"
 
 
 def after_tool_selection(state: Text2SQLState) -> Literal["check_tool_params", "extract_and_apply_params", "analyze_question", "__end__"]:
@@ -3539,8 +3695,11 @@ def after_tool_query(state: Text2SQLState) -> Literal["generate_answer", "analyz
     return "analyze_question" if state.get("query_error") else "generate_answer"
 
 
-def after_matched_query(state: Text2SQLState) -> Literal["generate_answer", "analyze_question"]:
-    return "analyze_question" if state.get("query_error") else "generate_answer"
+def after_matched_query(state: Text2SQLState) -> Literal["generate_answer", "handle_error"]:
+    # A Verified Query is the authoritative SQL for its intent. Replacing it
+    # with unconstrained generated SQL after a DB error can silently drop the
+    # required business filters and return a false-success result.
+    return "handle_error" if state.get("query_error") else "generate_answer"
 
 
 def after_extract_params(state: Text2SQLState) -> Literal["run_matched_query", "__end__"]:
@@ -3579,6 +3738,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(Text2SQLState)
 
     graph.add_node("classify_question", classify_question)
+    graph.add_node("refine_search_query", refine_search_query)
     graph.add_node("prepare_direct_sql", prepare_direct_sql)
     graph.add_node("route_domain", route_domain)
     graph.add_node("select_tool", select_tool)
@@ -3599,6 +3759,7 @@ def build_graph() -> StateGraph:
 
     graph.set_entry_point("classify_question")
     graph.add_conditional_edges("classify_question", route_by_question_type)
+    graph.add_edge("refine_search_query", "route_domain")
     graph.add_edge("prepare_direct_sql", "validate_sql")
     graph.add_edge("route_domain", "select_tool")
 
@@ -3631,7 +3792,7 @@ def build_graph() -> StateGraph:
 
 def _new_initial_state(question: str) -> Text2SQLState:
     return {
-        "question": question, "question_type": "",
+        "question": question, "retrieval_query": "", "question_type": "",
         "previous_question": "", "previous_sql": "", "previous_answer": "", "followup_question": "",
         "query_frame": {},
         "selected_domain": "", "domain_candidates": [], "domain_routing_trace": "", "domain_context": "",

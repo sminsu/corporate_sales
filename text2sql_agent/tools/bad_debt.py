@@ -10,7 +10,7 @@ from openpyxl.utils import get_column_letter
 from ..config import BAD_DEBT_OUTPUT_DIR, DB_SCHEMA, DB_SCHEMA_PREFIX
 from ..db import execute_sql
 from ..llm import _call_llm, _normalize_llm_text
-from .sql_builders import _athena_partition_conds, _calc_months_back, _escape_like, _sanitize_param
+from .sql_builders import _athena_partition_conds, _calc_months_back, _escape_name_like, _sanitize_param
 
 # ---------------------------------------------------------------------------
 # 5. 대손비용률 Tool 구현
@@ -202,7 +202,7 @@ def _partition_and(table_name: str, start: str, end: str = "", alias: str = "") 
 
 
 def _build_bad_debt_sql(query_template: str, params: dict) -> str:
-    merchant = _escape_like(params.get("가맹점명", ""))
+    merchant = _escape_name_like(params.get("가맹점명", ""), params)
     yyyymm = _sanitize_param(params.get("기준년월", ""))
     prev_month = _calc_months_back(yyyymm, 1) if yyyymm else ""
     start_month = _calc_months_back(yyyymm, 0) if yyyymm else ""

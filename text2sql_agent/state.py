@@ -8,6 +8,7 @@ from typing import TypedDict
 
 class Text2SQLState(TypedDict):
     question: str
+    retrieval_query: str
     question_type: str
     # --- Multi-turn context (optional values, initialized as empty strings) ---
     previous_question: str

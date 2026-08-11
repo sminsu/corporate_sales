@@ -173,20 +173,21 @@ def test_empty_tool_result_can_rerun_sql_for_an_entity_followup() -> None:
         captured["state"] = state
         yield "generate_answer", {
             **state,
-            "answer": "도미노 피자 대손비용률 결과입니다.",
-            "final_sql": sql.replace("꾸석지", "도미노 피자"),
+            "answer": "파파이스 대손비용률 결과입니다.",
+            "final_sql": sql.replace("꾸석지", "파파이스"),
             "query_columns": ["기준년월", "대손비용률_퍼센트"],
             "query_rows": [("202604", 1.25)],
         }
 
     def capture_payload(result, *_args, **_kwargs):
+        captured["final_result"] = result
         return {
             "answer": result["answer"],
             "columns": result["query_columns"],
             "rows": result["query_rows"],
         }
 
-    request = web_service.FollowupRequest(result_id="empty-result", question="그럼 도미노 피자는?")
+    request = web_service.FollowupRequest(result_id="empty-result", question="파파이스는?")
     session = {"id": "session-1", "user_id": "user-1", "messages": []}
     with (
         patch.object(web_service._SESSION_STORE, "get_result", return_value=base_result),
@@ -202,7 +203,15 @@ def test_empty_tool_result_can_rerun_sql_for_an_entity_followup() -> None:
 
     assert any(chunk.startswith("event: result") for chunk in chunks)
     assert captured["state"]["selected_tool"] == "대손비용률_분석"
-    assert captured["state"]["tool_params"]["가맹점명"] == "도미노 피자"
+    assert captured["state"]["question"] == "2026년 4월 파파이스의 대손비용률 분석해줘"
+    assert captured["state"]["tool_params"] == {
+        "가맹점명": "파파이스",
+        "기준년월": "202604",
+        "LS": 0.8,
+        "IS": 1.2,
+    }
+    assert captured["final_result"]["answer"] == "파파이스 대손비용률 결과입니다."
+    assert captured["final_result"]["original_question"] == base_result["question"]
 
 
 def test_frontend_contains_dependency_free_chart_renderer() -> None:
@@ -213,3 +222,11 @@ def test_frontend_contains_dependency_free_chart_renderer() -> None:
     assert "function renderChart(chart)" in source
     assert "function drawChart(chart)" in source
     assert "renderChart(data.chart);" in source
+
+
+def test_frontend_history_keeps_the_original_question() -> None:
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "web" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert source.count("const originalQuestion = data.original_question || data.question") == 2

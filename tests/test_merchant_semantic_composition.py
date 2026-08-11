@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from text2sql_agent import workflow
+from text2sql_agent.query_frame import build_query_frame
 from text2sql_agent.schema import (
     SCHEMA,
     _validate_sql_against_schema,
@@ -110,10 +111,16 @@ def test_yymm_shorthand_is_resolved_generically() -> None:
             ["tbdaadt01"],
         ),
         (
-            "도미노피자 가맹점주의 2605 기준 가맹점 매출액 알려줘",
+            "노랑통닭 가맹점주의 2026년 6월 기준 최근 3개월 가맹점 매출액 알려줘",
             "named_merchant_store_sales_at_month",
             "merchant_named_store_sales_at_month",
-            ["tmdaa5e11"],
+            ["tmdaa5e11", "tmdaa5d01"],
+        ),
+        (
+            "노랑통닭 점포별의 2026년 6월 기준 최근 3개월 가맹점 매출액 알려줘",
+            "named_merchant_store_sales_at_month",
+            "merchant_named_store_sales_at_month",
+            ["tmdaa5e11", "tmdaa5d01"],
         ),
         (
             "파파존스 가맹점주 가맹점 계좌 알려줘",
@@ -155,6 +162,23 @@ def test_merchant_questions_compose_through_semantic_contracts(
     assert _validate_sql_against_schema(result["final_sql"], tables) == []
 
 
+@pytest.mark.parametrize(
+    ("name", "pattern"),
+    [
+        ("마초스테이크 하우스", "마초스테이크%하우스"),
+        ("굽네 치킨", "굽네%치킨"),
+    ],
+)
+def test_spaced_merchant_name_uses_flexible_like_gaps(name: str, pattern: str) -> None:
+    question = f"{name} 가맹점 기본 정보 알려줘"
+    result = _offline_vq_result(question)
+    frame = build_query_frame({**result, "question": question})
+
+    assert result["extracted_params"]["가맹점명"] == name
+    assert f"CONCAT('%', '{pattern}', '%')" in result["final_sql"]
+    assert frame["entities"] == [{"column": "가맹점명", "value": name}]
+
+
 def test_composed_sql_uses_correct_grains_roles_and_code_values() -> None:
     customer_list = _offline_vq_result(
         "꾸석지 가맹점 중 기업카드 보유 기업고객식별자 목록 알려줘. 2605 기준"
@@ -168,13 +192,20 @@ def test_composed_sql_uses_correct_grains_roles_and_code_values() -> None:
     assert "유효기업공용카드수" not in customer_sql
 
     sales = _offline_vq_result(
-        "도미노피자 가맹점주의 2605 기준 가맹점 매출액 알려줘"
+        "노랑통닭 가맹점주의 2026년 6월 기준 최근 3개월 가맹점 매출액 알려줘"
     )
     sales_sql = sales["final_sql"]
-    assert sales["extracted_params"]["기준년월"] == "202605"
-    assert 's."가맹점번호"' in sales_sql
-    assert 'COALESCE(s."가맹점일시불매출금액", 0)' in sales_sql
-    assert 'COALESCE(s."가맹점할부매출금액", 0)' in sales_sql
+    assert sales["extracted_params"]["기준년월"] == "202606"
+    assert sales["extracted_params"]["가맹점명"] == "노랑통닭"
+    assert 'a."가맹점번호" = b."가맹점번호"' in sales_sql
+    assert 'a."기준년월" = b."기준년월"' in sales_sql
+    assert "tmdaa5d01" in sales_sql
+    assert "tbdaadt01" not in sales_sql
+    assert 'a."최근3개월가맹점매출금액"' in sales_sql
+    assert 'LOWER(COALESCE(b."가맹점명", \'\'))' in sales_sql
+    assert 'a."가맹점상태구분코드" = \'1\'' in sales_sql
+    assert "가맹점일시불매출금액" not in sales_sql
+    assert "가맹점할부매출금액" not in sales_sql
 
     bank_count = _offline_vq_result(
         "파파존스 가맹점주 중 가맹점 계좌가 KB국민은행인 가맹점 수 알려줘"
@@ -184,6 +215,19 @@ def test_composed_sql_uses_correct_grains_roles_and_code_values() -> None:
     assert 'COUNT(DISTINCT m."가맹점번호")' in bank_sql
     assert 'm."현금카드결제기관구분코드" = \'004\'' in bank_sql
     assert "대표고객식별자" not in bank_sql
+
+
+def test_gongcha_merchant_accounts_use_the_requested_name_and_columns() -> None:
+    question = "공차 가맹점들의 가맹점 계좌 알려줘"
+    result = _offline_vq_result(question)
+    sql = result["final_sql"]
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {"가맹점명": "공차"}
+    assert "CONCAT('%', '공차', '%')" in sql
+    assert 'm."대표고객식별자" AS "개인고객식별자"' in sql
+    assert 'm."현금카드결제기관구분코드" AS "가맹점결제계좌"' in sql
+    assert _validate_sql_against_schema(sql, ["tbdaadt01"]) == []
 
 
 @pytest.mark.parametrize(

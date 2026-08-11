@@ -648,7 +648,7 @@ def test_all_safe_paths_have_valid_endpoints_and_quoted_korean_join_columns() ->
             if name:
                 tables[str(name)] = table
 
-    assert len(paths) == 37
+    assert len(paths) == 38
     assert len({path["name"] for path in paths}) == len(paths)
 
     issues = []

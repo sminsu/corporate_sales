@@ -9,7 +9,7 @@ import unittest
 import zipfile
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from docx import Document
 from openpyxl import load_workbook
@@ -24,6 +24,8 @@ def _load_exports_module():
 
     config = types.ModuleType(f"{package_name}.config")
     config.REPORT_DIR = root / "reports"
+    config.MAX_QUERY_ROW_LIMIT = 1_000_000
+    config.EXPORT_QUERY_TIMEOUT_MS = 300_000
     sys.modules[f"{package_name}.config"] = config
 
     spec = importlib.util.spec_from_file_location(
@@ -105,6 +107,65 @@ class ExportReportTest(unittest.TestCase):
                 self.assertEqual(["월", "매출금액"], [cell.value for cell in data_sheet[1]])
                 self.assertEqual("2026-02", data_sheet["A3"].value)
                 self.assertEqual(2000, data_sheet["B3"].value)
+
+    def test_prepare_export_result_reloads_all_rows_without_mutating_preview(self) -> None:
+        db_module = types.ModuleType(f"{exports.__package__}.db")
+        execute_sql = Mock(
+            return_value=(["값"], [(1,), (2,), (3,)], None)
+        )
+        db_module.execute_sql = execute_sql
+        preview = {
+            "final_sql": "SELECT value FROM sample LIMIT 1000000",
+            "query_columns": ["값"],
+            "query_rows": [(1,)],
+        }
+
+        with patch.dict(sys.modules, {f"{exports.__package__}.db": db_module}):
+            prepared = exports.prepare_export_result(preview)
+
+        self.assertEqual([(1,)], preview["query_rows"])
+        self.assertEqual([(1,), (2,), (3,)], prepared["query_rows"])
+        execute_sql.assert_called_once_with(
+            preview["final_sql"],
+            max_rows=1_000_000,
+            statement_timeout_ms=300_000,
+        )
+
+    def test_large_excel_export_uses_write_only_path_and_keeps_every_row(self) -> None:
+        result = {
+            "question": "대용량 조회",
+            "query_columns": ["순번", "값"],
+            "query_rows": [(1, "가"), (2, "나"), (3, "다")],
+            "final_sql": "SELECT sequence, value FROM sample LIMIT 1000000",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(exports, "REPORT_DIR", Path(tmpdir)),
+                patch.object(exports, "_LARGE_EXCEL_ROW_THRESHOLD", 2),
+            ):
+                path = exports.export_to_excel(result)
+
+            workbook = load_workbook(path, data_only=True)
+            self.assertEqual(["요약", "상세 데이터", "SQL"], workbook.sheetnames)
+            data_rows = list(workbook["상세 데이터"].iter_rows(values_only=True))
+            self.assertEqual(("순번", "값"), data_rows[0])
+            self.assertEqual([(1, "가"), (2, "나"), (3, "다")], data_rows[1:])
+            self.assertEqual("A1:B4", workbook["상세 데이터"].auto_filter.ref)
+
+    def test_text_export_keeps_rows_beyond_the_report_preview_size(self) -> None:
+        result = {
+            "question": "TXT 전체 데이터",
+            "query_columns": ["순번"],
+            "query_rows": [(index,) for index in range(250)],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(exports, "REPORT_DIR", Path(tmpdir)):
+                path = exports.export_to_text(result)
+
+            text = Path(path).read_text(encoding="utf-8")
+            self.assertIn("[상세 데이터] (총 250건)", text)
+            self.assertIn("\n249\n", text)
+            self.assertNotIn("상위 200건만 표시", text)
 
     def test_word_export_falls_back_when_python_docx_is_missing(self) -> None:
         real_import = builtins.__import__

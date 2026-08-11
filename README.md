@@ -529,10 +529,11 @@ VERIFIED_QUERY_RULE_MATCH_MARGIN=2
 1. 사용자가 웹 UI에서 질문을 입력합니다.
 2. `web_service.py`가 요청을 받아 LangGraph 실행을 시작합니다.
 3. `workflow.py`가 질문을 `need_sql`, `direct`, `reject` 중 하나로 분류합니다.
-4. SQL이 필요한 질문은 도메인 라우팅 후 capability router에서 Tool, verified query, 자동 SQL 생성 경로 중 하나로 진행합니다.
-5. 생성된 SQL은 `schema.py`의 검증과 `db.py`의 안전 실행 로직을 거칩니다.
-6. 조회 결과는 LLM을 통해 표/요약 중심 답변으로 변환됩니다.
-7. 사용자가 export를 요청하면 `exports.py`가 Word/Excel/TXT 파일을 `reports/`에 생성합니다.
+4. SQL이 필요한 최초 질문은 원문을 보존한 채 내부 검색용 질의로 정제합니다. 정제 실패 시 원문으로 자동 폴백합니다.
+5. 원문과 정제문으로 도메인 라우팅 후 capability router에서 Tool, verified query, 자동 SQL 생성 경로 중 하나로 진행합니다.
+6. 생성된 SQL은 `schema.py`의 검증과 `db.py`의 안전 실행 로직을 거칩니다.
+7. 조회 결과는 LLM을 통해 표/요약 중심 답변으로 변환됩니다.
+8. 사용자가 export를 요청하면 `exports.py`가 Word/Excel/TXT 파일을 `reports/`에 생성합니다.
 
 ## 소형 모델 대응과 품질 검증
 
@@ -552,10 +553,22 @@ Gemma 계열이나 gpt-oss 20B처럼 지시 이행력이 낮은 모델에서도 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 pytest -q
 PYTHONDONTWRITEBYTECODE=1 python scripts/run_quality_eval.py
+PYTHONDONTWRITEBYTECODE=1 python scripts/run_semantic_golden_eval.py
 ```
 
 품질 계약은 noisy JSON/SQL 파싱, 후속 질문 라우팅, 자연어 파라미터, 다중 문장·변경 SQL 차단,
 재시도 경로, semantic join 및 verified-query 테이블 정합성을 검사합니다.
+시맨틱 골든셋 평가는 1,000건을 현재 SSOT와 대조하고 `reports/semantic-golden-eval.{json,md}`에 상세 결과를 생성합니다.
+
+실제 LLM·DB 에이전트 경로는 먼저 일부 케이스로 확인한 뒤 저장된 결과부터 이어서 실행합니다.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python scripts/run_semantic_golden_live.py --limit 10
+PYTHONDONTWRITEBYTECODE=1 python scripts/run_semantic_golden_live.py
+```
+
+케이스별 응답은 `reports/semantic-golden-live-results.jsonl`, 저장·오류 요약은 `reports/semantic-golden-live-summary.md`에 생성됩니다.
+추가 파라미터가 필요하면 골든 케이스의 기준일에 맞춘 테스트 기본값을 자동 주입해 같은 케이스를 이어서 실행하며, 적용값과 횟수도 결과에 저장합니다.
 
 ## 출력 파일
 

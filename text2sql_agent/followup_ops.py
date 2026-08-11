@@ -17,7 +17,11 @@ from .query_frame import evolve_query_frame
 
 VISUAL_KEYWORDS = (
     "그래프", "차트", "chart", "plot", "시각화", "막대", "bar", "라인", "line",
-    "선그래프", "원형", "파이", "pie", "분포",
+    "선그래프", "원형", "분포",
+)
+PIE_VISUAL_RE = re.compile(
+    r"(?:^|\s)파이(?=\s|[?!.,]|$|로(?:\s|[?!.,]|$))|\bpie\b",
+    re.IGNORECASE,
 )
 CURRENT_RESULT_KEYWORDS = (
     "이 결과", "위 결과", "방금 결과", "직전 결과", "현재 결과", "조회 결과",
@@ -465,7 +469,9 @@ def plan_followup(
     source_strategy = str(resolution.get("source_strategy") or "")
     lowered = " ".join(str(question or "").lower().split())
     normalized_question = _normalized(lowered)
-    asks_visual = any(keyword in lowered for keyword in VISUAL_KEYWORDS)
+    asks_visual = any(keyword in lowered for keyword in VISUAL_KEYWORDS) or bool(
+        PIE_VISUAL_RE.search(lowered)
+    )
     transform = apply_local_transform(question, columns, rows)
     refers_to_current_result = any(keyword in lowered for keyword in CURRENT_RESULT_KEYWORDS) or bool(
         re.search(r"(?:그|거기|같은|동일한|이전|방금|이번에는|그럼)", lowered)

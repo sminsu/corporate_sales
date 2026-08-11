@@ -1,5 +1,7 @@
 """Tool metadata registry used by the graph's tool-selection path."""
 
+from ..config import DEFAULT_QUERY_ROW_LIMIT
+
 from .bad_debt import _tool_fn_대손비용률
 from .sql_builders import (
     _tool_sql_corporate_card_active_no_usage_members,
@@ -26,8 +28,8 @@ def _make_verified_query_tool_fn(sql_query_name: str):
 EXCEL_CASE_SQL_TOOLS: list[dict] = [
         {
             'name': 'corporate_card_active_no_usage_members',
-            'description': '입력 기준년월일 현재 유효 기업카드를 보유하고 있으나 최근 6개월 신용/체크 이용금액이 없는 기업회원 명단을 tmdaa1d12에서 조회합니다.',
-            'parameters': [{'name': '기준년월일', 'type': 'string', 'description': '현재 카드 보유 여부와 무실적 판단 기준일(YYYYMMDD)', 'required': True, 'default': '20260731'}, {'name': '조회개월수', 'type': 'integer', 'description': '기준월을 포함한 무실적 판정 개월 수', 'required': False, 'default': 6}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
+            'description': '입력 기준년월에 유효 기업카드를 보유하고 있으나 기준월 포함 최근 6개월 신용/체크 이용금액이 없는 기업회원 명단을 tmdaa1d12에서 조회합니다.',
+            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '현재 카드 보유 여부와 무실적 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '조회개월수', 'type': 'integer', 'description': '기준월을 포함한 무실적 판정 개월 수', 'required': False, 'default': 6}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'corporate_card_active_no_usage_members',
             'execution_mode': 'athena_select_only',
             'tags': ['신규영업', '6무', '무실적', '기업회원', '기업카드', '보유', '명단', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
@@ -106,6 +108,10 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
             'fn': _make_verified_query_tool_fn('managed_corporate_limit_down_monitoring'),
         }
 ]
+for _tool in EXCEL_CASE_SQL_TOOLS:
+    for _parameter in _tool.get("parameters", []):
+        if _parameter.get("name") == "limit" and _parameter.get("default") == 100:
+            _parameter["default"] = DEFAULT_QUERY_ROW_LIMIT
 # ---------------------------------------------------------------------------
 # 6. Tool 등록 (required 플래그 포함)
 # ---------------------------------------------------------------------------

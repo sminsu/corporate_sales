@@ -2299,51 +2299,6 @@ summary:focus-visible,
   line-height: 1.45;
 }
 
-.rail-table-catalog {
-  min-width: 0;
-}
-
-.rail-table-catalog > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 38px;
-  padding: 0 11px;
-  cursor: pointer;
-  list-style: none;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text);
-  font-size: 12.5px;
-  font-weight: 700;
-}
-
-.rail-table-catalog > summary::-webkit-details-marker {
-  display: none;
-}
-
-.rail-table-catalog > summary code {
-  color: var(--subtle);
-  font: 10px/1 var(--mono);
-}
-
-.rail-table-catalog[open] > summary {
-  border-color: var(--mint);
-  background: var(--panel-3);
-}
-
-.rail-table-catalog .table-catalog-head {
-  margin: 8px 0 7px;
-  padding: 9px;
-}
-
-.rail-table-catalog .table-catalog-list {
-  max-height: min(48vh, 420px);
-  overflow: auto;
-  padding-right: 2px;
-}
-
 /* ░░░░ SIMPLIFIED CHAT SHELL ░░░░ */
 .app,
 .app.inspector-collapsed {

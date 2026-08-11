@@ -20,7 +20,7 @@
 # =============================================================================
 
 semantic_layer_metadata:
-  version: "2026-08-04.3"
+  version: "2026-08-11.1"
   sql_dialect: athena_engine_v3
   target_models: [gemma4, gpt-oss]
   sources:
@@ -108,9 +108,11 @@ tables:
       - name: 표준산업분류코드
         data_type: VARCHAR
         description: 사업체가 주로 수행하는 산업활동을 그 유사성에 따라 체계적으로 분류한 것
+        synonyms: [표준산업분류, 산업분류, 산업분류코드]
       - name: 소매비소매구분코드
         data_type: VARCHAR
         description: "기업을 특정 기준에 따라 소매 또는 비소매로 구분한 정보를 나타낸다. / 신용평가모델 기준으로 먼저 셋팅 후, 해당 값이 없을 경우 충당금영역기준으로 셋팅한다."
+        synonyms: [소매비소매구분, 소매·비소매 구분, 소매 비소매 구분]
       - name: 대표자고객식별자
         data_type: VARCHAR
         description: 해당 기업에 대한 대표자고객식별자를 나타낸다. / 주대표자에 해당하는 식별자 이다.
@@ -126,6 +128,7 @@ tables:
       - name: 그룹최고고객구분코드
         data_type: VARCHAR
         description: "법인스타클럽 정보로, 법인고객식별자 기준으로 산출된 등급이다. / KB금융그룹의 거래실적(가족포함)에 따른 고객의 등급(MVP,로얄,우대,프리미엄,잠재,일반등)을 구분하는 코드"
+        synonyms: [그룹최고고객구분, 그룹 최고고객 구분]
       - name: 소기업여부
         data_type: VARCHAR
         description: "해당 기업이 소기업 인지여부를 판단한다. / TBDAAAA23(DAA고객서비스내역) 내 470(소기업) 으로 등록되어 있는 경우 '1'로 관리한다."
@@ -147,6 +150,7 @@ tables:
       - name: 카드결제기관구분코드
         data_type: VARCHAR
         description: "해당 기업고객의 카드결제계좌의 기관구분 (산업은행, 기업은행, 국민은행, 외환은행 등)를 나타낸다. / 회원기본(TBDAAAT03) 결제일 데이터 값과 동일하게 셋팅된다."
+        synonyms: [카드결제기관, 카드 결제기관, 결제기관]
       - name: 한도증액가망여부
         data_type: VARCHAR
         description: "해당 기업의 총한도금액을 증액할 수 있는지 가망여부를 나타낸다. / 기업한도전략 및 신용정보를 고려하여 한도증액 가능성이 있는지를 나타낸다. / 해당 값이 '1' 라고해서 한도증액이 가능한 것은 아니며 참고용으로만 사용한다."
@@ -199,6 +203,7 @@ tables:
       - name: 사업자자산건전성구분코드
         data_type: VARCHAR
         description: 해당 고객(사업자) 기준으로 자산건전성 구분코드를 나타낸다. · 기업고객식별자 기준으로 산출됨
+        synonyms: [사업자자산건전성, 사업자 자산건전성, 자산건전성]
       - name: 폐업여부
         data_type: VARCHAR
         description: "해당 고객(사업자) 폐업여부를 나타낸다. · 자산건전성폐업사유구분코드 184(폐업거래처_추정손실) 일때, '1'로 관리한다."
@@ -214,6 +219,7 @@ tables:
       - name: 그룹최종평가신용등급코드
         data_type: VARCHAR
         description: 법인등록번호 기준으로 산출된 그룹최종평가신용등급코드를 나타낸다. / 그룹 CRS단일신용평가최종등급 기준의 데이터이다.
+        synonyms: [그룹최종평가신용등급, 그룹 최종평가 신용등급, 그룹신용등급]
       - name: 그룹신용등급유효여부
         data_type: VARCHAR
         description: "위 그룹신용등급유효년월일 >= 데이터기준일자 보다 클 경우 '1' 로 셋팅한다(유효하다고 판단) / 그룹 CRS단일신용평가최종등급 기준의 데이터이다."
@@ -406,7 +412,7 @@ tables:
   - name: tmdaa1d12
     physical_table: tmdaa1d12
     korean_name: 월기업고객기본
-    description: "DAA기업고객기본(TBDAA1D12)의 매월 말 데이터를 적재하는 기업고객 월 스냅샷. 기업 식별·대표자·그룹등급·한도·카드 보유·월 이용금액·연체·자산건전성 정보를 고객별로 관리하며, 기준일 현재 기업카드 보유 및 최근 6개월 무실적 대상 조회에도 사용한다."
+    description: "DAA기업고객기본(TBDAA1D12)의 매월 말 데이터를 적재하는 기업고객 월 스냅샷. 기업 식별·대표자·그룹등급·한도·카드 보유·월 이용금액·연체·자산건전성 정보를 고객별로 관리하며, 기준월 기업카드 보유 및 최근 6개월 무실적 대상 조회에도 사용한다."
     grain: 기준년월 × 기준년월일 × 고객식별자 1건 (기업고객 월말 스냅샷)
     primary_key: [기준년월, 기준년월일, 고객식별자]
     synonyms: [월기업고객, 기업고객월스냅샷, 기업회원무실적, 기업카드무실적, 6개월무실적, 6무]
@@ -456,10 +462,12 @@ tables:
         data_type: VARCHAR
         physical_data_type: VARCHAR2(5)
         description: 사업체가 주로 수행하는 산업활동을 그 유사성에 따라 체계적으로 분류한 것
+        synonyms: [표준산업분류, 산업분류, 산업분류코드]
       - name: 소매비소매구분코드
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
         description: "기업을 특정 기준에 따라 소매 또는 비소매로 구분한 정보를 나타낸다. / 신용평가모델 기준으로 먼저 셋팅 후, 해당 값이 없을 경우 충당금영역기준으로 셋팅한다."
+        synonyms: [소매비소매구분, 소매·비소매 구분, 소매 비소매 구분]
       - name: 대표자고객식별자
         data_type: VARCHAR
         physical_data_type: VARCHAR2(10)
@@ -480,6 +488,7 @@ tables:
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
         description: "법인스타클럽 정보로, 법인고객식별자 기준으로 산출된 등급이다. / KB금융그룹의 거래실적(가족포함)에 따른 고객의 등급(MVP,로얄,우대,프리미엄,잠재,일반등)을 구분하는 코드"
+        synonyms: [그룹최고고객구분, 그룹 최고고객 구분]
       - name: 소기업여부
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
@@ -508,6 +517,7 @@ tables:
         data_type: VARCHAR
         physical_data_type: VARCHAR2(3)
         description: "해당 기업고객의 카드결제계좌의 기관구분 (산업은행, 기업은행, 국민은행, 외환은행 등)를 나타낸다. / 회원기본(TBDAAAT03) 결제일 데이터 값과 동일하게 셋팅된다."
+        synonyms: [카드결제기관, 카드 결제기관, 결제기관]
       - name: 한도증액가망여부
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
@@ -575,6 +585,7 @@ tables:
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
         description: 해당 고객(사업자) 기준으로 자산건전성 구분코드를 나타낸다. · 기업고객식별자 기준으로 산출됨
+        synonyms: [사업자자산건전성, 사업자 자산건전성, 자산건전성]
       - name: 폐업여부
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
@@ -594,6 +605,7 @@ tables:
         data_type: VARCHAR
         physical_data_type: VARCHAR2(4)
         description: 법인등록번호 기준으로 산출된 그룹최종평가신용등급코드를 나타낸다. / 그룹 CRS단일신용평가최종등급 기준의 데이터이다.
+        synonyms: [그룹최종평가신용등급, 그룹 최종평가 신용등급, 그룹신용등급]
       - name: 그룹신용등급유효여부
         data_type: VARCHAR
         physical_data_type: VARCHAR2(1)
@@ -1296,6 +1308,7 @@ tables:
       - name: 카드등급구분코드
         data_type: VARCHAR
         description: 카드의 등급을 구분하는코드(일반,실버,골드,플래티늄 등)
+        synonyms: [카드등급, 카드 등급]
       - name: 할부요율그룹구분코드
         data_type: VARCHAR
         description: 할부에 적용되는 요율그룹을 구분하는 코드
@@ -1630,7 +1643,15 @@ tables:
         description: 상품코드의 마지막 5자리로 정의, 상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고, 코드로 표기하고자 함
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: KB카드BC카드구분코드
         data_type: VARCHAR
         description: KB카드와 BC카드를 구분하는코드
@@ -2334,7 +2355,15 @@ tables:
         description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드를 의미한다.
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: 카드매출유형구분코드
         data_type: VARCHAR
         description: 카드매출 유형 관리를 의미한다.
@@ -2633,7 +2662,15 @@ tables:
         description: MFX_KB카드전표입력내역의 결제 대금 회수방법구분코드
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: 카드소유자구분코드
         data_type: VARCHAR
         description: 카드 소유자 유형 (본인/가족/대표/공용/개별)
@@ -4849,7 +4886,15 @@ tables:
         description: 상품코드의 마지막 5자리로 정의, 상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고, 코드로 표기하고자 함
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: KB카드BC카드구분코드
         data_type: VARCHAR
         description: KB카드와 BC카드를 구분하는코드
@@ -5150,7 +5195,15 @@ tables:
         description: 카드의 발급사를 구분하는 BIN 번호이다.
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: 카드등급구분코드
         data_type: VARCHAR
         description: 카드의 등급을 구분하는 코드로 일반/실버/골드/플래티늄등으로 카드를 구분하는 코드
@@ -5389,7 +5442,15 @@ tables:
         description: 카드의 발급사를 구분하는 BIN 번호이다.
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: 카드등급구분코드
         data_type: VARCHAR
         description: 카드의 등급을 구분하는 코드로 일반/실버/골드/플래티늄등으로 카드를 구분하는 코드
@@ -5594,9 +5655,11 @@ tables:
       - name: 회원자산관리부점코드
         data_type: VARCHAR
         description: 회원의 자산을 관리하는 부점코드
+        synonyms: [회원자산관리부점, 회원 자산관리 부점, 자산관리부점]
       - name: 연체관리부점코드
         data_type: VARCHAR
         description: 고객의 연체 정보를 관리하는 부점코드
+        synonyms: [연체관리부점, 연체 관리 부점]
       - name: 결제계좌번호
         data_type: VARCHAR
         description: 청구금액을 인출할 고객의 결제 계좌번호를 의미한다.
@@ -5612,12 +5675,22 @@ tables:
       - name: 회원자격코드
         data_type: VARCHAR
         description: 통합코드의 회원자격코드
+        synonyms: [회원자격, 회원 자격]
       - name: 카드등급구분코드
         data_type: VARCHAR
         description: 카드의 등급을 관리하는 구분코드
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB"
+        description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
+        synonyms: [카드브랜드, 카드 브랜드]
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: 모집부점코드
         data_type: VARCHAR
         description: 신용카드, 가맹점, 자동납부 신청을 모집한 부점코드
@@ -6300,16 +6373,28 @@ tables:
         description: MFX월카드통합실적집계의 카드에 해당하는 소유자에 따른 본인고객관리번호이다.
       - name: 카드브랜드구분코드
         data_type: VARCHAR
-        description: "MFX월카드통합실적집계의 카드브랜드구분코드1:로칼(국민)2:마스터3:비자4:JCB"
+        description: "MFX월카드통합실적집계의 카드브랜드구분코드1:로칼(국민)2:마스터3:비자4:JCB5:UPI&글로벌6:아맥스"
+        synonyms: [카드브랜드, 카드 브랜드]
+        value_semantics:
+          '1': 로칼(국민)
+          '2': 마스터
+          '3': 비자
+          '4': JCB
+          '5': UPI&글로벌
+          '6': 아맥스
+        value_semantics_provenance: user_provided_business_codebook
       - name: 카드등급구분코드
         data_type: VARCHAR
         description: MFX월카드통합실적집계의 카드의 등급을 관리하는 구분코드
+        synonyms: [카드등급, 카드 등급]
       - name: 상품중분류구분코드
         data_type: VARCHAR
         description: MFX월카드통합실적집계의 KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
+        synonyms: [상품중분류, 상품 중분류]
       - name: 카드등급그룹코드
         data_type: VARCHAR
         description: MFX월카드통합실적집계의 KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
+        synonyms: [카드등급그룹, 카드 등급 그룹]
       - name: 상품코드
         data_type: VARCHAR
         description: MFX월카드통합실적집계의 상품대분류+상품중분류+템플릿코드별 상품에 대해 고유하게 부여한 일련번호이다
@@ -6418,6 +6503,7 @@ tables:
       - name: 회원자격코드
         data_type: VARCHAR
         description: MFX월카드통합실적집계의 통합코드의 회원자격코드
+        synonyms: [회원자격, 회원 자격]
       - name: 회수방법구분코드
         data_type: VARCHAR
         description: MFX월카드통합실적집계의 결제 대금 회수방법구분코드
@@ -7846,6 +7932,7 @@ tables:
       - name: 가맹점상태구분코드
         data_type: VARCHAR
         description: 가맹점의 상태 표시 코드를 나타낸다.
+        synonyms: [가맹점상태, 가맹점 상태]
     measures:
       - name: 신용카드가맹점수수료율
         data_type: DECIMAL
@@ -9119,7 +9206,7 @@ sql_generation_contract:
     - 질문에 없는 취소·활성·상태 코드를 임의로 추가하지 않는다.
     - 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본 LIKE '%이름%' 부분일치를 사용하고, 사용자가 이름 고정·이름만·정확 일치를 명시한 경우에만 앞뒤 %를 제거한다.
     - 가맹점·브랜드 검색은 semantic_attributes.merchant_search_name의 테이블별 source_mappings를 사용하며, 브랜드 컬럼이 있는 테이블에서는 가맹점명·외부가맹점명·브랜드명 OR 조건 전체를 괄호로 묶는다.
-    - 상세 목록은 요청 개수가 없으면 LIMIT 100을 적용한다.
+    - 상세 목록은 요청 개수가 없으면 LIMIT 1000000을 적용한다.
   grain_and_aggregation_rules:
     - 일·월 snapshot은 table aggregation_policy의 최신행 축소를 먼저 적용한다.
     - 1:N JOIN 뒤 상위 grain 개체 수는 COUNT(DISTINCT key)로 계산하고 fact 금액 중복을 점검한다.
@@ -9145,7 +9232,7 @@ sql_generation_contract:
     tbdaa1d12 월: SUBSTR(기준년월일,1,6) 후 고객×월 최신행
   ambiguity_rules:
     - 필수 기간·대상·코드값을 확정할 수 없으면 임의 값을 만들지 않고 추가 입력을 요청한다.
-    - 기업카드 보유회원의 6개월 무실적 명단은 기준년월일이 필수이며 질문에 없으면 YYYYMMDD 입력을 요청한다.
+    - 기업카드 보유회원의 6개월 무실적 명단은 기준년월이 필수이며 질문에 없으면 YYYYMM 입력을 요청한다.
     - 코드 의미는 value_semantics의 provenance를 함께 따르며 reference 가정은 운영 코드 검증 대상으로 남긴다.
     - 현재 한도는 실행일이 속한 월의 고객별 최신 snapshot을 사용한다. 과거 한도나 평균 한도는 사용자가 지정한 기간을 사용한다.
     - 기업·법인 문맥의 단독 한도는 tbdaa1d12의 기업총한도금액과 기업총잔여한도금액을 뜻한다. 카드별·회원별·부서별 한도를 명시하면 해당 grain의 원천을 별도로 사용한다.
@@ -9156,7 +9243,7 @@ sql_generation_contract:
     - '"가맹점 계좌"가 은행명과 함께 쓰이면 계좌번호가 아니라 가맹점 대금지급 결제금융기관으로 해석한다. 실제 계좌번호나 보통·당좌 같은 계좌 종류는 현재 스키마에서 조회하지 않는다.'
     - '가맹점 문맥의 단독 "대손율"은 월말 기대대손충당금/원화대출잔액의 대손충당금률로 해석한다. 사용자가 대손비용률·상각·보정계수·LS·IS를 명시하면 월초/월말 충당금과 상각 기반 대손비용률로 분리한다.'
   result_defaults:
-    list_limit: 100
+    list_limit: 1000000
     preview_rows: 30
     money_unit: KRW
     percent_round_digits: 2
@@ -9222,14 +9309,14 @@ semantic_entities:
     korean_name: 회원
     physical_table: tbdaaat03
     grain: 회원일련번호
-    canonical_dimensions: [회원일련번호, 개인기업구분코드]
+    canonical_dimensions: [회원일련번호, 개인기업구분코드, 카드등급구분코드, 회원자격코드, 카드결제기관구분코드, 회원자산관리부점코드]
     canonical_facts: [유효신용카드수]
     use_when: [회원 수나 보유 카드 현황을 조회할 때]
   - name: member_card
     korean_name: 회원카드
     physical_table: tbdaaat05
     grain: 회원일련번호 × 카드구분키번호
-    canonical_dimensions: [회원일련번호, 카드구분키번호, 상품코드, 개인기업구분코드]
+    canonical_dimensions: [회원일련번호, 카드구분키번호, 상품코드, 상품중분류구분코드, 카드등급그룹코드, 카드등급구분코드, 카드브랜드구분코드, 개인기업구분코드]
     canonical_facts: []
     use_when: [개별 카드·상품·브랜드 속성이 필요할 때]
   - name: product
@@ -9257,8 +9344,8 @@ semantic_entities:
     korean_name: 카드월실적
     physical_table: tmdaa3e16
     grain: 기준년월 × 회원일련번호 × 카드구분키번호
-    canonical_dimensions: [기준년월, 회원일련번호, 카드구분키번호, 개인기업구분코드]
-    canonical_facts: [금월이용합계금액, 금월일시불이용금액, 금월할부이용금액, 금월CA이용금액, 금월이용합계건수]
+    canonical_dimensions: [기준년월, 회원일련번호, 카드구분키번호, 개인기업구분코드, 상품중분류구분코드, 카드등급그룹코드, 카드등급구분코드, 카드브랜드구분코드, 회원자격코드, 카드결제기관구분코드]
+    canonical_facts: [금월이용합계금액, 금월일시불이용금액, 금월할부이용금액, 금월CA이용금액, 금월이용합계건수, 금월일시불이용건수]
     use_when: [카드별 월 이용·실적 추이와 법인카드 월별 합계·전월 대비 증감률을 조회할 때]
   - name: customer_monthly_snapshot
     korean_name: 고객월스냅샷
@@ -9278,8 +9365,8 @@ semantic_entities:
     korean_name: 가맹점월실적
     physical_table: tmdaa5e11
     grain: 기준년월 × 가맹점번호
-    canonical_dimensions: [기준년월, 가맹점번호, 가맹점명]
-    canonical_facts: [가맹점일시불매출금액, 가맹점할부매출금액, 금년가맹점신용판매매출금액, 신용카드가맹점수수료율]
+    canonical_dimensions: [기준년월, 가맹점번호, 가맹점명, 가맹점업종코드, 가맹점상태구분코드]
+    canonical_facts: [가맹점일시불매출건수, 가맹점할부매출건수, 가맹점일시불매출금액, 가맹점할부매출금액, 금년가맹점신용판매매출금액, 신용카드가맹점수수료율]
     use_when: [가맹점·브랜드별 월 매출, 순위와 수수료를 조회할 때]
   - name: merchant_monthly_enrichment
     korean_name: 월가맹점풍성화
@@ -9299,22 +9386,22 @@ semantic_entities:
     korean_name: 기업고객일별
     physical_table: tbdaa1d12
     grain: 기준년월일 × 고객식별자
-    canonical_dimensions: [기준년월일, 고객식별자, 사업자등록번호, 기업명, 표준산업분류코드]
-    canonical_facts: [기업총한도금액, 기업총잔여한도금액, 유효기업신용카드수, 유효기업체크카드수, 금월신용카드이용금액, 금월체크카드이용금액, 카드연체원금, 여신연체원금]
+    canonical_dimensions: [기준년월일, 고객식별자, 사업자등록번호, 기업명, 표준산업분류코드, 소매비소매구분코드, 그룹최고고객구분코드, 카드결제기관구분코드, 사업자자산건전성구분코드, 그룹최종평가신용등급코드]
+    canonical_facts: [기업총한도금액, 기업총잔여한도금액, 유효기업신용카드수, 유효기업체크카드수, 금월신용카드이용금액, 금월체크카드이용금액, 금월KB페이이용금액, 금월국세이용금액, 카드연체원금, 여신연체원금]
     use_when: [기업별 월말 보유카드·이용·한도·연체 상태가 필요할 때; 월 기준은 SUBSTR(기준년월일, 1, 6)으로 파생하고 고객별 월 최신행을 사용]
   - name: corporate_customer_no_usage_snapshot
     korean_name: 월기업고객기본
     physical_table: tmdaa1d12
     grain: 기준년월 × 기준년월일 × 고객식별자
-    canonical_dimensions: [기준년월, 기준년월일, 고객식별자, 사업자등록번호, 기업명, 법인등록번호, 표준산업분류코드, 대표자고객식별자, 기업거래정지여부, 폐업여부]
-    canonical_facts: [기업총한도금액, 기업총잔여한도금액, 유효기업신용카드수, 유효기업체크카드수, 유효기업개별카드수, 유효기업공용카드수, 금월신용카드이용금액, 금월체크카드이용금액, 카드연체원금, 여신연체원금]
-    use_when: [기업고객의 월말 식별·대표자·한도·카드 보유·월 이용·연체·건전성 상태가 필요할 때, 기준년월일 현재 최근 6개월 무실적 기업회원 명단을 조회할 때]
+    canonical_dimensions: [기준년월, 기준년월일, 고객식별자, 사업자등록번호, 기업명, 법인등록번호, 표준산업분류코드, 소매비소매구분코드, 그룹최고고객구분코드, 카드결제기관구분코드, 사업자자산건전성구분코드, 그룹최종평가신용등급코드, 대표자고객식별자, 기업거래정지여부, 폐업여부]
+    canonical_facts: [기업총한도금액, 기업총잔여한도금액, 유효기업신용카드수, 유효기업체크카드수, 유효기업개별카드수, 유효기업공용카드수, 금월신용카드이용금액, 금월체크카드이용금액, 금월KB페이이용금액, 금월국세이용금액, 카드연체원금, 여신연체원금]
+    use_when: [기업고객의 월말 식별·대표자·한도·카드 보유·월 이용·연체·건전성 상태가 필요할 때, 기준년월 기준 최근 6개월 무실적 기업회원 명단을 조회할 때]
   - name: card_delinquency_daily
     korean_name: 카드연체일별
     physical_table: tddaa3l01
     grain: 기준년월일 × 회원일련번호 × 카드구분키번호
-    canonical_dimensions: [기준년월일, 회원일련번호, 카드구분키번호]
-    canonical_facts: [신용카드연체회차, 연체일수]
+    canonical_dimensions: [기준년월일, 회원일련번호, 카드구분키번호, 개인기업구분코드, 회원자산관리부점코드, 연체관리부점코드, 카드브랜드구분코드]
+    canonical_facts: [신용카드연체회차, 연체일수, 연체원금, 연체수수료, 연체료, 연체합계금액, 채권잔액]
     use_when: [일자 시점의 연체 회원·카드 현황을 조회할 때]
   - name: transaction_stop
     korean_name: 거래정지
@@ -9884,6 +9971,35 @@ semantic_attributes:
       - 현금카드결제기관구분코드는 계좌번호가 아니라 금융기관 코드다.
       - 보통예금·당좌예금 같은 계좌 종류 판정에 사용하지 않는다.
       - 은행별 가맹점 수는 COUNT(DISTINCT 가맹점번호)를 사용한다.
+  - name: card_brand
+    korean_name: 카드브랜드
+    domains: [customer_card_portfolio, card_usage, credit_risk]
+    business_definition: 카드가 소속된 국제·로컬 브랜드를 구분하는 코드 속성
+    aliases: [카드브랜드, 브랜드, 브랜드별, 카드 브랜드별, 로칼, 로컬, 국민, 마스터, 비자, JCB, UPI, 글로벌, 아맥스, Amex, 아멕스]
+    parameter_name: 카드브랜드구분코드
+    codebook_status: verified
+    value_semantics:
+      '1': 로칼(국민)
+      '2': 마스터
+      '3': 비자
+      '4': JCB
+      '5': UPI&글로벌
+      '6': 아맥스
+    value_semantics_provenance: user_provided_business_codebook
+    source_mappings:
+      - {entity: member_card, table: tbdaaat05, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: card_monthly_performance, table: tmdaa3e16, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: card_daily_snapshot, table: tddaa3d01, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: recruited_card_daily, table: tddaa3e21, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: existing_card_daily, table: tddaa3e23, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: card_delinquency_daily, table: tddaa3l01, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: domestic_sales, table: tbdaabt30, column: 카드브랜드구분코드, role: card_brand_code}
+      - {entity: overseas_sales, table: tbdaabt08, column: 카드브랜드구분코드, role: card_brand_code}
+    semantic_cautions:
+      - 카드 보유·좌수는 tbdaaat05, 이용금액은 tbdaabt30·tbdaabt08·tmdaa3e16의 브랜드 코드를 사용한다.
+      - 카드브랜드구분코드는 KB카드BC카드구분코드나 카드등급구분코드와 다른 분류축이므로 서로 대체하지 않는다.
+      - 질문이 열거한 브랜드명은 이 codebook의 코드값으로 변환하고 codebook에 없는 표현은 임의 코드로 매핑하지 않는다.
+      - 브랜드별 좌수는 회원일련번호×카드구분키번호 DISTINCT로 계산한다.
   - name: merchant_profile
     korean_name: 가맹점 기본정보
     domains: [merchant_sales]
@@ -9896,7 +10012,7 @@ semantic_attributes:
     semantic_cautions:
       - 가맹점번호식별자라는 컬럼은 없으며 실제 컬럼 가맹점번호를 사용한다.
       - 동일 컬럼을 중복 SELECT하지 않는다.
-      - 상세 목록은 요청 개수가 없으면 LIMIT 100을 적용한다.
+      - 상세 목록은 요청 개수가 없으면 LIMIT 1000000을 적용한다.
 
 canonical_metrics:
   - {name: 카드매출금액, domain: card_usage, expression: 'SUM(tbdaabt30."매출금액")', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [],
@@ -9951,7 +10067,7 @@ canonical_metrics:
       denominator: 요청 시작월부터 종료월까지 양 끝을 포함한 달력 월수
       missing_month: 0원으로 포함
       active_month_exception: 사용월 평균 또는 실적월 평균을 명시한 경우에만 실적이 있는 월수를 분모로 사용
-  - {name: 기업유효카드수, domain: corporate_sales_targeting, expression: 'COALESCE(tbdaa1d12."유효기업신용카드수", 0) + COALESCE(tbdaa1d12."유효기업체크카드수", 0)', source_table: tbdaa1d12, source_entity: corporate_customer_daily,
+  - {name: 기업유효카드수, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tbdaa1d12."유효기업신용카드수", 0) + COALESCE(tbdaa1d12."유효기업체크카드수", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily,
     default_time_dimension: 기준년월일, required_filters: [고객별 월 최신 기준년월일 1건], synonyms: [기업카드보유수, 유효기업카드수, 카드보유], unit: 매, aggregation_behavior: snapshot_dedup_then_aggregate}
   - {name: 기업한도소진율, domain: corporate_sales_targeting, expression: '1.0 - CAST(COALESCE(tbdaa1d12."기업총잔여한도금액", 0) AS DOUBLE) / NULLIF(CAST(tbdaa1d12."기업총한도금액" AS DOUBLE), 0.0)', source_table: tbdaa1d12,
     source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: ['tbdaa1d12."기업총한도금액" > 0', 고객별 월 최신 기준년월일 1건], synonyms: [한도소진율, 한도사용률, 한도사용비율], unit: '%',
@@ -10113,6 +10229,161 @@ canonical_metrics:
     synonyms: [최근 폐업 가맹점 수, 최근 6개월 폐업 가맹점 수, 최근 6달 폐업 점포 수, 최근 1년 폐업 가맹점 수, 지난 12개월 폐업 점포 수, 일년 이내 문 닫은 가맹점 개수]
     unit: 개
     aggregation_behavior: first_event_then_distinct_count
+  - name: 카드월일시불이용금액
+    domain: card_usage
+    business_definition: 법인·기업 카드의 월별 일시불 이용금액 합계
+    expression: SUM(COALESCE(tmdaa3e16."금월일시불이용금액", 0))
+    source_table: tmdaa3e16
+    source_entity: card_monthly_performance
+    default_time_dimension: 기준년월
+    required_filters:
+      - tmdaa3e16."개인기업구분코드" = '2'
+      - 질문의 기준년월로 tmdaa3e16."기준년월" 제한
+    synonyms: [금월일시불이용금액, 월일시불이용금액, 일시불이용금액]
+    unit: 원
+    aggregation_behavior: additive_at_declared_month_grain
+  - name: 카드월이용합계건수
+    domain: card_usage
+    business_definition: 법인·기업 카드의 월별 이용 합계 건수
+    expression: SUM(COALESCE(tmdaa3e16."금월이용합계건수", 0))
+    source_table: tmdaa3e16
+    source_entity: card_monthly_performance
+    default_time_dimension: 기준년월
+    required_filters:
+      - tmdaa3e16."개인기업구분코드" = '2'
+      - 질문의 기준년월로 tmdaa3e16."기준년월" 제한
+    synonyms: [금월이용합계건수, 월이용합계건수, 카드이용건수]
+    unit: 건
+    aggregation_behavior: additive_at_declared_month_grain
+  - name: 카드월일시불이용건수
+    domain: card_usage
+    business_definition: 법인·기업 카드의 월별 일시불 이용 건수
+    expression: SUM(COALESCE(tmdaa3e16."금월일시불이용건수", 0))
+    source_table: tmdaa3e16
+    source_entity: card_monthly_performance
+    default_time_dimension: 기준년월
+    required_filters:
+      - tmdaa3e16."개인기업구분코드" = '2'
+      - 질문의 기준년월로 tmdaa3e16."기준년월" 제한
+    synonyms: [금월일시불이용건수, 월일시불이용건수, 일시불이용건수]
+    unit: 건
+    aggregation_behavior: additive_at_declared_month_grain
+  - name: 기업월국세이용금액
+    domain: corporate_sales_targeting
+    business_definition: 지정 월 고객별 최신 기업 snapshot의 국세 이용금액 합계
+    expression: SUM(COALESCE(tbdaa1d12."금월국세이용금액", 0))
+    source_table: tbdaa1d12
+    source_entity: corporate_customer_daily
+    default_time_dimension: 기준년월일
+    required_filters:
+      - 질문의 기준월 안에서 고객식별자별 기준년월일 DESC ROW_NUMBER() = 1
+    synonyms: [금월국세이용금액, 월국세이용금액, 국세이용금액]
+    unit: 원
+    aggregation_behavior: snapshot_dedup_then_aggregate
+  - name: 기업월KB페이이용금액
+    domain: corporate_sales_targeting
+    business_definition: 지정 월 고객별 최신 기업 snapshot의 KB페이 이용금액 합계
+    expression: SUM(COALESCE(tbdaa1d12."금월KB페이이용금액", 0))
+    source_table: tbdaa1d12
+    source_entity: corporate_customer_daily
+    default_time_dimension: 기준년월일
+    required_filters:
+      - 질문의 기준월 안에서 고객식별자별 기준년월일 DESC ROW_NUMBER() = 1
+    synonyms: [금월KB페이이용금액, 월KB페이이용금액, KB페이이용금액]
+    unit: 원
+    aggregation_behavior: snapshot_dedup_then_aggregate
+  - name: 가맹점월매출건수
+    domain: merchant_sales
+    business_definition: 월 가맹점 일시불 매출건수와 할부 매출건수의 합계
+    expression: SUM(COALESCE(tmdaa5e11."가맹점일시불매출건수", 0) + COALESCE(tmdaa5e11."가맹점할부매출건수", 0))
+    source_table: tmdaa5e11
+    source_entity: merchant_monthly_performance
+    default_time_dimension: 기준년월
+    required_filters:
+      - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+    synonyms: [가맹점매출건수, 가맹점 매출 건수, 월가맹점매출건수]
+    unit: 건
+    aggregation_behavior: additive_at_declared_month_grain
+  - name: 가맹점월일시불매출금액
+    domain: merchant_sales
+    business_definition: 월 가맹점 일시불 매출금액 합계
+    expression: SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0))
+    source_table: tmdaa5e11
+    source_entity: merchant_monthly_performance
+    default_time_dimension: 기준년월
+    required_filters:
+      - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+    synonyms: [가맹점일시불매출금액, 가맹점 일시불 매출액, 일시불매출금액]
+    unit: 원
+    aggregation_behavior: additive_at_declared_month_grain
+  - name: 연체원금
+    domain: credit_risk
+    business_definition: 기준일 법인·기업 카드 연체원금 합계
+    expression: SUM(COALESCE(tddaa3l01."연체원금", 0))
+    source_table: tddaa3l01
+    source_entity: card_delinquency_daily
+    default_time_dimension: 기준년월일
+    required_filters: ['tddaa3l01."기준년월일" = 질문에 명시된 단일 기준년월일', 'tddaa3l01."개인기업구분코드" = ''2''']
+    synonyms: [카드연체원금, 연체 원금]
+    unit: 원
+    aggregation_behavior: semi_additive_single_snapshot_then_aggregate
+  - name: 연체수수료
+    domain: credit_risk
+    business_definition: 기준일 법인·기업 카드 연체수수료 합계
+    expression: SUM(COALESCE(tddaa3l01."연체수수료", 0))
+    source_table: tddaa3l01
+    source_entity: card_delinquency_daily
+    default_time_dimension: 기준년월일
+    required_filters: ['tddaa3l01."기준년월일" = 질문에 명시된 단일 기준년월일', 'tddaa3l01."개인기업구분코드" = ''2''']
+    synonyms: [연체 수수료]
+    unit: 원
+    aggregation_behavior: semi_additive_single_snapshot_then_aggregate
+  - name: 연체료
+    domain: credit_risk
+    business_definition: 기준일 법인·기업 카드 연체료 합계
+    expression: SUM(COALESCE(tddaa3l01."연체료", 0))
+    source_table: tddaa3l01
+    source_entity: card_delinquency_daily
+    default_time_dimension: 기준년월일
+    required_filters: ['tddaa3l01."기준년월일" = 질문에 명시된 단일 기준년월일', 'tddaa3l01."개인기업구분코드" = ''2''']
+    synonyms: [카드연체료, 연체 비용]
+    unit: 원
+    aggregation_behavior: semi_additive_single_snapshot_then_aggregate
+  - name: 연체합계금액
+    domain: credit_risk
+    business_definition: 기준일 법인·기업 카드 연체합계금액 합계
+    expression: SUM(COALESCE(tddaa3l01."연체합계금액", 0))
+    source_table: tddaa3l01
+    source_entity: card_delinquency_daily
+    default_time_dimension: 기준년월일
+    required_filters: ['tddaa3l01."기준년월일" = 질문에 명시된 단일 기준년월일', 'tddaa3l01."개인기업구분코드" = ''2''']
+    synonyms: [연체합계, 총연체금액, 연체 총액]
+    unit: 원
+    aggregation_behavior: semi_additive_single_snapshot_then_aggregate
+  - name: 채권잔액
+    domain: credit_risk
+    business_definition: 기준일 법인·기업 카드 채권잔액 합계
+    expression: SUM(COALESCE(tddaa3l01."채권잔액", 0))
+    source_table: tddaa3l01
+    source_entity: card_delinquency_daily
+    default_time_dimension: 기준년월일
+    required_filters: ['tddaa3l01."기준년월일" = 질문에 명시된 단일 기준년월일', 'tddaa3l01."개인기업구분코드" = ''2''']
+    synonyms: [채권 잔액, 카드채권잔액]
+    unit: 원
+    aggregation_behavior: semi_additive_single_snapshot_then_aggregate
+  - name: 회원당평균채권잔액
+    domain: credit_risk
+    business_definition: 기준일 채권잔액 합계를 고유 회원 수로 나눈 회원당 평균 채권잔액
+    expression: SUM(COALESCE(tddaa3l01."채권잔액", 0)) / NULLIF(CAST(COUNT(DISTINCT tddaa3l01."회원일련번호") AS DOUBLE), 0.0)
+    numerator_expression: SUM(COALESCE(tddaa3l01."채권잔액", 0))
+    denominator_expression: NULLIF(CAST(COUNT(DISTINCT tddaa3l01."회원일련번호") AS DOUBLE), 0.0)
+    source_table: tddaa3l01
+    source_entity: card_delinquency_daily
+    default_time_dimension: 기준년월일
+    required_filters: ['tddaa3l01."기준년월일" = 질문에 명시된 단일 기준년월일', 'tddaa3l01."개인기업구분코드" = ''2''']
+    synonyms: [회원당 평균 채권잔액, 회원별 평균 채권잔액, 평균 채권잔액]
+    unit: 원/명
+    aggregation_behavior: semi_additive_single_snapshot_ratio
 
 semantic_query_contracts:
   - name: current_enterprise_size_customer_list
@@ -10173,7 +10444,7 @@ semantic_query_contracts:
     routing_strength: high
     support_status: supported
     table_selection_mode: authoritative
-    description: 입력한 기준년월일 현재 유효 기업카드를 보유하지만 최근 지정 개월 동안 신용·체크 이용이 전혀 없는 기업회원 명단을 tmdaa1d12에서 반환한다.
+    description: 입력한 기준년월에 유효 기업카드를 보유하지만 기준월을 포함한 최근 지정 개월 동안 신용·체크 이용이 전혀 없는 기업회원 명단을 tmdaa1d12에서 반환한다.
     match:
       required:
         - [기업카드, 법인카드]
@@ -10186,16 +10457,13 @@ semantic_query_contracts:
       - KB카드 기업카드 보유회원 중에 2026년 7월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘
       - KB카드 기업카드 보유회원 중에 6개월 무실적인 기업 회원 명단을 알려줘
     source_tables: [tmdaa1d12]
-    metric_names: [기업월카드이용금액, 기업유효카드수]
-    result_grain: 고객식별자 1행
-    dimensions: [고객식별자, 사업자등록번호, 기업명]
+    metric_names: []
+    result_grain: 기업회원 1행
+    dimensions: [사업자등록번호, 기업명]
     time_policy:
-      required_parameter: 기준년월일(YYYYMMDD); 질문에 없으면 추가 입력 요청
-      month_only_input: YYYY년 M월은 해당 월 말일로 변환
-      current_snapshot: 입력 기준년월일이 속한 월의 고객별 최신 기준년월일 1건
-      usage_window: 입력 기준년월일이 속한 월을 포함한 최근 N개월의 고객×월 최신행
-    deduplication:
-      snapshot: 고객식별자×SUBSTR(기준년월일,1,6)별 기준년월일 DESC ROW_NUMBER() = 1
+      required_parameter: 기준년월(YYYYMM); 질문에 없으면 추가 입력 요청
+      current_snapshot: 입력 기준년월의 월말 스냅샷
+      usage_window: 입력 기준년월을 포함한 최근 N개월
     filters:
       - 현재 유효기업신용카드수 + 유효기업체크카드수 > 0
       - 조회기간 신용카드이용금액 + 체크카드이용금액 > 0인 월이 없음
@@ -10350,10 +10618,9 @@ semantic_query_contracts:
       monthly_average: 기간 신용+체크 이용금액 합계 / 요청 기간 달력 월수
   - name: high_sales_corporate_merchant_without_corporate_card
     domain: corporate_sales_targeting
-    reference_query: merchant_corporate_sales_target_no_corporate_card
-    execution_mode: semantic_generation
+    verified_query: merchant_corporate_sales_target_no_corporate_card
     routing_strength: high
-    support_status: generative
+    support_status: supported
     table_selection_mode: authoritative
     description: 기준월 월매출 하한을 충족하는 정상 법인 가맹점 중 유효 기업 신용·체크카드가 모두 없는 기업 영업대상을 반환한다.
     match:
@@ -10706,7 +10973,7 @@ semantic_query_contracts:
       - tbdaaat05.개인기업구분코드 = '2'
       - tbdaaat05.유효신용카드여부 = '1' OR tbdaaat05.유효체크카드여부 = '1'
     codebook:
-      카드브랜드구분코드: {'1': 로칼(국민), '2': 마스터, '3': 비자, '4': JCB}
+      카드브랜드구분코드: {'1': 로칼(국민), '2': 마스터, '3': 비자, '4': JCB, '5': UPI&글로벌, '6': 아맥스}
     deduplication: 회원일련번호×카드구분키번호 DISTINCT
     result_fields: [조회기준일, 카드브랜드구분코드, 카드브랜드명, 유효좌수]
   - name: corporate_cards_issued_then_cancelled_count
@@ -10855,17 +11122,20 @@ semantic_query_contracts:
     routing_strength: high
     support_status: supported
     table_selection_mode: authoritative
-    description: 지정 월과 가맹점·브랜드 검색명에 해당하는 개별 가맹점번호별 월 매출액을 일시불+할부로 계산한다.
+    description: 지정 기준월과 가맹점·브랜드 검색명에 해당하는 정상 가맹점별 최근 3개월 매출 원천값을 반환한다.
     match:
       required:
         - [매출, 매출액, 매출금액]
         - [가맹점주, 가맹점 주, 점주, 가맹점별, 각 가맹점, 점포별, 매장별]
         - [기준, 월]
+        - [최근 3개월, 최근3개월, 3개월]
       optional:
         - [가맹점, 브랜드]
       excluded: [대손, 충당금, 계좌, 결제은행, 기업카드 이용금액, 법인카드 이용금액]
-    source_tables: [tmdaa5e11]
-    metric_names: [가맹점월매출금액]
+    examples:
+      - 노랑통닭 가맹점주의 2026년 6월 기준 최근 3개월 가맹점 매출액 알려줘
+    source_tables: [tmdaa5e11, tmdaa5d01]
+    metric_names: []
     semantic_attributes: [merchant_search_name, merchant_identifier]
     result_grain: 기준년월 × 가맹점번호
     dimensions: [기준년월, 가맹점번호, 가맹점명]
@@ -10882,8 +11152,11 @@ semantic_query_contracts:
       required: true
       YYMM: 2000년대 YYYYMM으로 확장
     calculation:
-      merchant_month_sales: COALESCE(가맹점일시불매출금액, 0) + COALESCE(가맹점할부매출금액, 0)
-    result_fields: [기준년월, 가맹점번호, 가맹점명, 당월매출금액]
+      merchant_recent_3_month_sales: tmdaa5e11.최근3개월가맹점매출금액
+    filters:
+      - tmdaa5e11.가맹점상태구분코드 = '1'
+      - tbdaadt01.가맹점명 contains 가맹점명
+    result_fields: [기준년월, 가맹점번호, 가맹점명, 최근3개월가맹점매출금액]
   - name: brand_merchant_corporate_card_customer_list
     domain: corporate_sales_targeting
     verified_query: brand_merchants_with_corporate_card
@@ -11142,6 +11415,206 @@ semantic_query_contracts:
       - 현재 30개 테이블에는 보통·당좌를 구분하는 가맹점 계좌 종류 컬럼과 당좌 코드 매핑이 없음
       - 현금카드결제기관구분코드는 대금지급 금융기관 코드이므로 당좌계좌 판정에 사용 금지
       - 원천 컬럼과 코드북이 추가되기 전에는 SQL을 생성하지 말고 필요한 데이터 정의를 안내
+  - name: monthly_card_metric_by_card_attribute
+    domain: card_usage
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 법인 카드월실적에서 상품·등급·브랜드·회원자격 축별 월 이용금액 또는 이용건수를 집계한다.
+    match:
+      required:
+        - [상품중분류, 카드등급그룹, 카드브랜드, 회원자격]
+        - [금월일시불이용금액, 금월이용합계건수, 금월일시불이용건수]
+      optional:
+        - [전체 평균, 평균보다 높은, 이상, 교차, 순위, 상위]
+      excluded: [개인카드, 개인 카드, 개인회원, 개인 회원, 개인고객, 개인 고객]
+    examples:
+      - 2025년 9월 금월일시불이용금액이 전체 평균보다 높은 상품중분류만 골라줘
+      - 2025년 11월 카드등급그룹별 금월이용합계건수가 100건 이상인 것만 보여줘
+      - 2025년 8월 카드브랜드와 회원자격을 교차해서 금월일시불이용건수를 보여줘
+    reference_golden_cases: [cs-golden-v2-0276, cs-golden-v2-0272, cs-golden-v2-0268]
+    source_tables: [tmdaa3e16]
+    metric_names: [카드월일시불이용금액, 카드월이용합계건수, 카드월일시불이용건수]
+    result_grain: 기준년월 × 질문에서 요청한 카드 분류축 조합
+    dimensions: [기준년월, 상품중분류구분코드, 카드등급그룹코드, 카드브랜드구분코드, 회원자격코드]
+    time_policy:
+      period: 질문의 기준년월과 일치하는 tmdaa3e16.기준년월
+    filters:
+      - tmdaa3e16."개인기업구분코드" = '2'
+    calculation:
+      group_aggregate: 요청한 분류 코드로 GROUP BY 후 canonical metric을 SUM
+      above_average: 분류별 집계를 CTE로 만든 뒤 집계값이 분류별 전체 평균보다 큰 행만 선택
+      threshold: 집계 조건은 WHERE가 아니라 HAVING에 적용
+      cross: 요청한 두 분류 코드를 모두 GROUP BY
+    ambiguity_policy:
+      - 상품중분류·카드등급그룹·카드브랜드·회원자격은 tmdaa3e16의 대응 구분코드를 직접 사용한다.
+      - 분류명 codebook이 없는 경우 코드를 결과에 표시하고 이름을 임의 생성하지 않는다.
+  - name: monthly_corporate_metric_by_customer_attribute
+    domain: corporate_sales_targeting
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    prompt_column_budget: 20
+    description: 기업고객 일별 snapshot을 월 고객 단위로 중복 제거한 뒤 기업 분류축별 카드·KB페이·국세 실적을 집계한다.
+    match:
+      required:
+        - [표준산업분류, 그룹최종평가신용등급, 소매비소매, 그룹최고고객, 사업자자산건전성, 카드결제기관]
+        - [유효기업카드수, 기업카드이용금액, 금월국세이용금액, 국세이용금액, 금월KB페이이용금액, KB페이이용금액]
+      optional:
+        - [전체 평균, 평균보다 높은, 이상, 교차, 순위, 상위]
+    examples:
+      - 2025년 6월 표준산업분류별 유효기업카드수를 알려줘
+      - 표준산업분류별로 2025년 9월 기업카드이용금액을 보여줘
+      - 2026년 5월 그룹 최종평가 신용등급과 표준산업분류를 교차해서 금월국세이용금액을 보여줘
+      - 2025년 8월 소매·비소매 구분과 그룹 최고고객 구분을 교차해서 기업카드이용금액을 보여줘
+      - 2026년 6월 금월KB페이이용금액이 전체 평균보다 높은 사업자 자산건전성만 골라줘
+      - 2025년 5월 소매·비소매 구분별 유효기업카드수가 500 이상인 것만 보여줘
+      - 2025년 3월 카드결제기관별 유효기업카드수를 알려줘
+    reference_golden_cases: [cs-golden-v2-0277, cs-golden-v2-0241, cs-golden-v2-0273, cs-golden-v2-0269, cs-golden-v2-0281, cs-golden-v2-0293, cs-golden-v2-0367]
+    source_tables: [tbdaa1d12]
+    metric_names: [기업유효카드수, 기업월카드이용금액, 기업월국세이용금액, 기업월KB페이이용금액]
+    result_grain: 기준년월 × 질문에서 요청한 기업 분류축 조합
+    dimensions: [기준년월일, 표준산업분류코드, 그룹최종평가신용등급코드, 소매비소매구분코드, 그룹최고고객구분코드, 사업자자산건전성구분코드, 카드결제기관구분코드]
+    time_policy:
+      period: 질문의 기준월 1일부터 월말일까지
+    deduplication:
+      snapshot: 기준월 안에서 고객식별자별 기준년월일 DESC ROW_NUMBER() = 1
+    calculation:
+      유효기업카드수: SUM(COALESCE(유효기업신용카드수, 0) + COALESCE(유효기업체크카드수, 0))
+      기업카드이용금액: SUM(COALESCE(금월신용카드이용금액, 0) + COALESCE(금월체크카드이용금액, 0))
+      group_aggregate: 고객별 최신 snapshot을 요청한 분류 코드로 GROUP BY
+      above_average: 분류별 집계를 CTE로 만든 뒤 집계값이 분류별 전체 평균보다 큰 행만 선택
+      threshold: 집계 조건은 WHERE가 아니라 HAVING에 적용
+      cross: 요청한 두 분류 코드를 모두 GROUP BY
+    ambiguity_policy:
+      - 기업 분류명 codebook이 없는 경우 대응 코드를 결과에 표시하고 이름을 임의 생성하지 않는다.
+      - 일별 snapshot을 그대로 더해 고객 실적을 중복 합산하지 않는다.
+  - name: merchant_monthly_sales_count_above_average_by_industry
+    domain: merchant_sales
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 월 가맹점 매출건수를 업종명별로 집계하고 업종별 전체 평균을 초과하는 그룹을 반환한다.
+    match:
+      required:
+        - [가맹점업종, 가맹점 업종, 업종명]
+        - [가맹점매출건수, 가맹점 매출 건수]
+        - [전체 평균, 평균보다 높은, 평균 초과]
+    examples:
+      - 2026년 3월 가맹점매출건수가 전체 평균보다 높은 가맹점 업종명만 골라줘
+    reference_golden_cases: [cs-golden-v2-0267]
+    source_tables: [tmdaa5e11, tbdaadb17]
+    require_all_selected_tables: true
+    metric_names: [가맹점월매출건수]
+    result_grain: 기준년월 × 가맹점업종명
+    dimensions: [기준년월, 가맹점업종코드, 가맹점업종명]
+    time_policy:
+      period: 질문의 기준년월과 일치하는 tmdaa5e11.기준년월
+    calculation:
+      merchant_sales_count: SUM(COALESCE(가맹점일시불매출건수, 0) + COALESCE(가맹점할부매출건수, 0))
+      above_average: 업종명별 집계를 CTE로 만든 뒤 그 집계값의 전체 평균보다 큰 업종만 선택
+    ambiguity_policy:
+      - 가맹점업종명 표시는 tmdaa5e11.가맹점업종코드와 tbdaadb17.가맹점업종코드를 조인한다.
+      - 전표 건수를 COUNT하지 않고 시맨틱 지표의 일시불·할부 매출건수를 합산한다.
+  - name: merchant_monthly_lumpsum_sales_share_by_status
+    domain: merchant_sales
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 월 가맹점 일시불 매출금액을 가맹점상태별로 집계하고 전체 대비 구성비를 계산한다.
+    match:
+      required:
+        - [가맹점상태, 가맹점 상태]
+        - [가맹점일시불매출금액, 가맹점 일시불 매출금액, 가맹점 일시불 매출액]
+        - [구성비, 비중]
+    examples:
+      - 2025년 9월 가맹점상태별 가맹점일시불매출금액 구성비를 알려줘
+    reference_golden_cases: [cs-golden-v2-0345]
+    source_tables: [tmdaa5e11]
+    metric_names: [가맹점월일시불매출금액]
+    result_grain: 기준년월 × 가맹점상태구분코드
+    dimensions: [기준년월, 가맹점상태구분코드]
+    time_policy:
+      period: 질문의 기준년월과 일치하는 tmdaa5e11.기준년월
+    calculation:
+      status_amount: SUM(COALESCE(가맹점일시불매출금액, 0))
+      share_percent: 상태별 합계 / NULLIF(모든 상태 합계, 0) × 100
+    ambiguity_policy:
+      - 가맹점상태명 codebook이 없는 경우 가맹점상태구분코드를 표시하고 이름을 임의 생성하지 않는다.
+  - name: daily_delinquency_metric_by_dimension
+    domain: credit_risk
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 기준일 카드연체 snapshot에서 자산관리부점·연체관리부점·카드브랜드별 연체 및 채권 지표를 직접 집계한다.
+    match:
+      required:
+        - [회원자산관리부점, 연체관리부점, 카드브랜드]
+        - [연체원금, 연체수수료, 연체합계금액, 채권잔액, 연체료]
+        - [일 기준]
+      optional:
+        - [비중, 구성비, 회원당 평균, 순위, 상위]
+      excluded: [개인카드, 개인 카드, 개인회원, 개인 회원, 개인고객, 개인 고객]
+    examples:
+      - 2026년 4월 30일 기준 회원자산관리부점별 연체원금 순위를 5위까지 매겨줘
+      - 2026년 5월 31일 기준 연체관리부점별 연체원금을 알려줘
+      - 2026년 3월 31일 기준 연체수수료를 카드브랜드별 비중으로 나눠서 보여줘
+      - 2025년 9월 30일 기준 연체합계금액을 회원자산관리부점별 비중으로 나눠서 보여줘
+      - 2026년 6월 30일 기준 회원자산관리부점별 회원당 평균 채권잔액을 알려줘
+      - 2026년 4월 30일 기준 연체관리부점별 연체료 상위 50개를 알려줘
+      - 2026년 3월 31일 기준 연체료를 회원자산관리부점 기준으로 집계해줘
+    reference_golden_cases: [cs-golden-v2-0278, cs-golden-v2-0248, cs-golden-v2-0282, cs-golden-v2-0294, cs-golden-v2-0308, cs-golden-v2-0313, cs-golden-v2-0368]
+    source_tables: [tddaa3l01]
+    metric_names: [연체원금, 연체수수료, 연체료, 연체합계금액, 채권잔액, 회원당평균채권잔액]
+    result_grain: 기준년월일 × 질문에서 요청한 연체 분류축
+    dimensions: [기준년월일, 회원자산관리부점코드, 연체관리부점코드, 카드브랜드구분코드]
+    time_policy:
+      period: 질문의 기준년월일과 일치하는 tddaa3l01.기준년월일
+    filters:
+      - tddaa3l01."개인기업구분코드" = '2'
+    calculation:
+      group_aggregate: 요청한 분류 코드로 GROUP BY 후 canonical metric을 집계
+      share_percent: 분류별 합계 / NULLIF(모든 분류 합계, 0) × 100
+      member_average: SUM(채권잔액) / NULLIF(COUNT(DISTINCT 회원일련번호), 0)
+      ranked_limit: 순위·N위까지 매겨 표현은 RANK() OVER (ORDER BY 집계값 DESC) 순위 컬럼을 만들고 순위 오름차순 정렬 후 LIMIT N 적용
+      top_n: 상위 N개 표현은 집계값 내림차순 ORDER BY 후 LIMIT N 적용
+    ambiguity_policy:
+      - 회원자산관리부점코드와 연체관리부점코드는 tddaa3l01에 직접 존재하므로 코드별 집계에는 담당직원·관계관리 테이블을 조인하지 않는다.
+      - 질문이 부점명을 요구하면 유효기간이 검증된 부점 코드명 마스터가 필요하며, 없으면 코드를 표시하고 이름을 임의 생성하지 않는다.
+      - 카드브랜드명은 검증된 card_brand codebook으로만 변환한다.
+  - name: current_valid_credit_card_count_by_grade
+    domain: customer_card_portfolio
+    execution_mode: semantic_generation
+    routing_strength: high
+    support_status: generative
+    table_selection_mode: authoritative
+    description: 현재 회원 마스터에서 카드등급별 유효신용카드수를 합산하고 상위 N개를 반환한다.
+    match:
+      required:
+        - [카드등급]
+        - [유효신용카드수, 유효 신용카드 수]
+        - [상위, 가장 많은, 순위]
+      excluded: [카드등급그룹, 개인카드, 개인 카드, 개인회원, 개인 회원, 개인고객, 개인 고객]
+    examples:
+      - 현재 기준 유효신용카드수가 가장 많은 카드등급 상위 10개를 뽑아줘
+    reference_golden_cases: [cs-golden-v2-0304]
+    source_tables: [tbdaaat03]
+    metric_names: [유효신용카드수]
+    result_grain: 카드등급구분코드별 1행
+    dimensions: [카드등급구분코드]
+    filters:
+      - tbdaaat03."개인기업구분코드" = '2'
+    calculation:
+      grade_count: SUM(COALESCE(유효신용카드수, 0))
+      top_n: 유효신용카드수 내림차순 정렬 후 질문의 N을 LIMIT으로 적용
+    ambiguity_policy:
+      - 카드등급은 카드등급그룹과 다른 축이다.
+      - 카드등급명 codebook이 없는 경우 카드등급구분코드를 표시하고 이름을 임의 생성하지 않는다.
 
 semantic_join_graph:
   safe_paths:
@@ -11165,6 +11638,8 @@ semantic_join_graph:
         가맹점명과 월 매출·수수료 결합], caution: "tmdaa5e11 기준년월을 반드시 제한", from_table: tbdaadt01, to_table: tmdaa5e11, confidence: curated, provenance: workbook_grain_and_reference_queries}
     - {name: merchant_to_industry, from_entity: merchant, to_entity: merchant_industry, join_type: many_to_one, sql: 'tbdaadt01."가맹점업종코드" = tbdaadb17."가맹점업종코드"', use_when: [업종명·업종분류별
             집계], caution: "코드 유효기간 중복 여부 확인", from_table: tbdaadt01, to_table: tbdaadb17, confidence: curated, provenance: workbook_grain_and_reference_queries}
+    - {name: merchant_monthly_performance_to_industry, from_entity: merchant_monthly_performance, to_entity: merchant_industry, join_type: many_to_one, sql: 'tmdaa5e11."가맹점업종코드" = tbdaadb17."가맹점업종코드"', use_when: [월 가맹점 매출을 업종명·업종분류별로 집계], caution: "업종코드 유효기간 중복 여부 확인", from_table: tmdaa5e11,
+      to_table: tbdaadb17, confidence: curated, provenance: workbook_grain_and_reference_queries}
     - {name: merchant_enrichment_to_monthly_performance, from_entity: merchant_monthly_enrichment, to_entity: merchant_monthly_performance, join_type: one_to_one, sql: 'tmdaaus01."기준년월"
         = tmdaa5e11."기준년월" AND tmdaaus01."가맹점번호" = tmdaa5e11."가맹점번호"', use_when: [법인사업자·기업카드 보유 조건과 실제 월 매출 결합], caution: "tmdaaus01은 같은 월·가맹점의 기준년월일 최신행 1건으로 먼저 축소", from_table: tmdaaus01,
       to_table: tmdaa5e11, confidence: curated, provenance: workbook_grain_and_reference_queries}
@@ -11425,10 +11900,10 @@ glossary:
     aliases: ["기준일", "일자", "날짜", "기준일자"]
     sql_hint: "일자 조건은 \"기준년월일\" = '20251231' 형식을 사용한다."
   - term: "6무"
-    canonical: "기준월 유효 기업 신용/체크카드 수 > 0 이고, 기준월 포함 최근 6개월 월 최신 스냅샷의 신용+체크 이용금액이 모두 0"
+    canonical: "기준월 유효 기업 신용/체크카드 수 > 0 이고, 기준월 포함 최근 6개월 신용+체크 이용금액이 모두 0"
     description: "기업카드는 보유하지만 최근 6개월 동안 기업 신용·체크카드 이용 실적이 없는 신규 영업 대상군."
     aliases: ["6개월 무실적", "최근 6개월 미이용", "기업카드 무실적"]
-    sql_hint: "tmdaa1d12를 고객×파생 기준년월별 최신행으로 축소한 뒤 입력 기준년월일의 보유 조건과 6개월 NOT EXISTS 이용이력 조건을 함께 적용한다. 기준년월일이 없으면 입력을 요청한다."
+    sql_hint: "tmdaa1d12에서 입력 기준년월의 보유 조건과 기준월 포함 6개월 NOT EXISTS 이용이력 조건을 함께 적용한다. 기준년월이 없으면 입력을 요청한다."
   - term: "유실적"
     canonical: "지정 기준월의 고객별 최신 스냅샷에서 금월신용카드이용금액 + 금월체크카드이용금액 > 0"
     description: "법인회원에게 카드 이용 실적이 있다는 뜻이다. 업체 수는 고객별 월 최신행으로 중복을 제거한 뒤 고객식별자를 고유 집계한다."
@@ -11621,16 +12096,15 @@ query_references:
       - "최근 6개월 무실적 기업회원"
     primary_table: tmdaa1d12
     join_tables: []
-    join_rule: "tmdaa1d12를 SUBSTR(기준년월일,1,6)과 고객식별자별 최신 기준년월일 1건으로 축소해 입력 기준일의 보유 상태와 최근 6개월 이용 이력을 함께 판단한다."
+    join_rule: "tmdaa1d12에서 입력 기준년월의 보유 상태를 확인하고, 같은 고객의 기준월 포함 최근 6개월 이용 이력이 존재하지 않는지 판단한다."
     recommended_columns:
-      파생월: "SUBSTR(\"기준년월일\", 1, 6)"
+      기준월: "\"기준년월\""
       카드보유: "COALESCE(\"유효기업신용카드수\",0) + COALESCE(\"유효기업체크카드수\",0) > 0"
       월이용금액: "COALESCE(\"금월신용카드이용금액\",0) + COALESCE(\"금월체크카드이용금액\",0)"
     rules:
-      - "질문에 기준년월일이 없으면 SQL을 실행하지 않고 기준년월일(YYYYMMDD)을 추가 입력받는다."
-      - "YYYY년 M월만 주어지면 해당 월 말일을 기준년월일로 사용한다."
+      - "질문에 기준년월이 없으면 SQL을 실행하지 않고 기준년월(YYYYMM)을 추가 입력받는다."
+      - "YYYY년 M월은 YYYYMM 기준년월로 변환한다."
       - "기준월 포함 최근 6개월은 date_parse/date_add/date_format으로 계산하고 YYYYMM을 임의 하드코딩하지 않는다."
-      - "일 스냅샷을 그대로 합산하지 말고 고객×월별 ROW_NUMBER() = 1을 먼저 적용한다."
       - "현재 카드 보유 기업 중 기간 내 이용금액이 0보다 큰 월이 전혀 없는 고객만 반환한다."
 
     verified_query: corporate_card_active_no_usage_members

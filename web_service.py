@@ -104,6 +104,7 @@ MANAGED_SCOPE_TEMPLATE_PATH = (
 
 NODE_LABELS = {
     "classify_question": ("question_analysis", "질문 분석", "업무 범위와 질문 유형을 분류했습니다."),
+    "refine_search_query": ("query_refinement", "질의 정제", "검색 후보 탐색을 위한 내부 질의를 정제했습니다."),
     "prepare_direct_sql": ("sql_generation", "입력 SQL 준비", "사용자가 입력한 SQL을 읽기 전용 검증 경로로 준비했습니다."),
     "route_domain": ("domain_routing", "도메인 라우팅", "질문에 맞는 업무 도메인을 선택했습니다."),
     "select_tool": ("capability_selection", "Capability 선택", "사용 가능한 Tool과 검증 쿼리 경로를 판단했습니다."),
@@ -1423,6 +1424,9 @@ def _result_payload(
     top_k: int,
     source_override: str | None = None,
 ) -> dict[str, Any]:
+    original_question = str(result.get("original_question") or result.get("question") or "")
+    if original_question:
+        result["original_question"] = original_question
     requires_params = result.get("param_stage") == "need_params"
     if requires_params:
         status = "requires_params"
@@ -1463,6 +1467,7 @@ def _result_payload(
         "status": status,
         "result_id": result_id,
         "question": result.get("question", ""),
+        "original_question": original_question,
         "followup_question": result.get("followup_question", ""),
         "question_type": result.get("question_type", ""),
         "source": _source_label(result, source_override),
@@ -1507,6 +1512,7 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
         missing_params=data.get("missing_params"),
         continuation=data.get("continuation"),
         result_id=data.get("result_id"),
+        original_question=data.get("original_question"),
         source=data.get("source"),
         sql=data.get("sql"),
         columns=data.get("columns"),
@@ -1570,6 +1576,8 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "status": "complete",
         "result_id": result_id,
         "question": result.get("question", ""),
+        "original_question": result.get("original_question", result.get("question", ""))
+        or (fallback_message or {}).get("original_question", ""),
         "followup_question": result.get("followup_question", ""),
         "question_type": result.get("question_type", ""),
         "source": _source_label(result) if result else (fallback_message or {}).get("source", ""),
@@ -1630,7 +1638,8 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
 
 _NEXT_PROGRESS_STEP = {
     "": "classify_question",
-    "classify_question": "route_domain",
+    "classify_question": "refine_search_query",
+    "refine_search_query": "route_domain",
     "prepare_direct_sql": "validate_sql",
     "route_domain": "select_tool",
     "select_tool": "match_verified_query",
@@ -1941,7 +1950,7 @@ def _classify_followup_intent(question: str, columns: list[Any] | None = None, r
 
 
 _ENTITY_ONLY_FOLLOWUP_RE = re.compile(
-    r"^\s*(?:그럼|그러면|그렇다면|이번에는|이번엔)\s+"
+    r"^\s*(?:(?:그럼|그러면|그렇다면|이번에는|이번엔)\s+)?"
     r"(?P<entity>.+?)(?:"
     r"(?:은|는|이|가)\s*[?!.]*"
     r"|(?:은|는|이|가)?\s*(?:어때(?:요)?|어떻게\s*돼(?:요)?|어떤가요?)\s*[?!.]*"
@@ -1970,6 +1979,7 @@ _NON_ENTITY_FOLLOWUP_SUBJECTS = {
     "목록",
     "테이블",
     "컬럼",
+    "파이",
 }
 
 
@@ -2031,7 +2041,7 @@ def _fallback_followup_context(
     plan: dict[str, Any],
 ) -> dict[str, Any]:
     entity_change = _entity_only_followup_change(base_result, question)
-    if entity_change and plan.get("mode") == "analysis":
+    if entity_change:
         return {
             "relation": "refine_query",
             "source_strategy": "same_source",
@@ -2398,6 +2408,7 @@ def _finalize_followup_result(
     followup_result.update(
         {
             "question": resolved_question if uses_sql else base_result.get("question", ""),
+            "original_question": base_result.get("original_question") or base_result.get("question", ""),
             "original_answer": base_result.get("original_answer", base_result.get("answer", "")),
             "answer": answer,
             "followup_question": question,
@@ -3031,6 +3042,11 @@ def export_result(
     if not result:
         raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
     fmt = req.format.lower().strip()
+    if fmt in {"all", "excel", "xlsx", "csv", "text", "txt"}:
+        try:
+            result = agent.prepare_export_result(result)
+        except RuntimeError:
+            raise HTTPException(status_code=500, detail="다운로드용 전체 데이터를 조회하지 못했습니다.") from None
     files: list[dict[str, str]] = []
     if fmt == "all":
         paths = agent.export_all(result)

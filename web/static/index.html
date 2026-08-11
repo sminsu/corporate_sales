@@ -75,24 +75,6 @@
             <summary>데이터 도구</summary>
             <div class="rail-tools-content">
               <section class="rail-section">
-                <div class="section-label">데이터</div>
-                <details id="tableCatalogPanel" class="rail-table-catalog">
-                  <summary>
-                    <span>사용 테이블</span>
-                    <code>/tables</code>
-                  </summary>
-                  <div class="table-catalog-head">
-                    <strong id="tableCatalogMeta">사용 테이블을 불러오세요.</strong>
-                    <label class="sr-only" for="tableCatalogSearch">사용 테이블 검색</label>
-                    <input id="tableCatalogSearch" type="search" autocomplete="off" placeholder="테이블명 검색" />
-                  </div>
-                  <div id="tableCatalogList" class="table-catalog-list" aria-live="polite">
-                    <div class="inspector-empty">목록을 펼치면 Semantic Layer에 등록된 사용 테이블을 표시합니다.</div>
-                  </div>
-                </details>
-              </section>
-
-              <section class="rail-section">
                 <div class="section-label">저장 쿼리</div>
                 <button id="saveQueryBtn" class="new-session" type="button">
                   <span class="plus">+</span> 현재 질문 저장
@@ -106,6 +88,7 @@
                   <button data-export="all" type="button" disabled>전체</button>
                   <button data-export="word" type="button" disabled>Word</button>
                   <button data-export="excel" type="button" disabled>Excel</button>
+                  <button data-export="csv" type="button" disabled>CSV</button>
                   <button data-export="text" type="button" disabled>TXT</button>
                 </div>
                 <div id="downloadList" class="download-list"></div>
@@ -135,6 +118,7 @@
             <p class="conversation-note"><span aria-hidden="true">✦</span> 긴 대화 시 이전 내용을 기억하지 못할 수 있어요. 필요한 정보는 다시 말씀해 주세요.</p>
           </div>
           <div class="topbar-actions">
+            <button class="ghost-btn" type="button" data-user-guide aria-haspopup="dialog" aria-controls="userGuideDialog">이용가이드</button>
             <button id="themeToggle" class="ghost-btn theme-toggle topbar-secondary" type="button" aria-pressed="true">어둡게</button>
             <button id="clearBtn" class="ghost-btn topbar-secondary" type="button" title="현재 대화 비우기">비우기</button>
             <button id="inspectorToggle" class="ghost-btn" type="button" title="상세 패널 열기" aria-label="상세 패널 열기" aria-controls="inspector" aria-expanded="false">상세</button>
@@ -151,7 +135,7 @@
               <div class="hero-title">
                 <h3>기업영업 관련된 질문을 해주세요</h3>
                 <p>필요한 기간, 대상, 지표를 자연스럽게 질문하면 데이터를 조회하고 핵심만 정리해 드립니다.</p>
-                <button id="userGuideBtn" class="user-guide-trigger" type="button" aria-haspopup="dialog" aria-controls="userGuideDialog">
+                <button id="userGuideBtn" class="user-guide-trigger" type="button" data-user-guide aria-haspopup="dialog" aria-controls="userGuideDialog">
                   <span aria-hidden="true">?</span>
                   사용자 이용가이드
                 </button>
@@ -371,6 +355,18 @@
             </article>
           </section>
 
+          <section id="tableCatalogPanel" class="guide-table-catalog" aria-labelledby="tableCatalogTitle">
+            <h3 id="tableCatalogTitle">사용 테이블</h3>
+            <div class="table-catalog-head">
+              <strong id="tableCatalogMeta" role="status" aria-live="polite">사용 테이블을 불러오세요.</strong>
+              <label class="sr-only" for="tableCatalogSearch">사용 테이블 검색</label>
+              <input id="tableCatalogSearch" type="search" autocomplete="off" placeholder="테이블명 검색" />
+            </div>
+            <div id="tableCatalogList" class="table-catalog-list">
+              <div class="inspector-empty">Semantic Layer에 등록된 사용 테이블을 표시합니다.</div>
+            </div>
+          </section>
+
           <aside class="user-guide-notice">
             <strong>질문 전 확인해주세요</strong>
             <p>기업명과 브랜드명은 정확히 입력하고, 주민등록번호 등 고객 민감 정보는 입력하지 마세요.</p>
@@ -546,7 +542,6 @@ const followupBox = $("#followupBox");
 const suggestionList = $("#suggestionList");
 const threadBody = $(".thread-body");
 const heroExamples = $("#heroExamples");
-const userGuideBtn = $("#userGuideBtn");
 const userGuideDialog = $("#userGuideDialog");
 const promptCoach = $("#promptCoach");
 const promptCoachMessage = $("#promptCoachMessage");
@@ -715,6 +710,7 @@ const progressGroupIndex = {
   aggregate_review: 2,
   response: 3,
   classify_question: 0,
+  refine_search_query: 0,
   route_domain: 0,
   followup_context: 0,
   followup_route: 0,
@@ -739,6 +735,7 @@ const progressGroupIndex = {
 };
 const progressPhaseGroupIndex = {
   question_analysis: 0,
+  query_refinement: 0,
   domain_routing: 0,
   followup_context: 0,
   followup_route: 0,
@@ -2594,7 +2591,7 @@ function rebuildConversationFromResult(data) {
     }));
   }
   const messages = [];
-  const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
+  const originalQuestion = data.original_question || data.question || state.pendingQuestion || questionInput.value.trim();
   if (originalQuestion) messages.push({ role: "user", text: originalQuestion });
   if (data.original_answer) messages.push({ role: "assistant", text: data.original_answer });
   (data.analysis_history || []).forEach((item) => {
@@ -2644,7 +2641,7 @@ function renderConversation() {
 
 function renderHistory(data) {
   const entries = [];
-  const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
+  const originalQuestion = data.original_question || data.question || state.pendingQuestion || questionInput.value.trim();
   if (originalQuestion || data.original_answer || data.answer) {
     entries.push({
       mode: "초기 질문",
@@ -3075,9 +3072,12 @@ document.addEventListener("click", (event) => {
   chooseExample(exampleButton.dataset.example || exampleButton.textContent || "");
 });
 
-userGuideBtn.addEventListener("click", () => {
+function showUserGuide() {
   if (!userGuideDialog.open) userGuideDialog.showModal();
-});
+  loadTableCatalog();
+}
+
+$$("[data-user-guide]").forEach((button) => button.addEventListener("click", showUserGuide));
 
 answerBox.addEventListener("click", (event) => {
   const copyButton = event.target.closest("[data-copy-message]");
@@ -3279,25 +3279,19 @@ function activateInspectorTab(button, focus = false) {
 
 function openTableCatalog() {
   if (!tableCatalogPanel) return;
-  const wasOpen = tableCatalogPanel.open;
   if (tableCatalogSearch) tableCatalogSearch.value = "";
-  tableCatalogPanel.open = true;
-  if (compactRailMedia.matches) {
-    rail.classList.add("menu-open");
-    syncRailToggleUi();
-  } else {
-    setRailCollapsed(false);
-  }
-  if (wasOpen) loadTableCatalog();
-  window.requestAnimationFrame(() => tableCatalogSearch?.focus());
+  if (!userGuideDialog.open) userGuideDialog.showModal();
+  loadTableCatalog();
+  window.requestAnimationFrame(() => {
+    const guideContent = tableCatalogPanel.closest(".user-guide-content");
+    if (guideContent) guideContent.scrollTop = tableCatalogPanel.offsetTop - guideContent.offsetTop;
+    tableCatalogSearch?.focus({ preventScroll: true });
+  });
 }
 
 activateInspectorTab($(".tab.active"));
 
 tableCatalogSearch?.addEventListener("input", renderTableCatalog);
-tableCatalogPanel?.addEventListener("toggle", () => {
-  if (tableCatalogPanel.open) loadTableCatalog();
-});
 
 $$("[data-export]").forEach((button) => {
   button.addEventListener("click", async () => {

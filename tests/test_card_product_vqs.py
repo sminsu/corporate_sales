@@ -103,6 +103,8 @@ def test_monthly_corporate_valid_card_count_by_brand_is_built_without_llm() -> N
     assert 'c."유효체크카드여부" = \'1\'' in sql
     assert 'WHEN \'1\' THEN \'로칼(국민)\'' in sql
     assert 'WHEN \'4\' THEN \'JCB\'' in sql
+    assert 'WHEN \'5\' THEN \'UPI&글로벌\'' in sql
+    assert 'WHEN \'6\' THEN \'아맥스\'' in sql
     assert 'AS "유효좌수"' in sql
     assert _validate_sql_against_schema(sql, ["tbdaaat05"]) == []
 

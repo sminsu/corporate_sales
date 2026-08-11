@@ -8,6 +8,7 @@ shared across backends; only the actual execution differs and is selected by the
 
 import re
 import time
+from numbers import Number
 
 import sqlparse
 
@@ -30,6 +31,7 @@ from .config import (
     DB_PORT,
     DB_SCHEMA,
     DB_USER,
+    MAX_QUERY_ROW_LIMIT,
 )
 
 
@@ -39,8 +41,25 @@ _DANGEROUS_SQL_RE = re.compile(
     r"LOCK|SET|RESET|INTO)\b",
     re.IGNORECASE,
 )
+_COUNT_OUTPUT_RE = re.compile(
+    r"^\s*(?:(?:COALESCE|CAST|TRY_CAST|ROUND)\s*\(\s*)*COUNT\s*\(",
+    re.IGNORECASE,
+)
 _MAX_ROWS = 500
 _STATEMENT_TIMEOUT_MS = 30_000
+_TBD_ZERO_RESULT_ATTEMPTS = 3
+_TABLE_REFERENCE_RE = re.compile(
+    r'\b(?:FROM|JOIN)\s+'
+    r'(?:(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)*'
+    r'(?:"(?P<quoted>[A-Za-z_][A-Za-z0-9_]*)"|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))',
+    re.IGNORECASE,
+)
+_CTE_NAME_RE = re.compile(
+    r'(?:\bWITH(?:\s+RECURSIVE)?|,)\s+'
+    r'(?:"(?P<quoted>[^"]+)"|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))'
+    r'\s*(?:\([^)]*\))?\s+AS\s*\(',
+    re.IGNORECASE,
+)
 
 
 def _is_identifier_char(char: str) -> bool:
@@ -105,6 +124,144 @@ def _split_sql_segments(sql: str) -> list[tuple[bool, str]]:
 
     flush_code(n)
     return segments
+
+
+def _registered_physical_table_names() -> frozenset[str]:
+    """Return queryable physical tables from the loaded semantic schema."""
+    try:
+        from .schema import SCHEMA
+    except Exception:
+        return frozenset()
+    return frozenset(
+        str(table.get("physical_table") or table.get("name") or "")
+        .rsplit(".", 1)[-1]
+        .strip('"')
+        .lower()
+        for table in SCHEMA.get("tables", [])
+        if str(table.get("semantic_visibility") or "default").lower() != "restricted"
+    )
+
+
+def _sql_identifier_view(sql: str) -> str:
+    """Mask literals/comments while retaining identifier positions and quotes."""
+    return "".join(
+        text if not protected or text.startswith('"') else " " * len(text)
+        for protected, text in _split_sql_segments(sql)
+    )
+
+
+def _top_level_count_output_indexes(sql: str) -> list[int]:
+    statements = sqlparse.parse(_sql_identifier_view(sql))
+    if not statements:
+        return []
+    expressions: list[object] = []
+    in_select = False
+    for token in statements[0].tokens:
+        if not in_select:
+            if token.ttype is sqlparse.tokens.DML and token.normalized == "SELECT":
+                in_select = True
+            continue
+        if token.ttype in sqlparse.tokens.Keyword and token.normalized == "FROM":
+            break
+        if token.is_whitespace or token.ttype is sqlparse.tokens.Punctuation:
+            continue
+        if token.ttype in sqlparse.tokens.Keyword and token.normalized in {"ALL", "DISTINCT"}:
+            continue
+        if isinstance(token, sqlparse.sql.IdentifierList):
+            expressions.extend(token.get_identifiers())
+        else:
+            expressions.append(token)
+    return [
+        index
+        for index, expression in enumerate(expressions)
+        if _COUNT_OUTPUT_RE.search(_sql_identifier_view(str(expression)))
+    ]
+
+
+def _is_zero_query_result(sql: str, rows: list[tuple]) -> bool:
+    if not rows:
+        return True
+    if len(rows) != 1:
+        return False
+    values = rows[0]
+    count_values = [
+        values[index]
+        for index in _top_level_count_output_indexes(sql)
+        if index < len(values)
+    ]
+    return bool(count_values) and all(
+        isinstance(value, Number) and not isinstance(value, bool) and value == 0
+        for value in count_values
+    )
+
+
+def _physical_table_matches(sql: str) -> list[re.Match]:
+    identifier_view = _sql_identifier_view(sql)
+    cte_names = {
+        (match.group("quoted") or match.group("plain")).lower()
+        for match in _CTE_NAME_RE.finditer(identifier_view)
+    }
+    return [
+        match
+        for match in _TABLE_REFERENCE_RE.finditer(identifier_view)
+        if (match.group("quoted") or match.group("plain")).lower() not in cte_names
+        or "." in match.group(0)
+    ]
+
+
+def _has_tbd_table_reference(sql: str) -> bool:
+    return any(
+        (match.group("quoted") or match.group("plain")).lower().startswith("tbd")
+        for match in _physical_table_matches(sql)
+    )
+
+
+def _tmd_fallback_sql(sql: str) -> str | None:
+    """Swap referenced TBD tables only when the same-name TMD table is registered."""
+    identifier_view = _sql_identifier_view(sql)
+    table_matches = _physical_table_matches(sql)
+    referenced_tables = {
+        (match.group("quoted") or match.group("plain")).lower() for match in table_matches
+    }
+    registered_tables = _registered_physical_table_names()
+    replacements = {
+        table: f"tmd{table[3:]}"
+        for table in referenced_tables
+        if table.startswith("tbd")
+        and f"tmd{table[3:]}" in registered_tables
+        and f"tmd{table[3:]}" not in referenced_tables
+    }
+    if not replacements:
+        return None
+
+    qualifier_re = re.compile(
+        r'(?<![A-Za-z0-9_])(?:"(?P<quoted>'
+        + "|".join(map(re.escape, replacements))
+        + r')"|(?P<plain>'
+        + "|".join(map(re.escape, replacements))
+        + r'))(?=\s*\.)',
+        re.IGNORECASE,
+    )
+
+    def replacement_for(source: str) -> str:
+        target = replacements[source.lower()]
+        return target.upper() if source.isupper() else target
+
+    spans: dict[tuple[int, int], str] = {}
+    for match in table_matches:
+        group = "quoted" if match.group("quoted") is not None else "plain"
+        source = match.group(group)
+        if source.lower() in replacements:
+            spans[match.span(group)] = replacement_for(source)
+    for match in qualifier_re.finditer(identifier_view):
+        group = "quoted" if match.group("quoted") is not None else "plain"
+        source = match.group(group)
+        spans[match.span(group)] = replacement_for(source)
+
+    fallback_sql = sql
+    for (start, end), replacement in sorted(spans.items(), reverse=True):
+        fallback_sql = fallback_sql[:start] + replacement + fallback_sql[end:]
+    return fallback_sql if fallback_sql != sql else None
 
 
 def _validate_read_only_sql(sql: str) -> str | None:
@@ -278,7 +435,11 @@ def _return_connection(conn, *, close: bool = False):
             pass
 
 
-def _execute_postgres(sql: str) -> tuple[list[str], list[tuple]]:
+def _execute_postgres(
+    sql: str,
+    max_rows: int = _MAX_ROWS,
+    statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
+) -> tuple[list[str], list[tuple]]:
     conn = None
     cur = None
     discard_connection = False
@@ -286,10 +447,10 @@ def _execute_postgres(sql: str) -> tuple[list[str], list[tuple]]:
         conn = get_db_connection()
         conn.set_session(readonly=True)
         cur = conn.cursor()
-        cur.execute(f"SET statement_timeout = {_STATEMENT_TIMEOUT_MS}")
+        cur.execute(f"SET statement_timeout = {statement_timeout_ms}")
         cur.execute(sql)
         columns = [desc[0] for desc in cur.description] if cur.description else []
-        rows = cur.fetchmany(_MAX_ROWS) if cur.description else []
+        rows = cur.fetchmany(max_rows) if cur.description else []
         return columns, rows
     finally:
         if cur is not None:
@@ -351,13 +512,17 @@ def _get_athena_connection():
     return _athena_conn
 
 
-def _execute_athena(sql: str) -> tuple[list[str], list[tuple]]:
+def _execute_athena(
+    sql: str,
+    max_rows: int = _MAX_ROWS,
+    statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
+) -> tuple[list[str], list[tuple]]:
     conn = _get_athena_connection()
     cur = conn.cursor()
     try:
         cur.execute(sql)
         columns = [desc[0] for desc in cur.description] if cur.description else []
-        rows = cur.fetchmany(_MAX_ROWS) if cur.description else []
+        rows = cur.fetchmany(max_rows) if cur.description else []
         return columns, [tuple(row) for row in rows]
     finally:
         cur.close()
@@ -366,23 +531,89 @@ def _execute_athena(sql: str) -> tuple[list[str], list[tuple]]:
 # ---------------------------------------------------------------------------
 # Public API (backend-agnostic)
 # ---------------------------------------------------------------------------
-def execute_sql(sql: str) -> tuple[list[str], list[tuple], str | None]:
+def _execute_backend(
+    sql: str,
+    max_rows: int = _MAX_ROWS,
+    statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
+) -> tuple[list[str], list[tuple]]:
+    executor = _execute_athena if DB_BACKEND == "athena" else _execute_postgres
+    if max_rows == _MAX_ROWS and statement_timeout_ms == _STATEMENT_TIMEOUT_MS:
+        return executor(sql)
+    if statement_timeout_ms == _STATEMENT_TIMEOUT_MS:
+        return executor(sql, max_rows)
+    return executor(sql, max_rows, statement_timeout_ms)
+
+
+def _bounded_result_sql(sql: str, max_rows: int) -> str:
+    return f"SELECT * FROM (\n{sql.rstrip().removesuffix(';')}\n) AS _bounded_result\nLIMIT {max_rows}"
+
+
+def execute_sql(
+    sql: str,
+    *,
+    max_rows: int | None = None,
+    statement_timeout_ms: int | None = None,
+) -> tuple[list[str], list[tuple], str | None]:
     started = time.monotonic()
+    effective_max_rows = _MAX_ROWS if max_rows is None else min(max(int(max_rows), 1), MAX_QUERY_ROW_LIMIT)
+    effective_timeout_ms = _STATEMENT_TIMEOUT_MS if statement_timeout_ms is None else max(int(statement_timeout_ms), 1)
+
+    def execute_backend(query: str) -> tuple[list[str], list[tuple]]:
+        # Preserve the one-argument call used by existing adapters and test doubles.
+        if max_rows is None and statement_timeout_ms is None:
+            return _execute_backend(query)
+        bounded_query = _bounded_result_sql(query, effective_max_rows) if max_rows is not None else query
+        return _execute_backend(bounded_query, effective_max_rows, effective_timeout_ms)
+
     stripped = sqlparse.format(sql, strip_comments=True).strip()
     execution_sql = prepare_sql_for_backend(stripped)
     safety_error = _validate_read_only_sql(execution_sql)
     if safety_error:
-        _log_db_query(started, status="ERROR", result_count=0, error_message=safety_error)
+        _log_db_query(
+            started,
+            status="ERROR",
+            result_count=0,
+            error_message=safety_error,
+            max_rows=effective_max_rows,
+            statement_timeout_ms=effective_timeout_ms,
+        )
         return [], [], safety_error
     try:
-        if DB_BACKEND == "athena":
-            columns, rows = _execute_athena(execution_sql)
-        else:
-            columns, rows = _execute_postgres(execution_sql)
-        _log_db_query(started, status="SUCCESS", result_count=len(rows))
+        columns, rows = execute_backend(execution_sql)
+        if _is_zero_query_result(execution_sql, rows) and _has_tbd_table_reference(execution_sql):
+            # The initial execution above plus these retries make three TBD attempts.
+            for _ in range(_TBD_ZERO_RESULT_ATTEMPTS - 1):
+                columns, rows = execute_backend(execution_sql)
+                if not _is_zero_query_result(execution_sql, rows):
+                    break
+            else:
+                fallback_sql = _tmd_fallback_sql(execution_sql)
+                if fallback_sql:
+                    try:
+                        fallback_columns, fallback_rows = execute_backend(fallback_sql)
+                    except Exception:
+                        # TMD is a best-effort fallback after TBD already returned
+                        # a valid zero-row result; its failure must not replace it.
+                        pass
+                    else:
+                        columns, rows = fallback_columns, fallback_rows
+        _log_db_query(
+            started,
+            status="SUCCESS",
+            result_count=len(rows),
+            max_rows=effective_max_rows,
+            statement_timeout_ms=effective_timeout_ms,
+        )
         return columns, rows, None
     except Exception as e:
-        _log_db_query(started, status="ERROR", result_count=0, error_message=str(e))
+        _log_db_query(
+            started,
+            status="ERROR",
+            result_count=0,
+            error_message=str(e),
+            max_rows=effective_max_rows,
+            statement_timeout_ms=effective_timeout_ms,
+        )
         return [], [], str(e)
 
 
@@ -392,6 +623,8 @@ def _log_db_query(
     status: str,
     result_count: int,
     error_message: str | None = None,
+    max_rows: int = _MAX_ROWS,
+    statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
 ) -> None:
     is_athena = DB_BACKEND == "athena"
     emit_module_event(
@@ -415,8 +648,8 @@ def _log_db_query(
         metadata={
             "query_type": "select",
             "result_count": result_count,
-            "max_rows": _MAX_ROWS,
-            "statement_timeout_ms": _STATEMENT_TIMEOUT_MS,
+            "max_rows": max_rows,
+            "statement_timeout_ms": statement_timeout_ms,
         },
         error_type="DatabaseQueryError" if error_message else None,
         error_message=error_message,

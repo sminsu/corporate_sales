@@ -18,6 +18,12 @@ from kbcard_agent_common.llm import ModelRegistry
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
+# Keep the browser payload small while allowing complete data exports.
+DISPLAY_ROW_LIMIT = 100
+DEFAULT_QUERY_ROW_LIMIT = 1_000_000
+MAX_QUERY_ROW_LIMIT = 1_000_000
+EXPORT_QUERY_TIMEOUT_MS = 300_000
+
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / ".env.local", override=True)
 

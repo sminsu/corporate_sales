@@ -12,9 +12,10 @@ import re
 from collections.abc import Iterable
 from typing import Any, TypedDict
 
+from .config import DISPLAY_ROW_LIMIT
+
 
 QUERY_FRAME_VERSION = 1
-DISPLAY_ROW_LIMIT = 100
 DEFAULT_FETCH_ROW_LIMIT = 500
 
 _TIME_EXPRESSION_RE = re.compile(
@@ -189,6 +190,22 @@ def _extract_entities(sql: str) -> list[dict[str, str]]:
     return entities[:8]
 
 
+def _extract_parameter_entities(result: dict[str, Any]) -> list[dict[str, str]]:
+    entities: list[dict[str, str]] = []
+    for key in ("extracted_params", "tool_params", "user_provided_params"):
+        params = result.get(key) or {}
+        if not isinstance(params, dict):
+            continue
+        for column, raw_value in params.items():
+            value = str(raw_value or "").strip()
+            if not value or not _ENTITY_COLUMN_RE.fullmatch(str(column)):
+                continue
+            item = {"column": str(column), "value": value}
+            if item not in entities:
+                entities.append(item)
+    return entities[:8]
+
+
 def _extract_sort(sql: str) -> dict[str, str]:
     match = re.search(
         r"\bORDER\s+BY\s+(.+?)(?:\bLIMIT\b|;|$)",
@@ -229,7 +246,11 @@ def build_query_frame(
     sql = str(result.get("final_sql") or result.get("generated_sql") or "")
     question = str(result.get("question") or previous.get("source_question") or "")
     followup_question = str(last_question or result.get("followup_question") or "")
-    entities = _extract_entities(sql) or list(previous.get("entities") or [])
+    entities = (
+        _extract_parameter_entities(result)
+        or _extract_entities(sql)
+        or list(previous.get("entities") or [])
+    )
     time_context = _extract_time_context(followup_question or question, sql)
     if not time_context["expressions"] and not time_context["sql_values"]:
         time_context = copy.deepcopy(previous.get("time") or {"expressions": [], "sql_values": []})

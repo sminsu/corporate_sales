@@ -110,11 +110,6 @@ SEMANTIC_GENERATION_CASES = [
         {"tbdaa1d12"},
     ),
     (
-        "high_sales_corporate_merchant_without_corporate_card",
-        "2026년 4월 월매출 1억 넘는 정상 법인가맹점 가운데 기업카드 없는 곳",
-        {"tmdaa5e11", "tmdaaus01"},
-    ),
-    (
         "corporate_card_low_limit_utilization",
         "2026년 4월 기업신용카드를 가진 고객 중 총한도 2천만원 이상, 사용률 50% 아래인 곳",
         {"tbdaa1d12"},
@@ -302,11 +297,22 @@ def test_reference_verified_queries_are_active_and_schema_valid_after_substituti
         assert not issues, f"{name}: {issues}\n{sql}"
 
 
-def test_reference_only_query_is_not_reenabled_by_tool_fallback() -> None:
+def test_merchant_sales_target_tool_renders_the_verified_query() -> None:
     name = "merchant_corporate_sales_target_no_corporate_card"
     workflow._TOOL_SCHEMA_COMPATIBILITY.pop(name, None)
+    query = next(item for item in schema.VERIFIED_QUERIES if item["name"] == name)
+    params = {"기준년월": "202604", "월매출금액": 100_000_000, "limit": 100}
 
-    assert not workflow._tool_schema_compatible(workflow.TOOL_MAP[name])
+    sql = workflow.TOOL_MAP[name]["fn"](params)
+    expected = _apply_params_to_vq(query["sql"], params, name, query["parameters"])
+
+    assert sql == expected
+    assert workflow._tool_schema_compatible(workflow.TOOL_MAP[name])
+    assert "tmdaaus01" in sql
+    assert "tmdaa5e11" in sql
+    assert "tbdaaus01" not in sql
+    assert "가맹점총지급금액" not in sql
+    assert not schema._validate_sql_against_schema(sql, ["tmdaaus01", "tmdaa5e11"])
 
 
 def test_schema_guard_rejects_unknown_qualified_column() -> None:
@@ -319,6 +325,64 @@ def test_schema_guard_rejects_unknown_qualified_column() -> None:
     issues = schema._validate_sql_against_schema(sql, [])
 
     assert any('customer."문서에없는컬럼"' in issue for issue in issues), issues
+
+
+def test_schema_guard_allows_cte_star_only_after_explicit_projection() -> None:
+    safe_sql = f'''WITH base AS (
+      SELECT a."고객식별자", a."기업명"
+      FROM {schema.DB_SCHEMA_PREFIX}tbdaa1d12 a
+    ), ranked AS (
+      SELECT * FROM base
+    )
+    SELECT "고객식별자", "기업명" FROM ranked'''
+    physical_star = f'''WITH base AS (
+      SELECT * FROM {schema.DB_SCHEMA_PREFIX}tbdaa1d12
+    )
+    SELECT "기업명" FROM base'''
+    result_star = f'''WITH base AS (
+      SELECT a."고객식별자", a."기업명"
+      FROM {schema.DB_SCHEMA_PREFIX}tbdaa1d12 a
+    )
+    SELECT * FROM base'''
+
+    assert not schema._validate_sql_against_schema(safe_sql, ["tbdaa1d12"])
+    for unsafe_sql in (physical_star, result_star):
+        issues = schema._validate_sql_against_schema(unsafe_sql, ["tbdaa1d12"])
+        assert "SELECT * 대신 필요한 컬럼만 명시하세요." in issues
+
+
+def test_churn_query_validation_accepts_recent_window_and_internal_cte_star() -> None:
+    question = "최근 반년 내 기업카드 이용하였는데 2026년 4월 현재 유효 카드가 없는 법인"
+    sql = f'''WITH base AS (
+      SELECT
+        a."고객식별자",
+        a."사업자등록번호",
+        a."기업명",
+        COALESCE(a."유효기업신용카드수", 0) + COALESCE(a."유효기업체크카드수", 0) AS "현재카드수",
+        ROW_NUMBER() OVER (PARTITION BY a."고객식별자" ORDER BY a."기준년월일" DESC) AS rn
+      FROM {schema.DB_SCHEMA_PREFIX}tbdaa1d12 a
+      WHERE a."기준년월일" BETWEEN '20251101' AND '20260430'
+    ), current_snapshot AS (
+      SELECT * FROM base WHERE rn = 1
+    )
+    SELECT "고객식별자", "사업자등록번호", "기업명"
+    FROM current_snapshot
+    WHERE "현재카드수" = 0'''
+
+    with patch.object(workflow, "_call_llm", return_value="VALID") as verifier:
+        result = workflow.validate_sql(
+            {
+                "question": question,
+                "generated_sql": sql,
+                "selected_tables": ["tbdaa1d12"],
+                "selected_domain": "corporate_sales_targeting",
+                "retry_count": 0,
+            }
+        )
+
+    assert result["is_valid"] is True
+    assert "202608" not in result["final_sql"]
+    assert "최근 N개월/N달" in verifier.call_args.args[0]
 
 
 def test_relevance_helpers_do_not_inject_unrelated_fallbacks() -> None:
@@ -377,6 +441,88 @@ def test_rule_params_extract_current_period_and_explicit_merchant_names() -> Non
     assert merchant["기준년월"] == current_ym
 
 
+def test_refine_search_query_preserves_source_and_exact_constraints() -> None:
+    question = "2026년 7월 도미노피자 매출 1억원 이상을 높은 순으로 좀 찾아줘"
+    state = {"question": question, "retrieval_query": ""}
+    refined = "2026년 7월 도미노피자 가맹점 매출 1억원 이상 높은 순 조회"
+
+    with patch.object(
+        workflow,
+        "_call_llm",
+        return_value={"retrieval_query": refined},
+    ) as call_llm:
+        result = workflow.refine_search_query(state)
+
+    assert result == {"retrieval_query": refined}
+    assert state["question"] == question
+    prompt = call_llm.call_args.args[0]
+    for exact_value in ("2026년 7월", "도미노피자", "1억원", "높은 순"):
+        assert exact_value in prompt
+    assert workflow.route_by_question_type({"question_type": "need_sql"}) == "refine_search_query"
+    graph_edges = {
+        (edge.source, edge.target)
+        for edge in workflow.build_graph().get_graph().edges
+    }
+    assert ("refine_search_query", "route_domain") in graph_edges
+
+
+def test_refine_search_query_falls_back_to_source_on_model_failure() -> None:
+    question = "최근 6개월 기업카드 무실적 기업을 알려줘"
+
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("offline")):
+        result = workflow.refine_search_query({"question": question, "retrieval_query": ""})
+
+    assert result == {"retrieval_query": question}
+
+    with patch.object(workflow, "_call_llm") as call_llm:
+        followup = workflow.refine_search_query(
+            {
+                "question": "그럼 전월은?",
+                "retrieval_query": "",
+                "previous_question": question,
+            }
+        )
+
+    assert followup == {"retrieval_query": "그럼 전월은?"}
+    call_llm.assert_not_called()
+    assert workflow._normalize_retrieval_query(
+        {"retrieval_query": "2026년 7월 매출 조회"},
+        "전월 매출 조회",
+    ) == "전월 매출 조회"
+
+
+def test_retrieval_query_drives_capability_search_without_overwriting_source() -> None:
+    question = "리포트용인데 카드 안 쓰는 기업 좀 찾아줘"
+    refined = "기업카드 미이용 기업회원 명단"
+    state = {
+        "question": question,
+        "retrieval_query": refined,
+        "domain_context": "",
+    }
+    combined = f"{refined}\n{question}"
+
+    with (
+        patch.object(workflow, "semantic_query_contract_candidates", return_value=[]) as contracts,
+        patch.object(workflow, "_select_verified_query_capability", return_value=None),
+        patch.object(workflow, "_rule_match_tool", return_value=""),
+        patch.object(workflow, "_tool_candidates", return_value=[]),
+    ):
+        workflow.select_tool(state)
+
+    contracts.assert_called_once_with(workflow.SCHEMA, combined, max_count=1)
+    assert state["question"] == question
+
+    with (
+        patch.object(workflow, "semantic_query_contract_candidates", return_value=[]),
+        patch.object(workflow, "_match_vq_by_semantic_contract", return_value=None) as vq_match,
+        patch.object(workflow, "_match_vq_by_embedding", return_value=None),
+        patch.object(workflow, "_match_vq_by_rules", return_value=None),
+    ):
+        workflow._select_verified_query_capability(question, state)
+
+    vq_match.assert_called_once_with(combined, intent_question=question)
+
+
 @pytest.mark.parametrize(
     ("question", "expected_domain", "required_tables"),
     REFERENCE_ROUTING_CASES,
@@ -423,7 +569,7 @@ def test_reference_paraphrases_use_semantic_generation_without_verified_query(
 
 @pytest.mark.parametrize(
     "question",
-    [REFERENCE_ROUTING_CASES[index][0] for index in (1, 3, 4)],
+    [REFERENCE_ROUTING_CASES[index][0] for index in (1, 4)],
 )
 def test_reference_sql_is_not_runtime_verified_query(question: str) -> None:
     selection = workflow.select_tool({"question": question, "domain_context": ""})
@@ -431,6 +577,44 @@ def test_reference_sql_is_not_runtime_verified_query(question: str) -> None:
     assert workflow._select_verified_query_capability(question, {}) is None
     assert selection["selected_capability_type"] == "semantic_generation"
     assert selection["matched_query_name"] == ""
+
+
+def test_merchant_sales_target_uses_verified_query_and_requires_basis_month() -> None:
+    question = (
+        "당사 가맹점 중 월 매출액이 1억원 이상이고, 법인사업자이며, "
+        "KB국민 기업카드를 보유하고 있지 않은 기업 회원 명단을 알고 싶어"
+    )
+    state = {"question": question, "domain_context": "", "user_provided_params": {}}
+    state.update(workflow.select_tool(state))
+
+    assert state["selected_capability_type"] == "verified_query"
+    assert state["matched_query_name"] == "merchant_corporate_sales_target_no_corporate_card"
+
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        missing = workflow.extract_and_apply_params(state)
+
+    assert missing["param_stage"] == "need_params"
+    assert missing["extracted_params"] == {"월매출금액": 100_000_000}
+    assert [item["name"] for item in missing["missing_params"]] == ["기준년월"]
+
+    state["user_provided_params"] = {"기준년월": "202604"}
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        result = workflow.extract_and_apply_params(state)
+
+    sql = result["final_sql"]
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {
+        "기준년월": "202604",
+        "월매출금액": 100_000_000,
+    }
+    assert "tmdaaus01" in sql
+    assert "tmdaa5e11" in sql
+    assert "가맹점일시불매출금액" in sql
+    assert "가맹점할부매출금액" in sql
+    assert "tbdaaus01" not in sql
+    assert "가맹점총지급금액" not in sql
+    assert not re.findall(r"\{[A-Za-z0-9가-힣_]+\}", sql)
+    assert not schema._validate_sql_against_schema(sql, ["tmdaaus01", "tmdaa5e11"])
 
 
 def test_corporate_card_no_usage_query_uses_verified_query_with_explicit_basis_month() -> None:
@@ -444,15 +628,20 @@ def test_corporate_card_no_usage_query_uses_verified_query_with_explicit_basis_m
     assert state["selected_capability_type"] == "verified_query"
     assert state["matched_query_name"] == "corporate_card_active_no_usage_members"
     assert result["param_stage"] == "done"
-    assert result["extracted_params"] == {"기준년월일": "20260731", "조회개월수": 6}
+    assert result["extracted_params"] == {"기준년월": "202607", "조회개월수": 6}
     assert "tmdaa1d12" in result["final_sql"]
     assert "tbdaa1d12" not in result["final_sql"]
     assert "tmdaa3e16" not in result["final_sql"]
+    assert 'a."기준년월" = \'202607\'' in result["final_sql"]
+    assert 'b."기준년월" BETWEEN' in result["final_sql"]
+    assert "DATE_PARSE(CONCAT('202607', '01'), '%Y%m%d')" in result["final_sql"]
+    assert 'a."기준년월일"' not in result["final_sql"]
+    assert "ROW_NUMBER" not in result["final_sql"]
     assert not re.findall(r"\{[A-Za-z0-9가-힣_]+\}", result["final_sql"])
     assert not schema._validate_sql_against_schema(result["final_sql"], ["tmdaa1d12"])
 
 
-def test_corporate_card_no_usage_query_requires_basis_date_when_omitted() -> None:
+def test_corporate_card_no_usage_query_requires_basis_month_when_omitted() -> None:
     question = "KB카드 기업카드 보유회원 중에 6개월 무실적인 기업 회원 명단을 알려줘"
     state = {"question": question, "domain_context": "", "user_provided_params": {}}
     state.update(workflow.select_tool(state))
@@ -463,7 +652,39 @@ def test_corporate_card_no_usage_query_requires_basis_date_when_omitted() -> Non
     assert state["matched_query_name"] == "corporate_card_active_no_usage_members"
     assert result["param_stage"] == "need_params"
     assert result["extracted_params"] == {"조회개월수": 6}
-    assert [item["name"] for item in result["missing_params"]] == ["기준년월일"]
+    assert [item["name"] for item in result["missing_params"]] == ["기준년월"]
+
+
+def test_verified_query_execution_error_preserves_sql_instead_of_generating_a_replacement() -> None:
+    question = "KB카드 기업카드 보유회원 중에 2026년 7월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘"
+    state = {"question": question, "domain_context": "", "user_provided_params": {}}
+    state.update(workflow.select_tool(state))
+
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        state.update(workflow.extract_and_apply_params(state))
+    verified_sql = state["final_sql"]
+
+    with patch.object(workflow, "execute_sql", return_value=([], [], "Athena execution failed")):
+        state.update(workflow.run_matched_query(state))
+
+    assert state["matched_query_name"] == "corporate_card_active_no_usage_members"
+    assert state["final_sql"] == verified_sql
+    assert state["retry_count"] == 1
+    assert state["query_error"] == "Athena execution failed"
+    assert workflow.after_matched_query(state) == "handle_error"
+
+
+def test_corporate_card_no_usage_fallback_builder_matches_simple_not_exists_vq() -> None:
+    sql = workflow.TOOL_MAP["corporate_card_active_no_usage_members"]["fn"](
+        {"기준년월": "202604", "조회개월수": 6, "limit": 100}
+    )
+
+    assert 'a."기준년월" = \'202604\'' in sql
+    assert 'b."고객식별자" = a."고객식별자"' in sql
+    assert 'b."기준년월" BETWEEN' in sql
+    assert "DATE_PARSE(CONCAT('202604', '01'), '%Y%m%d')" in sql
+    assert "ROW_NUMBER" not in sql
+    assert "WITH params" not in sql
 
 
 def test_check_card_only_query_requires_current_check_card_holding() -> None:

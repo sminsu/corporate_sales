@@ -69,7 +69,7 @@ def test_recent_closed_merchant_sql_uses_first_closed_observation_without_llm() 
     assert 'COALESCE(a."휴폐업여부", \'0\') <> \'0\'' in sql
     assert "DATE_ADD('MONTH', -12, CURRENT_DATE)" in sql.upper()
     assert 'COUNT(DISTINCT f."가맹점번호")' in sql
-    assert "CONCAT('%', '교촌 치킨', '%')" in sql
+    assert "CONCAT('%', '교촌%치킨', '%')" in sql
     assert "REGEXP_REPLACE" in sql
     assert _validate_sql_against_schema(sql, ["tbdaaus01"]) == []
 

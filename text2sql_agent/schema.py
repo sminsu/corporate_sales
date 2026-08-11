@@ -10,7 +10,7 @@ import sqlparse
 import yaml
 
 from .config import DB_SCHEMA, DB_SCHEMA_PREFIX, SCHEMA_PATH
-from .db import _validate_read_only_sql
+from .db import _sql_identifier_view, _validate_read_only_sql
 from .llm import _call_llm, _normalize_llm_text
 from .tools.verified_queries import load_external_verified_queries
 
@@ -1558,6 +1558,37 @@ def _extract_schema_tables(sql: str) -> set[str]:
     }
 
 
+_SELECT_STAR_SOURCE_RE = re.compile(
+    r'\bSELECT\s+\*\s+FROM\s+'
+    r'(?:(?P<schema>"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?'
+    r'(?:"(?P<quoted>[A-Za-z_][A-Za-z0-9_]*)"|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))',
+    re.IGNORECASE,
+)
+
+
+def _has_unsafe_select_star(sql: str, known_tables: dict[str, dict]) -> bool:
+    """Reject result wildcards and wildcards that read a physical table."""
+    statements = sqlparse.parse(_sql_identifier_view(sql))
+    if statements:
+        in_select = False
+        for token in statements[0].tokens:
+            if not in_select:
+                if token.ttype is sqlparse.tokens.DML and token.normalized == "SELECT":
+                    in_select = True
+                continue
+            if token.ttype in sqlparse.tokens.Keyword and token.normalized == "FROM":
+                break
+            if token.ttype is sqlparse.tokens.Wildcard:
+                return True
+
+    cte_names = _extract_cte_names(sql)
+    for match in _SELECT_STAR_SOURCE_RE.finditer(sql):
+        table = (match.group("quoted") or match.group("plain")).lower()
+        if table in known_tables and (match.group("schema") or table not in cte_names):
+            return True
+    return False
+
+
 def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[str]:
     issues = []
     stripped = sqlparse.format(sql or "", strip_comments=True).strip()
@@ -1599,7 +1630,7 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
                 if table.lower() in known_tables:
                     issues.append(f"테이블 '{table}'은 {DB_SCHEMA_PREFIX}{table} 형태로 사용해야 합니다.")
 
-    if re.search(r"\bSELECT\s+\*", stripped, re.IGNORECASE):
+    if _has_unsafe_select_star(stripped, known_tables):
         issues.append("SELECT * 대신 필요한 컬럼만 명시하세요.")
     return issues
 

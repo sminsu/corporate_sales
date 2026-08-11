@@ -132,6 +132,18 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
             sse(
                 "text2sql_progress",
                 {
+                    "message": "검색 후보 탐색을 위한 내부 질의를 정제했습니다.",
+                    "data": {
+                        "text2sql_step": "refine_search_query",
+                        "query": "매출 알려줘",
+                        "phase": "query_refinement",
+                        "title": "질의 정제",
+                    },
+                },
+            ),
+            sse(
+                "text2sql_progress",
+                {
                     "message": "질문에 맞는 업무 도메인을 선택했습니다.",
                     "data": {
                         "text2sql_step": "route_domain",
@@ -189,12 +201,23 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
 
         self.assertEqual(
             [event for event, _ in events],
-            ["start", "search_plan", "search_plan", "search_plan", "aggregate_review", "response", "done"],
+            ["start", "search_plan", "search_plan", "search_plan", "search_plan", "aggregate_review", "response", "done"],
         )
         search_plan_steps = [data["data"]["text2sql_step"] for event, data in events if event == "search_plan"]
-        self.assertEqual(search_plan_steps, ["classify_question", "route_domain", "select_tool"])
+        self.assertEqual(
+            search_plan_steps,
+            ["classify_question", "refine_search_query", "route_domain", "select_tool"],
+        )
         search_plan_messages = [data["data"]["progress_message"] for event, data in events if event == "search_plan"]
-        self.assertEqual(search_plan_messages, ["질문 의도를 분석했습니다.", "질문에 맞는 업무 도메인을 선택했습니다.", "실행 경로를 선택했습니다."])
+        self.assertEqual(
+            search_plan_messages,
+            [
+                "질문 의도를 분석했습니다.",
+                "검색 후보 탐색을 위한 내부 질의를 정제했습니다.",
+                "질문에 맞는 업무 도메인을 선택했습니다.",
+                "실행 경로를 선택했습니다.",
+            ],
+        )
         response_payload = next(data for event, data in events if event == "response")
         self.assertEqual(response_payload["data"]["text2sql_step"], "generate_answer")
         self.assertEqual(response_payload["data"]["progress_message"], "조회 결과를 요약 답변으로 정리했습니다.")

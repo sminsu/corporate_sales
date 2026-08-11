@@ -226,7 +226,7 @@ def test_popeyes_five_year_count_trend_reroutes_to_new_sql_and_keeps_brand_conte
     state = web_service._followup_query_state(result, question, plan)
 
     assert frame["entities"] == [{"column": "가맹점명", "value": "파파이스"}]
-    assert plan["mode"] == "new_sql_visualization"
+    assert plan["mode"] == "new_sql"
     assert plan["requires_sql"] is True
     assert plan["route_reason"] == "new_time_series_requires_reroute"
     assert plan["context_relation"] == "refine_query"
@@ -357,6 +357,46 @@ def test_entity_only_followup_uses_deterministic_context_without_router() -> Non
     assert "대손비용률" in compact
     assert "꾸석지" not in compact
     assert plan["requires_sql"] is True
+
+
+def test_popeyes_short_followup_reuses_bad_debt_context_without_visualization() -> None:
+    result = _bad_debt_result()
+    question = "파파이스는?"
+    expected = "2026년 4월 파파이스의 대손비용률 분석해줘"
+    preliminary = plan_followup(
+        question,
+        result["query_columns"],
+        result["query_rows"],
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+    )
+
+    with patch.object(web_service.agent, "_call_llm", side_effect=AssertionError("router must not run")):
+        resolution = web_service._resolve_followup_context(result, question, preliminary)
+
+    plan = plan_followup(
+        question,
+        result["query_columns"],
+        result["query_rows"],
+        query_frame=result["query_frame"],
+        result_scope=result["result_scope"],
+        context_resolution=resolution,
+    )
+    state = web_service._followup_query_state(result, question, plan)
+
+    assert preliminary["mode"] == "analysis"
+    assert preliminary["visualize"] is False
+    assert resolution["resolved_question"] == expected
+    assert resolution["reason"] == "deterministic_entity_replacement"
+    assert plan["mode"] == "rewrite_sql"
+    assert state["question"] == expected
+    assert state["selected_tool"] == "대손비용률_분석"
+    assert state["tool_params"] == {
+        "가맹점명": "파파이스",
+        "기준년월": "202604",
+        "LS": 0.8,
+        "IS": 1.2,
+    }
 
 
 def test_entity_only_fallback_rejects_operations_and_non_entity_subjects() -> None:
@@ -500,6 +540,7 @@ def test_completed_followup_becomes_context_for_the_next_turn() -> None:
 
     prompt = call.call_args.args[0]
     assert completed["question"] == first_resolution["resolved_question"]
+    assert completed["original_question"] == result["question"]
     assert completed["query_frame"]["entities"] == [{"column": "가맹점명", "value": "버거킹"}]
     assert "가맹점명=버거킹" in prompt
     assert first_question in prompt

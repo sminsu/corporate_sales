@@ -17,6 +17,7 @@ from typing import Any, Iterable, Iterator
 
 SEARCH_PLAN_NODES = {
     "classify_question",
+    "refine_search_query",
     "route_domain",
     "select_tool",
     "check_tool_params",
