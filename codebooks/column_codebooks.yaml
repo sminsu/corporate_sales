@@ -1,0 +1,853 @@
+column_codebooks_metadata:
+  generated_from: goldenset_error/0811/*.xlsx
+  source_file_count: 8
+  codebook_count: 7
+  provenance: user_provided_business_codebook
+  notes:
+  - 코드북은 컬럼명 기준이다. 같은 이름의 컬럼은 어느 테이블에 있어도 동일 코드 도메인으로 본다.
+  - status=retired 는 유효종료일이 지난 코드로, 과거 기간 조회 결과 해석에만 쓰고 신규 필터로 제안하지 않는다.
+  - applies_to_columns 에 여러 컬럼이 있으면 그 컬럼들이 같은 유효값 목록을 공유한다는 뜻이다.
+column_codebooks:
+- column: 가맹점상태구분코드
+  domain: 가맹점상태구분코드
+  applies_to_columns:
+  - 가맹점상태구분코드
+  source_tables:
+  - tmdaa5e11
+  source_files:
+  - tmdaa5e11_가맹점상태구분코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: '1'
+    label: 정상
+    valid_from: '2011-05-03'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '2'
+    label: 거래정지
+    valid_from: '2011-05-03'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '3'
+    label: 해지
+    valid_from: '2011-05-03'
+    valid_to: '9999-12-31'
+    status: active
+- column: 그룹최고고객구분코드
+  domain: 고객구분코드
+  applies_to_columns:
+  - 그룹최고고객구분코드
+  source_tables:
+  - tbdaa1d12
+  source_files:
+  - tbdaa1d12_그룹최고고객구분코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: '0'
+    label: 등급없음
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '1'
+    label: VVIP
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '2'
+    label: VIP
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '3'
+    label: 그랜드
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '4'
+    label: 우대(2004년07월이전)
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '5'
+    label: 베스트
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '6'
+    label: 잠재고객
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '9'
+    label: 패밀리
+    valid_from: '2018-05-28'
+    valid_to: '9999-12-31'
+    status: active
+- column: 사업자자산건전성구분코드
+  domain: 자산건전성구분코드
+  applies_to_columns:
+  - 사업자자산건전성구분코드
+  source_tables:
+  - tbdaa1d12
+  source_files:
+  - tbdaa1d12_사업자자산건전성구분코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: '0'
+    label: 정상
+    valid_from: '2018-06-11'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '1'
+    label: 요주의
+    valid_from: '2018-06-11'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '2'
+    label: 고정
+    valid_from: '2018-06-11'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '3'
+    label: 회수의문
+    valid_from: '2018-06-11'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '4'
+    label: 추정손실
+    valid_from: '2018-06-11'
+    valid_to: '9999-12-31'
+    status: active
+- column: 상품중분류구분코드
+  domain: 상품중분류구분코드
+  applies_to_columns:
+  - 상품중분류구분코드
+  source_tables:
+  - tmdaa3e16
+  source_files:
+  - tmdaa3e16_상품중분류구분코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: 'CP00'
+    label: 전체카드상품
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP01'
+    label: 개인신용카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP02'
+    label: 개인직불카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP03'
+    label: 개인선불카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP04'
+    label: 개인체크카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP05'
+    label: 개인PP카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP06'
+    label: ZOOP
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP51'
+    label: 기업신용카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP52'
+    label: 기업정부구매카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP53'
+    label: 기업체크카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP54'
+    label: 기업직불카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP55'
+    label: 기업순구매카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP56'
+    label: 기업역구매카드
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'CP57'
+    label: 기업후납우편카드
+    valid_from: '2018-08-30'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP01'
+    label: 개인대출
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP02'
+    label: 일반대출
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP03'
+    label: 대환대출
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP04'
+    label: 할부금융
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP05'
+    label: 채권매입
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP06'
+    label: 리스금융
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP07'
+    label: 렌탈금융
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+  - code: 'FP08'
+    label: 팩토링
+    valid_from: '2018-06-05'
+    valid_to: '9999-12-31'
+    status: active
+- column: 소매비소매구분코드
+  domain: 소매비소매구분코드
+  applies_to_columns:
+  - 소매비소매구분코드
+  source_tables:
+  - tbdaa1d12
+  source_files:
+  - tbdaa1d12_소매비소매구분코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: '1'
+    label: 비소매(비일반)
+    valid_from: '2018-08-24'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '2'
+    label: 비소매(일반)
+    valid_from: '2018-08-24'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '3'
+    label: 소매
+    valid_from: '2018-08-24'
+    valid_to: '9999-12-31'
+    status: active
+- column: 카드결제기관구분코드
+  domain: 결제기관구분코드
+  applies_to_columns:
+  - 카드결제기관구분코드
+  source_tables:
+  - tbdaa1d12
+  source_files:
+  - tbdaa1d12_카드결제기관구분코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: '000'
+    label: 미분류
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '001'
+    label: 한국은행
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '002'
+    label: 산업은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '003'
+    label: 기업은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '004'
+    label: 국민은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '005'
+    label: 하나은행(구 외환은행)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '006'
+    label: 국민은행(구 주택은행)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '007'
+    label: 수협은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '008'
+    label: 수출입은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '009'
+    label: 국민은행(구 장기신용은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '010'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '011'
+    label: 농협은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '012'
+    label: 지역농축협
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '013'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '014'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '015'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '016'
+    label: 농협(구 축협중앙회)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '017'
+    label: 농협(구 축협조합)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '018'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '019'
+    label: 미분류(이력만 존재)
+    valid_from: '2018-06-08'
+    valid_to: '2020-07-05'
+    status: retired
+  - code: '020'
+    label: 우리은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '021'
+    label: 조흥은행
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '022'
+    label: 우리은행(구 상업은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '023'
+    label: SC은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '024'
+    label: 우리은행(구 한일은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '025'
+    label: 하나은행(구 서울은행)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '026'
+    label: 구 신한은행
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '027'
+    label: 한국씨티은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '028'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '029'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '030'
+    label: 회원수협
+    valid_from: '1963-02-01'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '031'
+    label: iM뱅크
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '032'
+    label: 부산은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '033'
+    label: 하나은행(구 충청은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '034'
+    label: 광주은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '035'
+    label: 제주은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '036'
+    label: 한국시티은행(구 경기은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '037'
+    label: 전북은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '038'
+    label: 조흥은행(구 강원은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '039'
+    label: 경남은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '040'
+    label: 조흥은행(구 충북은행)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '043'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '045'
+    label: 새마을금고(대표)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '046'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '048'
+    label: 신용협동조합(대표)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '049'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '050'
+    label: 상호저축은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '051'
+    label: 공상은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '053'
+    label: 구 씨티은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '054'
+    label: 홍콩상하이은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '055'
+    label: 도이치은행
+    valid_from: '2020-05-15'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '057'
+    label: JP모간체이스
+    valid_from: '2020-07-09'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '060'
+    label: 뱅크오브아메리카
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '061'
+    label: 비앤피파리바
+    valid_from: '2019-11-11'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '064'
+    label: 산림조합
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '071'
+    label: 우체국
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '073'
+    label: 구)우체국
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '074'
+    label: 미분류(이력만 존재)
+    valid_from: '2020-06-22'
+    valid_to: '2020-06-24'
+    status: retired
+  - code: '078'
+    label: 미분류(이력만 존재)
+    valid_from: '2018-06-08'
+    valid_to: '2020-07-05'
+    status: retired
+  - code: '080'
+    label: 구하나은행
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '081'
+    label: 하나은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '082'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '083'
+    label: 우리은행(구 평화은행)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '084'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '085'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '086'
+    label: 구)새마을금고
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '088'
+    label: 신한은행
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '089'
+    label: 케이뱅크
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '090'
+    label: 카카오뱅크
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '092'
+    label: 토스뱅크
+    valid_from: '2021-10-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '095'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '099'
+    label: 지로
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '187'
+    label: 미분류(이력만 존재)
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '191'
+    label: 국민연계계좌
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '209'
+    label: 유안타증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '218'
+    label: KB증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '230'
+    label: 구미래에셋증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '238'
+    label: 미래에셋증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '240'
+    label: 삼성증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '243'
+    label: 한국투자증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '247'
+    label: NH투자증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '261'
+    label: 교보증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '262'
+    label: 아이엠증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '263'
+    label: 현대차증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '264'
+    label: 키움증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '265'
+    label: 엘에스증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '266'
+    label: SK증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '267'
+    label: 대신증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '268'
+    label: 아이엠투자증권
+    valid_from: '2018-06-08'
+    valid_to: '2020-04-28'
+    status: retired
+  - code: '269'
+    label: 한화투자증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '270'
+    label: 하나증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '278'
+    label: 신한금융투자
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '279'
+    label: DB증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '280'
+    label: 유진투자증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '287'
+    label: 메리츠증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '289'
+    label: 구)NH농협증권
+    valid_from: '2018-06-08'
+    valid_to: '2020-04-28'
+    status: retired
+  - code: '290'
+    label: 부국증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '291'
+    label: 신영증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '292'
+    label: 케이프투자증권
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '331'
+    label: 삼성증권
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '381'
+    label: 국민카드
+    valid_from: '2023-08-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '600'
+    label: 현대스위스금고
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '700'
+    label: 한평신협
+    valid_from: '1963-02-01'
+    valid_to: '2009-11-09'
+    status: retired
+  - code: '999'
+    label: 기타(계좌사후등록)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+- column: 카드등급구분코드
+  domain: 카드등급구분코드
+  applies_to_columns:
+  - 카드등급구분코드
+  - 카드등급그룹코드
+  source_tables:
+  - tbdaaat03
+  - tmdaa3e16
+  source_files:
+  - tbdaaat03_카드등급구분코드.xlsx
+  - tmdaa3e16_카드등급그룹코드.xlsx
+  provenance: user_provided_business_codebook
+  values:
+  - code: '0'
+    label: 체크(프리패스)
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '1'
+    label: 일반1
+    valid_from: '1963-02-01'
+    valid_to: '2018-12-31'
+    status: retired
+  - code: '2'
+    label: 일반2
+    valid_from: '1983-02-01'
+    valid_to: '2018-12-31'
+    status: retired
+  - code: '3'
+    label: 실버
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '4'
+    label: 골드
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '5'
+    label: 플래티늄S
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '6'
+    label: 플래티늄
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '7'
+    label: 프리미엄
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active
+  - code: '8'
+    label: 슈퍼프리미엄
+    valid_from: '2018-06-08'
+    valid_to: '9999-12-31'
+    status: active

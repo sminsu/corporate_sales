@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 SESSION_STORE_PATH = Path(__file__).resolve().parents[1] / "text2sql_agent" / "session_store.py"
@@ -12,11 +13,37 @@ session_store_module = module_from_spec(spec)
 spec.loader.exec_module(session_store_module)
 
 InMemorySessionStore = session_store_module.InMemorySessionStore
+PostgresSessionStore = session_store_module.PostgresSessionStore
 RetentionPolicy = session_store_module.RetentionPolicy
 SessionOwnershipError = session_store_module.SessionOwnershipError
 
 
 class SessionStoreTest(unittest.TestCase):
+    def test_postgres_status_does_not_run_schema_ddl(self) -> None:
+        store = PostgresSessionStore()
+
+        with patch.object(store, "_get_pool") as get_pool:
+            status = store.status()
+
+        self.assertEqual(status["schema"], "corporate_sales")
+        get_pool.assert_not_called()
+
+    def test_postgres_delete_sql_is_disabled_without_permission(self) -> None:
+        store = PostgresSessionStore()
+        store.delete_enabled = False
+        cursor = Mock()
+
+        store._delete_expired_rows(cursor)
+        store._prune_sessions_for_user(cursor, "user-a")
+        store._prune_messages_for_session(cursor, "session-a")
+
+        cursor.execute.assert_not_called()
+        with patch.object(store, "_conn") as get_connection:
+            self.assertFalse(store.delete_session("session-a", "user-a"))
+            self.assertEqual(store.prune_empty_sessions("user-a"), 0)
+            self.assertFalse(store.delete_saved_query("query-a", "user-a"))
+        get_connection.assert_not_called()
+
     def test_sessions_are_scoped_by_user(self) -> None:
         store = InMemorySessionStore()
         session = store.get_or_create_session(None, "user-a", "manual")

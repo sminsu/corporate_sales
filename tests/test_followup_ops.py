@@ -126,6 +126,17 @@ def test_followup_stream_runs_local_transform_without_graph_or_llm() -> None:
     session = {"id": "session-1", "user_id": "user-1", "messages": []}
     with (
         patch.object(web_service._SESSION_STORE, "get_result", return_value=base_result),
+        patch.object(
+            web_service,
+            "_resolve_followup_context",
+            return_value={
+                "relation": "existing_result",
+                "source_strategy": "current_result",
+                "resolved_question": request.question,
+                "reason": "test",
+                "used_llm": True,
+            },
+        ),
         patch.object(web_service, "_stream_graph", side_effect=AssertionError("SQL graph must not run")),
         patch.object(web_service, "_followup_analysis", side_effect=AssertionError("LLM analysis must not run")),
         patch.object(web_service, "_result_payload", side_effect=capture_payload),
@@ -143,6 +154,66 @@ def test_followup_stream_runs_local_transform_without_graph_or_llm() -> None:
     assert captured["parent_result_id"] == "previous"
 
 
+def test_empty_tool_result_can_rerun_sql_for_an_entity_followup() -> None:
+    sql = "SELECT * FROM sales WHERE 가맹점명 LIKE '%꾸석지%' AND 기준년월 = '202604'"
+    base_result = {
+        "question": "2026년 4월 꾸석지의 대손비용률 분석해줘",
+        "final_sql": sql,
+        "answer": "조회 결과가 없습니다.",
+        "selected_tool": "대손비용률_분석",
+        "selected_capability_name": "대손비용률_분석",
+        "tool_params": {"가맹점명": "꾸석지", "기준년월": "202604", "LS": 0.8, "IS": 1.2},
+        "query_columns": [],
+        "query_rows": [],
+        "analysis_history": [],
+    }
+    captured: dict = {}
+
+    def fake_stream_graph(_request, state, **_kwargs):
+        captured["state"] = state
+        yield "generate_answer", {
+            **state,
+            "answer": "파파이스 대손비용률 결과입니다.",
+            "final_sql": sql.replace("꾸석지", "파파이스"),
+            "query_columns": ["기준년월", "대손비용률_퍼센트"],
+            "query_rows": [("202604", 1.25)],
+        }
+
+    def capture_payload(result, *_args, **_kwargs):
+        captured["final_result"] = result
+        return {
+            "answer": result["answer"],
+            "columns": result["query_columns"],
+            "rows": result["query_rows"],
+        }
+
+    request = web_service.FollowupRequest(result_id="empty-result", question="파파이스는?")
+    session = {"id": "session-1", "user_id": "user-1", "messages": []}
+    with (
+        patch.object(web_service._SESSION_STORE, "get_result", return_value=base_result),
+        patch.object(web_service.agent, "_call_llm", side_effect=RuntimeError("router unavailable")),
+        patch.object(web_service, "_stream_graph", side_effect=fake_stream_graph),
+        patch.object(web_service, "_result_payload", side_effect=capture_payload),
+        patch.object(web_service, "_finalize_assistant_message", side_effect=lambda _session, data, _message_id: data),
+        patch.object(web_service.agent, "create_trace_context", return_value={}),
+        patch.object(web_service.agent, "observability_context", return_value=nullcontext()),
+        patch.object(web_service.agent, "emit_execution_log"),
+    ):
+        chunks = list(web_service._stream_followup(request, session, 1))
+
+    assert any(chunk.startswith("event: result") for chunk in chunks)
+    assert captured["state"]["selected_tool"] == "대손비용률_분석"
+    assert captured["state"]["question"] == "2026년 4월 파파이스의 대손비용률 분석해줘"
+    assert captured["state"]["tool_params"] == {
+        "가맹점명": "파파이스",
+        "기준년월": "202604",
+        "LS": 0.8,
+        "IS": 1.2,
+    }
+    assert captured["final_result"]["answer"] == "파파이스 대손비용률 결과입니다."
+    assert captured["final_result"]["original_question"] == base_result["question"]
+
+
 def test_frontend_contains_dependency_free_chart_renderer() -> None:
     from pathlib import Path
 
@@ -151,3 +222,11 @@ def test_frontend_contains_dependency_free_chart_renderer() -> None:
     assert "function renderChart(chart)" in source
     assert "function drawChart(chart)" in source
     assert "renderChart(data.chart);" in source
+
+
+def test_frontend_history_keeps_the_original_question() -> None:
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "web" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert source.count("const originalQuestion = data.original_question || data.question") == 2

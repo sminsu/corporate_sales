@@ -18,7 +18,7 @@ def test_brand_merchant_owner_corporate_card_count_intent_is_deterministic() -> 
     assert capability["matched_query_name"] == "brand_merchant_owner_corporate_card_count"
 
 
-def test_brand_merchant_owner_count_sql_uses_latest_snapshot_and_distinct_owner() -> None:
+def test_brand_merchant_owner_count_sql_uses_previous_day_snapshot_and_distinct_owner() -> None:
     question = "파파존스 가맹점주 중에 KB국민카드 기업카드 소지하고 있는 사람은 몇명이야?"
     capability = workflow._select_verified_query_capability(question, {})
     assert capability is not None
@@ -36,7 +36,8 @@ def test_brand_merchant_owner_count_sql_uses_latest_snapshot_and_distinct_owner(
     assert result["param_stage"] == "done"
     assert result["extracted_params"] == {"가맹점명": "파파존스"}
     assert 'COUNT(DISTINCT a."대표고객식별자")' in sql
-    assert 'MAX(a."기준년월일")' in sql
+    assert "DATE_ADD('DAY', -1, CURRENT_TIMESTAMP AT TIME ZONE 'ASIA/SEOUL')" in sql.upper()
+    assert 'MAX(a."기준년월일")' not in sql
     assert "CONCAT('%', '파파존스', '%')" in sql
     assert 'COALESCE(a."유효기업신용카드수", 0)' in sql
     assert 'COALESCE(a."유효기업체크카드수", 0)' in sql

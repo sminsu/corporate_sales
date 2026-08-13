@@ -40,6 +40,27 @@ def test_generic_sales_subject_is_not_mistaken_for_a_merchant_name(question: str
     assert workflow._is_named_merchant_sales_question(question) is False
 
 
+def test_merchant_number_monthly_sales_uses_an_exact_identifier_filter() -> None:
+    question = "가맹점번호 595931113의 월별 매출금액을 알려줘"
+    capability = workflow._select_verified_query_capability(question, {})
+
+    assert workflow._extract_merchant_number_by_rule(question) == "595931113"
+    assert workflow._extract_merchant_name_by_rule(question) == ""
+    assert capability is not None
+    assert capability["matched_query_name"] == "merchant_monthly_sales_by_number"
+
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("offline")):
+        result = workflow.extract_and_apply_params(
+            {"question": question, **capability, "user_provided_params": {}}
+        )
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {"가맹점번호": "595931113"}
+    assert 'a."가맹점번호" = \'595931113\'' in result["final_sql"]
+    assert "LIKE" not in result["final_sql"]
+    assert _validate_sql_against_schema(result["final_sql"], ["tmdaa5e11"]) == []
+
+
 def test_domino_recent_six_month_sales_uses_verified_query_without_llm() -> None:
     question = "도미노 피자 최근 6개월 매출액 알려줘"
     capability = workflow._select_verified_query_capability(question, {})
@@ -66,8 +87,8 @@ def test_domino_recent_six_month_sales_uses_verified_query_without_llm() -> None
         "기간_시작": start_ym,
         "기간_종료": end_ym,
     }
-    assert "LIKE '%도미노 피자%'" in sql
-    assert sql.count("LIKE '%도미노 피자%'") == 1
+    assert "LIKE '%도미노%피자%'" in sql
+    assert sql.count("LIKE '%도미노%피자%'") == 1
     assert f"BETWEEN '{start_ym}' AND '{end_ym}'" in sql
     assert (
         'SUM(COALESCE(a."가맹점일시불매출금액", 0) '

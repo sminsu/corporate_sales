@@ -12,8 +12,9 @@ from langgraph.graph import END, StateGraph
 
 from .config import (
     DB_BACKEND,
-    DB_SCHEMA,
     DB_SCHEMA_PREFIX,
+    DEFAULT_QUERY_ROW_LIMIT,
+    DISPLAY_ROW_LIMIT,
     EMBED_MATCH_THRESHOLD,
     ENABLE_EMBEDDING_PRECOMPUTE,
     ENABLE_VERIFIED_QUERY_LLM_FALLBACK,
@@ -22,36 +23,81 @@ from .config import (
     VERIFIED_QUERY_MIN_LEXICAL_SCORE,
     VERIFIED_QUERY_RULE_MATCH_MARGIN,
     VERIFIED_QUERY_RULE_MATCH_THRESHOLD,
+    MAX_QUERY_ROW_LIMIT,
 )
 from .db import execute_sql, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
 from .managed_scope import ManagedScopeParseError, parse_business_number_list
+from .query_frame import DEFAULT_FETCH_ROW_LIMIT, build_result_scope, query_frame_prompt
+from .row_constraints import (
+    RowRequest,
+    first_order_key,
+    is_scalar_aggregate_query,
+    outer_limit,
+    parse_row_request,
+)
 from .schema import (
     SCHEMA,
     VERIFIED_QUERIES,
     _build_domain_embedding_text,
+    _has_historical_period_expression,
     _keyword_rule_domain_scores,
     _metric_entity_domain_scores,
     _needs_domain_adjudication,
     _adjudicate_domain_with_llm,
     _result_summary,
+    _phrase_in_text,
+    _extract_schema_tables,
+    _entry_matches_domain,
+    _sql_table_names,
     _validate_sql_against_schema,
     _weighted_domain_scores,
     build_domain_context,
     build_glossary_summary,
     build_metrics_summary,
+    build_semantic_attributes_summary,
     build_semantic_contract_summary,
     build_semantic_join_context,
     find_relevant_queries,
     find_relevant_references,
     find_relevant_semantic_query_contracts,
+    resolve_semantic_attribute_value,
+    resolve_query_reference_for_question,
+    semantic_attribute_candidates,
     semantic_query_contract_candidates,
     semantic_join_paths_for_tables,
+    source_tables_for_question,
 )
 from .state import Text2SQLState
+from .time_policy import (
+    accumulation_policy_for,
+    format_accumulation_policy,
+    kst_today,
+    previous_day_ymd,
+    recent_window_ymd,
+)
 from .tools.registry import TOOLS, TOOL_MAP, _build_tool_descriptions
-from .tools.sql_builders import VQ_PARAM_SPECS, _apply_params_to_vq, _current_date_context
+from .tools.sql_builders import (
+    VQ_PARAM_SPECS,
+    _apply_params_to_vq,
+    _current_date_context,
+    _name_like_pattern,
+)
+from .v2.sql_dialect_guard import (
+    audit_sql as _v2_audit_sql,
+    looks_like_prose as _v2_looks_like_prose,
+    normalize_sql as _v2_normalize_sql,
+    prose_reason as _v2_prose_reason,
+)
+from .v2.column_repair import repair_columns as _v2_repair_columns
+from .v2.vq_output_guard import (
+    named_columns as _v2_named_columns,
+    vq_output_gap as _v2_vq_output_gap,
+)
+
+# v2: 2048 토큰에서는 CTE 여러 개를 쓰는 질의가 문장 중간에서 끊겼다.
+SQL_GENERATION_MAX_TOKENS = 4096
 
 # ---------------------------------------------------------------------------
 # 9. 그래프 노드
@@ -62,6 +108,7 @@ VQ_EMBEDDINGS: list[list[float]] = []
 DOMAIN_EMBEDDINGS_AVAILABLE = False
 DOMAIN_EMBEDDINGS: dict[str, list[float]] = {}
 _EMBEDDINGS_INITIALIZED = False
+_DISPLAY_ROW_LIMIT = DISPLAY_ROW_LIMIT
 
 
 def _coerce_llm_text(value: object) -> str:
@@ -131,16 +178,54 @@ def _parse_llm_json(value: object) -> dict:
     candidates = [_strip_llm_code_fence(text), _extract_balanced_json_object(text)]
     for candidate in dict.fromkeys(candidate for candidate in candidates if candidate):
         normalized = re.sub(r",\s*([}\]])", r"\1", candidate.strip())
-        try:
-            parsed = json.loads(normalized)
-        except json.JSONDecodeError:
+        # 한국어 IME/소형 모델이 곧은따옴표 대신 둥근따옴표(“ ” ‘ ’)를 내는 경우가
+        # 있어, 원문 파싱이 실패했을 때만 치환본을 추가로 시도한다.
+        straightened = normalized.translate(str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"}))
+        attempts = [normalized] if straightened == normalized else [normalized, straightened]
+        for attempt in attempts:
             try:
-                parsed = ast.literal_eval(normalized)
-            except (SyntaxError, ValueError):
-                continue
-        if isinstance(parsed, dict):
-            return parsed
+                parsed = json.loads(attempt)
+            except json.JSONDecodeError:
+                try:
+                    parsed = ast.literal_eval(attempt)
+                except (SyntaxError, ValueError):
+                    continue
+            if isinstance(parsed, dict):
+                return parsed
     return {}
+
+
+def _truncate_after_sql_terminator(text: str) -> str:
+    """Cut trailing prose a small model appends after the statement's ``;``.
+
+    The semicolon itself is kept. Semicolons inside string literals, quoted
+    identifiers, and comments are ignored, and nothing changes when no
+    terminator exists.
+    """
+    quote = ""
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "-" and text[index : index + 2] == "--":
+            newline = text.find("\n", index)
+            index = length if newline < 0 else newline
+            continue
+        elif char == "/" and text[index : index + 2] == "/*":
+            end = text.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            continue
+        elif char == ";":
+            return text[: index + 1]
+        index += 1
+    return text
 
 
 def _extract_sql_from_llm(value: object) -> str:
@@ -153,9 +238,11 @@ def _extract_sql_from_llm(value: object) -> str:
     ).strip()
     text = _strip_llm_code_fence(raw)
     if text != raw:
-        return text.strip()
+        return _truncate_after_sql_terminator(text.strip()).strip()
     match = re.search(r"(?im)^\s*(SELECT|WITH)\b", text)
-    return text[match.start() :].strip() if match else text.strip()
+    if match:
+        text = text[match.start() :]
+    return _truncate_after_sql_terminator(text.strip()).strip()
 
 
 def _precompute_embeddings():
@@ -210,9 +297,82 @@ _AMBIGUOUS_TARGET_PATTERNS = [
 
 
 def _missing_ambiguous_target_params(question: str) -> list[dict]:
+    missing = []
     if any(re.search(pattern, question) for pattern in _AMBIGUOUS_TARGET_PATTERNS):
-        return [{"name": "대상명", "label": "조회 대상명(기업명/가맹점명/고객명)"}]
-    return []
+        missing.append({"name": "대상명", "label": "조회 대상명(기업명/가맹점명/고객명)"})
+
+    labels: dict[str, list[dict]] = {}
+    all_value_terms = set()
+    for attribute in SCHEMA.get("semantic_attributes", []):
+        for raw_value in (attribute.get("value_semantics") or {}).values():
+            value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
+            label = str(value_info.get("label") or "").strip()
+            compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", label.lower())
+            if len(compact) >= 2:
+                labels.setdefault(compact, []).append(attribute)
+                all_value_terms.add(compact)
+
+    question_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
+
+    def occurrences(term: str) -> list[tuple[int, int]]:
+        spans = []
+        start = 0
+        while term and (index := question_compact.find(term, start)) >= 0:
+            spans.append((index, index + len(term)))
+            start = index + 1
+        return spans
+
+    for compact, attributes in labels.items():
+        unique_attributes = list({str(item.get("name")): item for item in attributes}.values())
+        if len(unique_attributes) < 2:
+            continue
+        # Do not treat a duplicate substring inside a longer valid code label
+        # (for example 기타 in 기타제조업) as a standalone ambiguity.
+        target_spans = occurrences(compact)
+        shadow_spans = [
+            span
+            for term in all_value_terms
+            if len(term) > len(compact) and compact in term
+            for span in occurrences(term)
+        ]
+        if target_spans and all(
+            any(start <= target_start and target_end <= end for start, end in shadow_spans)
+            for target_start, target_end in target_spans
+        ):
+            continue
+        raw_label = next(
+            str((value if not isinstance(value, dict) else value.get("label")) or "")
+            for attribute in unique_attributes
+            for value in (attribute.get("value_semantics") or {}).values()
+            if re.sub(
+                r"[^0-9A-Za-z가-힣_]",
+                "",
+                str((value if not isinstance(value, dict) else value.get("label")) or "").lower(),
+            )
+            == compact
+        )
+        if not re.search(
+            rf"(?<![0-9A-Za-z가-힣]){re.escape(raw_label)}"
+            rf"(?=(?:의|은|는|이|가|을|를|에|에서|로|으로|와|과|도|만|별|인)?(?:[^0-9A-Za-z가-힣]|$))",
+            question or "",
+        ):
+            continue
+        if any(
+            resolve_semantic_attribute_value(SCHEMA, str(attribute.get("name")), question)
+            for attribute in unique_attributes
+        ):
+            continue
+        options = [
+            str(attribute.get("korean_name") or attribute.get("name") or "")
+            for attribute in unique_attributes
+        ]
+        missing.append(
+            {
+                "name": f"{raw_label}분류축",
+                "label": f"'{raw_label}' 분류 기준({' / '.join(options)})",
+            }
+        )
+    return missing
 
 
 def classify_question(state: Text2SQLState) -> dict:
@@ -220,6 +380,10 @@ def classify_question(state: Text2SQLState) -> dict:
         return {"question_type": state["question_type"]}
 
     question = state["question"]
+    if _looks_like_direct_sql(question):
+        return {"question_type": "direct_sql"}
+    if _looks_like_schema_question(question):
+        return {"question_type": "direct"}
     if _rule_classify_question(question):
         return {"question_type": "need_sql"}
     domain_lines = []
@@ -272,10 +436,107 @@ need_sql 또는 direct 또는 reject"""
     return {"question_type": qtype}
 
 
+def _normalize_retrieval_query(value: object, fallback: str) -> str:
+    """Normalize a one-line retrieval rewrite without changing the source question."""
+    parsed = _parse_llm_json(value)
+    candidate = (
+        parsed.get("retrieval_query") or parsed.get("resolved_question")
+        if parsed
+        else value
+    )
+    text = " ".join(_strip_llm_code_fence(candidate).split()).strip(" \"'“”‘’")
+    text = re.sub(
+        r"^(?:검색(?:용)?|정제(?:된)?)?\s*질의\s*[:：]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    source_numbers = set(re.findall(r"\d[\d,./:~-]*", fallback))
+    refined_numbers = set(re.findall(r"\d[\d,./:~-]*", text))
+    if (
+        not text
+        or text.upper() in {"NONE", "N/A"}
+        or not re.search(r"[0-9A-Za-z가-힣]", text)
+        or _looks_like_direct_sql(text)
+        or not refined_numbers.issubset(source_numbers)
+    ):
+        return fallback
+    return text[:1200]
+
+
+def refine_search_query(state: Text2SQLState) -> dict:
+    """Create an internal retrieval query while preserving the user question."""
+    question = str(state.get("question") or "").strip()
+    if state.get("retrieval_query"):
+        return {"retrieval_query": state["retrieval_query"]}
+    if not question or any(
+        state.get(key)
+        for key in (
+            "previous_question",
+            "followup_question",
+            "selected_domain",
+            "selected_tool",
+            "matched_query_name",
+            "selected_tables",
+        )
+    ):
+        return {"retrieval_query": question}
+
+    prompt = f"""당신은 KB카드 기업영업 데이터 검색을 위한 질의 정제기입니다.
+원문의 의미와 사실을 바꾸지 말고, 검색 후보를 찾기 좋은 완전한 한국어 질의 한 문장으로 정리하세요.
+
+규칙:
+1. 기업명·가맹점명·브랜드명·코드·숫자·금액·날짜·기간을 원문 그대로 유지하세요.
+2. 비교 조건, 부정 표현, 집계 단위, 정렬 조건을 빠뜨리지 마세요.
+3. 최근·전월·올해 같은 상대 기간은 구체적인 날짜로 바꾸지 말고 그대로 유지하세요.
+4. 인사말·군더더기·말투만 제거하고, 원문에 없는 대상·조건·사실은 추가하지 마세요.
+5. 답변이나 SQL, 설명은 반환하지 마세요.
+
+원문 질문:
+{question[:4000]}
+
+반환 형식:
+{{"retrieval_query":"검색용 질의 한 문장"}}"""
+    try:
+        refined = _normalize_retrieval_query(_call_llm(prompt, max_tokens=256), question)
+    except Exception:
+        refined = question
+    return {"retrieval_query": refined}
+
+
+def _retrieval_question(state: Text2SQLState | dict) -> str:
+    """Use the rewrite for recall and retain the source text for exact constraints."""
+    question = str(state.get("question") or "").strip()
+    refined = str(state.get("retrieval_query") or "").strip()
+    if not refined or refined == question:
+        return question
+    return f"{refined}\n{question}"
+
+
+def _looks_like_direct_sql(question: str) -> bool:
+    """Recognize a user-authored read query without treating surrounding prose as SQL."""
+    stripped = _strip_llm_code_fence(question)
+    return bool(re.match(r"^\s*(?:SELECT|WITH)\b", stripped, flags=re.IGNORECASE))
+
+
+def _looks_like_schema_question(question: str) -> bool:
+    """Recognize metadata questions that the semantic layer can answer directly."""
+    text = question or ""
+    return bool(
+        re.search(
+            r"(?:어느|어떤)\s*테이블|"
+            r"(?:테이블|컬럼|스키마).{0,16}(?:구조|정의|설명|목록|용도|의미|자료형|데이터\s*타입|알려|뭐|무엇)|"
+            r"(?:grain|그레인|primary\s*key|기본키|주키|PK)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _rule_classify_question(question: str) -> bool:
     """Deterministically route obvious data lookup/aggregation questions to SQL."""
     q = question or ""
-    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|가맹점\s*(수|개수)|가맹점수|승인율|연체|한도|비율|률|순위|정렬", q))
+    has_metric = bool(re.search(r"매출액|매출금액|매출|이용금액|금액|건수|(?:가맹점|업체|기업|법인|회사|회원|고객)\s*(?:수|개수)|가맹점수|(?:유효)?카드\s*(?:수|개수)|몇\s*좌|좌\s*수|발급|승인율|연체|잔액|한도|비율|률|순위|정렬", q))
     has_entity_or_group = bool(re.search(r"가맹점|기업|회사|고객|상호|브랜드|업종|별|도미노피자", q))
     has_time_or_order = bool(re.search(r"저번\s*달|지난\s*달|전월|이번\s*달|이번\s*월|최근|기준|20\d{2}\s*년|\d{1,2}\s*월|높은\s*순|낮은\s*순|정렬", q))
     return has_metric and (has_entity_or_group or has_time_or_order)
@@ -356,6 +617,7 @@ def route_domain(state: Text2SQLState) -> dict:
         }
 
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     domains = SCHEMA.get("canonical_domains", [])
     if not domains:
         return {
@@ -365,13 +627,13 @@ def route_domain(state: Text2SQLState) -> dict:
             "domain_context": "(선택된 도메인 없음)",
         }
 
-    keyword_scores = _keyword_rule_domain_scores(SCHEMA, question)
-    metric_entity_scores = _metric_entity_domain_scores(SCHEMA, question)
+    keyword_scores = _keyword_rule_domain_scores(SCHEMA, retrieval_question)
+    metric_entity_scores = _metric_entity_domain_scores(SCHEMA, retrieval_question)
     embedding_scores: dict[str, float] = {}
     embedding_note = "embedding=OFF"
     if DOMAIN_EMBEDDINGS_AVAILABLE and DOMAIN_EMBEDDINGS:
         try:
-            q_emb = _get_embedding(question)
+            q_emb = _get_embedding(retrieval_question)
             embedding_scores = {
                 domain_name: _cosine_similarity(q_emb, emb)
                 for domain_name, emb in DOMAIN_EMBEDDINGS.items()
@@ -382,16 +644,23 @@ def route_domain(state: Text2SQLState) -> dict:
 
     candidates = _weighted_domain_scores(keyword_scores, metric_entity_scores, embedding_scores)
     reference_domain = _reference_domain_by_rule(question)
+    if (
+        not reference_domain
+        and state.get("retrieval_query")
+        and state["retrieval_query"] != question
+    ):
+        reference_domain = _reference_domain_by_rule(state["retrieval_query"])
     selected = reference_domain or (candidates[0]["domain"] if candidates else "")
     adjudicated = False
     if not reference_domain and _needs_domain_adjudication(candidates):
-        selected = _adjudicate_domain_with_llm(question, candidates, SCHEMA)
+        selected = _adjudicate_domain_with_llm(retrieval_question, candidates, SCHEMA)
         adjudicated = True
 
     domain_context = build_domain_context(SCHEMA, selected)
     trace_lines = [
         f"selected_domain={selected}",
         f"{embedding_note}",
+        f"query_refinement={'ON' if state.get('retrieval_query') and state.get('retrieval_query') != question else 'OFF'}",
         f"reference_domain={'ON(' + reference_domain + ')' if reference_domain else 'OFF'}",
         f"adjudication={'ON' if adjudicated else 'OFF'}",
         "top_candidates:",
@@ -419,6 +688,15 @@ def _extract_ym_from_question(question: str) -> str:
     match = re.search(r"\b(20\d{2})(0[1-9]|1[0-2])\b", question)
     if match:
         return match.group(0)
+    match = re.search(
+        r"(?<!\d)(\d{2})(0[1-9]|1[0-2])\s*(?=(?:기준|월))(?!\d)",
+        question,
+    )
+    if match:
+        return f"20{match.group(1)}{match.group(2)}"
+    match = re.fullmatch(r"\s*(\d{2})(0[1-9]|1[0-2])\s*", question or "")
+    if match:
+        return f"20{match.group(1)}{match.group(2)}"
     if _has_previous_month_lookup(question):
         return _previous_ym()
     if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", question):
@@ -492,6 +770,7 @@ def _apply_name_filter_mode(question: str, sql: str) -> str:
     def adjusted(raw: str) -> str:
         if exact:
             return raw[1:-1] if len(raw) >= 2 and raw.startswith("%") and raw.endswith("%") else raw
+        raw = _name_like_pattern(raw)
         return raw if raw.startswith("%") and raw.endswith("%") else f"%{raw}%"
 
     if not exact:
@@ -539,9 +818,10 @@ def _apply_name_filter_mode(question: str, sql: str) -> str:
 _TIME_EXPRESSION_RE = re.compile(
     r"("
     r"20\d{2}\s*년|20\d{2}(?:0[1-9]|1[0-2])(?:[0-3]\d)?|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)|"
     r"\d{1,2}\s*월|\d{4}-\d{1,2}|\d{4}\.\d{1,2}|"
     r"(?:최근|지난)\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)|"
-    r"오늘|어제|내일|현재|최근|이번\s*(?:달|월|년)|저번\s*달|지난\s*(?:달|월|해|년)|전월|전년|작년|올해|"
+    r"오늘|어제|전일|내일|현재|최근|이번\s*(?:달|월|년)|저번\s*달|지난\s*(?:달|월|해|년)|전월|전년|작년|올해|"
     r"기준(?:일|월|년월|시점)?|기간|월별|일별|연도별|분기|상반기|하반기"
     r")"
 )
@@ -569,36 +849,108 @@ def _is_snapshot_status_question(question: str) -> bool:
     return bool(_SNAPSHOT_STATUS_RE.search(question or ""))
 
 
-def _time_resolution_instruction(question: str) -> str:
+def _accumulation_policy_instruction(table_names: list[str] | None = None) -> str:
+    """Return table-specific load-cycle rules for SQL generation and validation."""
+    policies: list[tuple[str, dict]] = []
+    for raw_name in table_names or []:
+        name = str(raw_name or "").rsplit(".", 1)[-1].lower()
+        policy = accumulation_policy_for(name)
+        if policy and all(existing_name != name for existing_name, _ in policies):
+            policies.append((name, policy))
+    if not policies:
+        return ""
+
+    latest_previous_day = previous_day_ymd()
+    recent_start, recent_end = recent_window_ymd()
+    lines = ["    - 선택 테이블별 적재 주기 계약을 최우선으로 적용합니다."]
+    for name, policy in policies:
+        cadence = str(policy.get("cadence") or "")
+        column = str(policy.get("query_time_dimension") or "")
+        lines.append(f"    - {name}: {format_accumulation_policy(policy)}")
+        if cadence == "daily":
+            if policy.get("available_days"):
+                historical_source = policy.get("historical_source")
+                historical_note = ""
+                if isinstance(historical_source, dict):
+                    historical_note = (
+                        f" 범위 밖 일자나 명시 월/기간은 "
+                        f"`{historical_source.get('table')}.{historical_source.get('query_time_dimension')}`"
+                        f"({historical_source.get('format')})로 조회합니다."
+                    )
+                lines.append(
+                    f'      `{column}`은 KST 기준 {recent_start}~{recent_end}만 조회할 수 있습니다. '
+                    + historical_note
+                )
+            else:
+                lines.append(f"      사용자의 일자/기간은 `{column}`의 YYYYMMDD 조건으로 변환합니다.")
+        elif cadence == "monthly":
+            lines.append(
+                f"      일자 요청도 적재 기준 조건은 `{column}`의 YYYYMM으로 축약합니다. "
+                "업무 발생일은 분석·집계 축으로 쓸 수 있지만 적재 월 조건을 생략하지 않습니다."
+            )
+        elif cadence == "yearly":
+            lines.append(f"      월/일 요청도 적재 기준 조건은 `{column}`의 YYYY로 축약합니다.")
+        elif cadence == "previous_day":
+            historical_source = policy.get("historical_source")
+            lines.append(
+                f'      현재/오늘/전일/기본 조회의 최신 가용일은 KST 전일 `{latest_previous_day}`이며 `{column}`로 조회합니다.'
+            )
+            if isinstance(historical_source, dict):
+                lines.append(
+                    f"      명시 과거 월/기간은 `{historical_source.get('table')}."
+                    f"{historical_source.get('query_time_dimension')}`"
+                    f"({historical_source.get('format')})로 조회합니다. 최신 스냅샷에만 D-1을 적용합니다."
+                )
+            else:
+                lines.append(f"      명시 기간의 종료일도 `{latest_previous_day}`를 넘길 수 없습니다.")
+            if policy.get("has_reference_month") is False:
+                lines.append(
+                    f'      현재 원천에는 물리 `기준년월` 컬럼은 없습니다.'
+                    + (
+                        " 과거 월 비교는 위 월별 원천의 `기준년월`을 사용합니다."
+                        if isinstance(historical_source, dict)
+                        else f' 월 비교가 필요하면 SUBSTR("{column}", 1, 6)으로 파생합니다.'
+                    )
+                )
+    return "\n".join(lines)
+
+
+def _time_resolution_instruction(question: str, table_names: list[str] | None = None) -> str:
     current_ym = _current_ym()
     previous_ym = _previous_ym()
+    policy_rules = _accumulation_policy_instruction(table_names)
     if _has_time_expression(question):
-        return f"""16. 날짜 해석 ({_current_date_context()}):
+        return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자가 명시한 월/기간/상대시점만 날짜 조건으로 반영합니다.
-    - "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석합니다.
+    - "2605 기준" 같은 YYMM 축약은 2000년대 YYYYMM인 "202605"로 해석합니다.
+    - 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석합니다.
     - 이때 기준년월 컬럼은 "{current_ym}" 조건을 사용합니다.
     - 이때 기준년월일/실적기준년월일 컬럼은 SUBSTR(일자컬럼, 1, 6) = "{current_ym}" 범위 안의 최신 기준일을 사용합니다.
+    - "최근 N개월/N달", "최근 반년/N년"은 1개월이 아닌 기간 표현입니다. 명시 기준월이 있으면 그 월을 종료월로, 없으면 현재일/현재월을 종료로 사용합니다.
     - "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 지난달 1개월 기준으로 해석하고, 기준년월 컬럼은 "{previous_ym}" 조건을 사용합니다.
     - "전월 대비", "전월비", "전월과 비교"의 전월은 조회기간이 아니라 비교 기준입니다. 명시된 연/월 기간을 유지하고 LAG 등으로 전월 값을 계산합니다.
     - "가맹점별/각 가맹점별"은 가맹점번호와 가맹점명을 SELECT/GROUP BY에 포함합니다.
-    - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬합니다."""
+    - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬합니다.
+{policy_rules}"""
 
     if _is_snapshot_status_question(question):
-        return f"""16. 날짜 해석 ({_current_date_context()}):
+        return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자 질문에 특정 월/기간/상대시점이 없어도 조회 실패로 처리하지 말고, 시스템이 기준시점을 정해 조회합니다.
     - "소지/보유/현황/유효" 같은 스냅샷성 질문의 기본 기준시점은 데이터 최신 스냅샷입니다.
     - 기준년월 컬럼은 해당 테이블의 MAX(기준년월)을 서브쿼리/CTE로 사용합니다.
     - 기준년월일/실적기준년월일 컬럼은 해당 테이블의 MAX(기준년월일/실적기준년월일)을 서브쿼리/CTE로 사용합니다.
     - 가능하면 SELECT 결과에 조회 기준시점 컬럼을 포함하세요(예: latest."실적기준년월일" AS "조회기준일").
     - 카드 유효성 판단은 질문에 기준일이 없으면 현재 실행일({datetime.now().strftime("%Y%m%d")}) 기준으로 실제카드만료년월일 > 현재일 조건을 사용합니다.
-    - 예시 SQL의 sample_values/default 값은 형식 참고용입니다. 불가피하게 고정 기준시점을 쓰면 답변에서 그 기준시점을 반드시 명시할 수 있게 SQL에 드러내세요."""
+    - 예시 SQL의 sample_values/default 값은 형식 참고용입니다. 불가피하게 고정 기준시점을 쓰면 답변에서 그 기준시점을 반드시 명시할 수 있게 SQL에 드러내세요.
+{policy_rules}"""
 
-    return f"""16. 날짜 해석 ({_current_date_context()}):
+    return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자 질문에 특정 월/기간/상대시점이 없어도 조회 실패로 처리하지 말고, 기준시점이 필요한 경우 시스템이 기준시점을 정해 조회합니다.
     - 기간 집계 질문은 시간 조건 없이 전체 기간 기준으로 집계하거나, 스키마 규칙상 스냅샷이 필수인 지표만 MAX(기준시점) 서브쿼리를 사용합니다.
     - 시스템이 기준시점을 정해 조회하면 SELECT 결과나 답변에서 그 기준시점을 명시할 수 있게 SQL에 드러내세요.
     - "가맹점별/각 가맹점별"은 가맹점번호와 가맹점명을 SELECT/GROUP BY에 포함합니다.
-    - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬합니다."""
+    - "매출액 높은 순"은 매출액 집계 alias 기준 DESC 정렬합니다.
+{policy_rules}"""
 
 
 def _extract_unrequested_time_literals(question: str, sql: str) -> list[str]:
@@ -627,10 +979,56 @@ def _extract_unrequested_time_literals(question: str, sql: str) -> list[str]:
 
 
 def _implicit_time_basis_note(question: str, sql: str) -> str:
+    sql_text = sql or ""
+    used_tables = _extract_schema_tables(sql_text)
+    cadence, _, _ = _tbdaadt01_time_route(question)
+    _, _, explicit_day = _extract_period_by_rule(question)
+    if cadence == "monthly" and explicit_day and "tmdaa5d01" in used_tables:
+        return (
+            f"요청일 {explicit_day}은 tbdaadt01의 최근 10일 보관 범위 밖이므로 "
+            f"tmdaa5d01의 월 스냅샷({explicit_day[:6]}) 기준으로 조회했습니다. "
+            "일 단위 해상도는 제공되지 않습니다."
+        )
+    historical_start, historical_end = _previous_day_archive_route(question)
+    historical_archives = sorted(
+        table
+        for table in used_tables
+        if table in set(_PREVIOUS_DAY_ARCHIVE_TABLES.values())
+    )
+    if historical_start and historical_archives:
+        period = (
+            historical_start
+            if historical_start == historical_end
+            else f"{historical_start}~{historical_end}"
+        )
+        return (
+            f"{', '.join(historical_archives)}의 월별 스냅샷({period}) 기준으로 "
+            "과거 기간을 조회했습니다."
+        )
+    previous_day_tables = sorted(
+        table
+        for table in used_tables
+        if (accumulation_policy_for(table) or {}).get("cadence") == "previous_day"
+    )
+    if previous_day_tables:
+        return (
+            f"{', '.join(previous_day_tables)}는 KST 전일({previous_day_ymd()})까지 적재되는 "
+            "전일 스냅샷 기준으로 조회했습니다."
+        )
+    recent_window_tables = sorted(
+        table
+        for table in used_tables
+        if (accumulation_policy_for(table) or {}).get("available_days")
+    )
+    if recent_window_tables:
+        start, end = recent_window_ymd()
+        return (
+            f"{', '.join(recent_window_tables)}의 조회 가능 범위인 KST 최근 10일"
+            f"({start}~{end}) 기준으로 조회했습니다."
+        )
     if _has_time_expression(question):
         return ""
 
-    sql_text = sql or ""
     max_cols = []
     for col in _TIME_FILTER_COLUMNS:
         quoted_col = rf'(?:(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\.)?"?{re.escape(col)}"?'
@@ -651,14 +1049,14 @@ def _implicit_time_basis_note(question: str, sql: str) -> str:
 
 
 def _current_ym() -> str:
-    now = datetime.now()
-    return f"{now.year}{now.month:02d}"
+    today = kst_today()
+    return f"{today.year}{today.month:02d}"
 
 
 def _previous_ym() -> str:
-    now = datetime.now()
-    year = now.year if now.month > 1 else now.year - 1
-    month = now.month - 1 if now.month > 1 else 12
+    today = kst_today()
+    year = today.year if today.month > 1 else today.year - 1
+    month = today.month - 1 if today.month > 1 else 12
     return f"{year}{month:02d}"
 
 
@@ -676,17 +1074,54 @@ def _month_end(yyyymm: str) -> str:
     return f"{yyyymm}{monthrange(year, month)[1]:02d}"
 
 
+def _extract_half_year_ranges_by_rule(question: str) -> list[tuple[str, str]]:
+    ranges = []
+    for match in re.finditer(r"(20\d{2})\s*년\s*(상반기|하반기)", question or ""):
+        year, half = match.groups()
+        ranges.append((f"{year}01", f"{year}06") if half == "상반기" else (f"{year}07", f"{year}12"))
+    return ranges
+
+
 def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     """Return ``(start_ym, end_ym, explicit_yyyymmdd)`` from Korean date text."""
     text = question or ""
-    day = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
+    business_today = kst_today()
+    day = re.search(
+        r"(?<!\d)(20\d{2})[-./](\d{1,2})[-./](\d{1,2})(?!\d)|"
+        r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])([0-3]\d)(?!\d)|"
+        r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일",
+        text,
+    )
     explicit_day = ""
     if day:
+        parts = next(
+            day.groups()[index : index + 3]
+            for index in range(0, 9, 3)
+            if day.group(index + 1)
+        )
         try:
-            explicit_day = f"{day.group(1)}{int(day.group(2)):02d}{int(day.group(3)):02d}"
+            explicit_day = f"{parts[0]}{int(parts[1]):02d}{int(parts[2]):02d}"
             datetime.strptime(explicit_day, "%Y%m%d")
         except ValueError:
             explicit_day = ""
+        if explicit_day:
+            return explicit_day[:6], explicit_day[:6], explicit_day
+
+    inherited_year_range = re.search(
+        r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(?:부터|에서|~|～|-)\s*"
+        r"(\d{1,2})\s*월(?:\s*까지)?",
+        text,
+    )
+    if inherited_year_range:
+        year = inherited_year_range.group(1)
+        start_month = int(inherited_year_range.group(2))
+        end_month = int(inherited_year_range.group(3))
+        if 1 <= start_month <= 12 and 1 <= end_month <= 12:
+            return f"{year}{start_month:02d}", f"{year}{end_month:02d}", explicit_day
+
+    half_year_ranges = _extract_half_year_ranges_by_rule(text)
+    if half_year_ranges:
+        return half_year_ranges[0][0], half_year_ranges[-1][1], explicit_day
 
     months = [
         f"{match.group(1)}{int(match.group(2)):02d}"
@@ -694,12 +1129,37 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
         if 1 <= int(match.group(2)) <= 12
     ]
     months.extend(re.findall(r"(?<!\d)(20\d{2}(?:0[1-9]|1[0-2]))(?!\d)", text))
+    months.extend(
+        f"20{match.group(1)}{match.group(2)}"
+        for match in re.finditer(
+            r"(?<!\d)(\d{2})(0[1-9]|1[0-2])\s*(?=(?:기준|월))(?!\d)",
+            text,
+        )
+    )
+    shorthand_only = re.fullmatch(r"\s*(\d{2})(0[1-9]|1[0-2])\s*", text)
+    if shorthand_only:
+        months.append(f"20{shorthand_only.group(1)}{shorthand_only.group(2)}")
     months = list(dict.fromkeys(months))
     if months:
         return months[0], months[-1], explicit_day
 
-    now = datetime.now()
+    if re.search(r"어제|전일", text):
+        explicit_day = previous_day_ymd(business_today)
+        return explicit_day[:6], explicit_day[:6], explicit_day
+    if re.search(r"오늘", text):
+        explicit_day = business_today.strftime("%Y%m%d")
+        return explicit_day[:6], explicit_day[:6], explicit_day
+
+    now = business_today
     current = f"{now.year}{now.month:02d}"
+    half_year = re.search(r"(?:(20\d{2})\s*년\s*)?(상반기|하반기)", text)
+    if half_year:
+        year = int(half_year.group(1) or now.year)
+        return (
+            (f"{year}01", f"{year}06", explicit_day)
+            if half_year.group(2) == "상반기"
+            else (f"{year}07", f"{year}12", explicit_day)
+        )
     recent = re.search(r"(?:최근|지난)\s*(\d+)\s*(?:개월|달)", text)
     if recent:
         span = max(1, min(int(recent.group(1)), 120))
@@ -717,6 +1177,11 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     if year_match:
         year = year_match.group(1)
         return f"{year}01", f"{year}12", explicit_day
+    if (
+        re.search(r"작년|지난해|전년(?:도)?", text)
+        and re.search(r"올해|금년", text)
+    ):
+        return f"{now.year - 1}01", current, explicit_day
     if "작년" in text or "지난해" in text:
         year = now.year - 1
         return f"{year}01", f"{year}12", explicit_day
@@ -728,6 +1193,40 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     if re.search(r"이번\s*(?:달|월)|현재(?:\s*(?:월|시점))?|최근", text):
         return current, current, explicit_day
     return "", "", explicit_day
+
+
+def _extract_card_issue_cancel_periods_by_rule(question: str) -> tuple[str, str, str, str]:
+    """Extract separate issue and cancellation month ranges from one sentence."""
+    text = re.sub(r"\s+", " ", question or "").strip()
+    month_spec = r"[0-9월,·~\-\s]+"
+    patterns = (
+        (
+            rf"발급(?:을|한|하고|일)?\s*(?P<year>20\d{{2}}|\d{{2}})\s*년\s*"
+            rf"(?P<issued>{month_spec})(?:에|중에)?\s*(?:하고|후|뒤|이후)\s*"
+            rf"(?P<cancelled>{month_spec})(?:안에|내에|중에|에)?\s*해지"
+        ),
+        (
+            rf"(?P<year>20\d{{2}}|\d{{2}})\s*년\s*(?P<issued>{month_spec})"
+            rf"(?:에|중에)?\s*발급.{0,20}?(?:하고|후|뒤|이후)\s*"
+            rf"(?P<cancelled>{month_spec})(?:안에|내에|중에|에)?\s*해지"
+        ),
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        year = int(match.group("year"))
+        year = year + 2000 if year < 100 else year
+        issued = [int(value) for value in re.findall(r"\d{1,2}", match.group("issued"))]
+        cancelled = [int(value) for value in re.findall(r"\d{1,2}", match.group("cancelled"))]
+        if issued and cancelled and all(1 <= month <= 12 for month in issued + cancelled):
+            return (
+                f"{year}{min(issued):02d}",
+                f"{year}{max(issued):02d}",
+                f"{year}{min(cancelled):02d}",
+                f"{year}{max(cancelled):02d}",
+            )
+    return "", "", "", ""
 
 
 _AMOUNT_UNIT = {
@@ -822,6 +1321,29 @@ def _extract_recent_closed_merchant_name_by_rule(question: str) -> str:
     return ""
 
 
+def _extract_merchant_number_by_rule(question: str) -> str:
+    match = re.search(r"가맹점\s*(?:번호|ID)\s*(?:[:=]\s*)?[\"']?(\d+)", question or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+_PRESENTATION_SENTENCE_RE = re.compile(
+    r"^(?:결과\s*확인\s*요청\s*:|(?:(?:업무|데이터|운영|간단|정확|분석|DB|리포트|담당자|수치|아래|현업|집계|"
+    r"결과|정기|조건|통계|질문|조회|보고|자료|요청|현황)[^.!?\n:]{0,50}"
+    r"(?:해줘|필요해|질문이야|요청이야|건이야|부탁해)|DB\s*조회\s*요청)\s*[.!?:])\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_presentation_prefix(question: str) -> str:
+    """Remove a leading reporting-style sentence before entity extraction."""
+    text = str(question or "").strip()
+    while True:
+        stripped = _PRESENTATION_SENTENCE_RE.sub("", text, count=1).strip()
+        if stripped == text:
+            return text
+        text = stripped
+
+
 def _extract_merchant_name_by_rule(question: str) -> str:
     """Extract a merchant/brand name from high-confidence question shapes.
 
@@ -829,24 +1351,31 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     next to a period and sales metric, such as ``도미노 피자 최근 6개월
     매출액``. Generic subjects remain for the LLM/clarification path.
     """
-    text = question or ""
+    text = _strip_presentation_prefix(question)
+    if _extract_merchant_number_by_rule(text):
+        return ""
     recent_closed_name = _extract_recent_closed_merchant_name_by_rule(text)
     if recent_closed_name:
         return recent_closed_name
     text = re.sub(r"20\d{2}\s*년\s*\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?", " ", text)
     text = re.sub(r"(?<!\d)20\d{4}(?:\d{2})?(?!\d)", " ", text)
+    text = re.sub(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?=기준|월)(?!\d)", " ", text)
     token = r"[0-9A-Za-z가-힣&()._-]+"
     patterns = [
-        rf"({token}(?:\s+{token}){{0,4}}?)\s+(?:가맹점\s*주|가맹점주|점주|대표자)",
+        rf"({token}(?:\s+{token}){{0,4}}?)\s+(?:가맹점\s*주|가맹점주|점주|대표자|점포별(?:의)?|매장별(?:의)?)",
         rf"({token}(?:\s+{token}){{0,4}})\s+브랜드\s+가맹점",
-        rf"({token}(?:\s+{token}){{0,4}})\s+가맹점",
+        rf"({token}(?:\s+{token}){{0,4}}?)\s+가맹점",
     ]
     generic = {
         "당사", "해당", "특정", "전체", "모든", "사용중인", "사용 중인",
         "신규", "활성", "기업", "법인", "개인사업자", "관리하고 있는",
+        # "2026년 7월 기준 가맹점 대표자로 등록된 관계" 에서 날짜를 지우면
+        # "기준 가맹점 대표자" 가 남아 '기준 가맹점' 이 이름으로 잡혔다.
+        # 그 이름으로 LIKE '%기준%가맹점%' 필터가 붙어 SQL 전체가 어긋났다.
+        "기준", "가맹점", "당월", "금월", "전월",
     }
     invalid_candidate_context = re.compile(
-        r"최근|지난|이번|저번|전월|매출|업종별|가맹점별|법인카드|기업카드|"
+        r"최근|지난|이번|저번|전월|매출|(?:일|주|월|분기|반기|연도|년도|날짜|기간|업종|가맹점|기업|회사|지역|등급)별|법인카드|기업카드|"
         r"폐업|휴폐업|해지|일년|\d+\s*년|\d+\s*(?:개월|달)|반년"
     )
     for pattern in patterns:
@@ -854,13 +1383,15 @@ def _extract_merchant_name_by_rule(question: str) -> str:
         if not match:
             continue
         candidate = re.sub(r"\s+", " ", match.group(1)).strip()
-        candidate = re.sub(r"^(?:내가|현재|우리|KB국민)\s+", "", candidate).strip()
+        candidate = re.sub(r"^(?:내가|현재|우리|KB국민|기준)\s+", "", candidate).strip()
+        candidate = re.sub(r"\s+기준$", "", candidate).strip()
         compact = re.sub(r"\s+", "", candidate)
         if (
             candidate
             and candidate not in generic
             and len(candidate) <= 80
             and not invalid_candidate_context.search(compact)
+            and not _is_grouping_axis_phrase(candidate)
         ):
             return candidate
 
@@ -883,7 +1414,18 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     generic_compact = {
         "당사", "해당", "특정", "전체", "모든", "기업", "법인", "개인사업자",
         "가맹점", "브랜드", "업종", "법인카드", "기업카드", "카드",
+        "일별", "주별", "월별", "분기별", "반기별", "연도별", "년도별", "날짜별",
+        "기간별", "기업별", "회사별", "지역별", "등급별",
+        # "2026년 상반기 매출 상위 10개 가맹점" 에서 연도를 지우면 '상반기' 가
+        # 남아 LIKE '%상반기%' 가 붙고 0행이 나왔다. 기간 어구는 이름이 아니다.
+        "상반기", "하반기", "분기", "반기", "올해", "작년", "전년", "금년",
+        "당월", "금월", "전월", "기준",
     }
+    presentation_prefix = re.compile(
+        r"(?:보고|보고용|업무|확인|질문|요청|조회|분석|정리|알려|보여|뽑아|추출|"
+        r"해주세요|해줘|부탁)(?:\s|[.!?]|$)",
+        re.IGNORECASE,
+    )
     for pattern in fallback_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if not match:
@@ -897,7 +1439,89 @@ def _extract_merchant_name_by_rule(question: str) -> str:
             and len(candidate) <= 80
             and compact not in generic_compact
             and not invalid_candidate_context.search(compact)
+            and not _is_grouping_axis_phrase(candidate)
+            and not presentation_prefix.search(candidate)
+            and not re.search(r"[.!?]$", candidate)
         ):
+            return candidate
+    return ""
+
+
+# v2: "회원자격별로 현재 기준 통합한도금액을 보여줘" 에서 기업명 파라미터가
+# '회원자격별로' 로 채워져, corporate_limit_status_at_month 가 이름 필터
+# LIKE '%회원자격별로%' 로 실행되고 0행이 나왔다. "X별/X별로/X 기준으로" 는
+# 그룹핑 축을 지목하는 말이지 어떤 기업·가맹점의 이름이 아니다.
+_GROUPING_AXIS_PHRASE_RE = re.compile(r"(?:별로|별|기준(?:으로)?|단위(?:로)?)$")
+
+
+def _is_grouping_axis_phrase(candidate: str) -> bool:
+    """Return whether a name candidate is really a group-by axis, not an entity."""
+    return bool(_GROUPING_AXIS_PHRASE_RE.search(re.sub(r"\s+", "", candidate or "")))
+
+
+def _extract_company_name_by_rule(question: str) -> str:
+    """Extract a named corporate customer from a timed usage or limit question."""
+    text = _strip_presentation_prefix(question)
+    if (
+        not re.search(
+            r"이용\s*(?:금액|액|실적)|사용\s*(?:금액|액)|카드\s*이용|"
+            r"총\s*한도|잔여\s*한도|가용\s*한도|한도(?:\s*(?:금액|현황|소진율|사용률))?",
+            text,
+        )
+        or not _has_time_expression(text)
+    ):
+        return ""
+
+    token = r"[0-9A-Za-z가-힣&()._-]+"
+    time_phrase = (
+        r"현재(?:\s*기준)?|작년|지난해|전년(?:도)?|올해|금년|"
+        r"최근|지난\s*\d+\s*(?:개월|달|년)|이번\s*(?:달|월|년)|"
+        r"20\d{2}\s*년"
+    )
+    match = re.search(
+        rf"^\s*(?P<name>{token}(?:\s+{token}){{0,4}}?)\s*(?:의|에서)?\s*(?={time_phrase})",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+
+    candidate = re.sub(r"\s+", " ", match.group("name")).strip()
+    candidate = re.sub(r"(?:의|에서)$", "", candidate).strip()
+    generic = {
+        "당사", "해당", "특정", "전체", "모든", "기업", "법인", "회사",
+        "기업회원", "법인회원", "기업카드", "법인카드", "카드",
+    }
+    if _is_grouping_axis_phrase(candidate):
+        return ""
+    return candidate if candidate and candidate not in generic and len(candidate) <= 80 else ""
+
+
+def _extract_card_product_name_by_rule(question: str) -> str:
+    """Extract a card product name from product-specific portfolio questions."""
+    text = re.sub(r"\s+", " ", _strip_presentation_prefix(question)).strip()
+    token = r"[0-9A-Za-z가-힣&()._-]+"
+    patterns = (
+        (
+            rf"^(?:현재\s*기준|현재|최신\s*기준)?\s*"
+            rf"(?P<name>{token}(?:\s+{token}){{0,5}}?)\s+"
+            rf"(?:기업|법인)카드\s+유효\s*카드\s*(?:수|개수)"
+        ),
+        (
+            rf"(?:(?:20\d{{2}}\s*년\s*)?(?:상반기|하반기))(?:에|동안|중)?\s+"
+            rf"(?P<name>{token}(?:\s+{token}){{0,5}}?)\s+체크카드"
+        ),
+    )
+    generic = {
+        "기업", "법인", "기업카드", "법인카드", "체크", "체크카드",
+        "상품", "카드상품", "해당", "특정", "전체", "모든",
+    }
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        candidate = match.group("name").strip()
+        if candidate and candidate not in generic and len(candidate) <= 80:
             return candidate
     return ""
 
@@ -907,7 +1531,7 @@ def _is_named_merchant_sales_question(question: str) -> bool:
     return bool(
         _has_time_expression(question)
         and re.search(r"매출(?:액|금액)?|매출\s*추이", question or "")
-        and _extract_merchant_name_by_rule(question)
+        and (_extract_merchant_number_by_rule(question) or _extract_merchant_name_by_rule(question))
     )
 
 
@@ -936,7 +1560,11 @@ def _is_brand_merchant_owner_corporate_card_count_question(question: str) -> boo
     )
 
 
-def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
+def _extract_params_by_rule(
+    question: str,
+    param_specs: list[dict],
+    table_names: list[str] | set[str] | None = None,
+) -> dict:
     """Deterministically extract high-confidence common parameters.
 
     This intentionally handles only values whose surface form is unambiguous;
@@ -944,6 +1572,14 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
     """
     names = {str(spec.get("name") or "") for spec in param_specs if spec.get("name")}
     params: dict = {}
+    for spec in param_specs:
+        name = str(spec.get("name") or "")
+        if not name:
+            continue
+        attribute_name = str(spec.get("semantic_attribute") or name)
+        resolved = resolve_semantic_attribute_value(SCHEMA, attribute_name, question)
+        if resolved:
+            params[name] = resolved
     recent_period_months = _extract_recent_period_months_by_rule(question)
     for name in {"조회기간개월수", "기간개월수"} & names:
         if recent_period_months is not None:
@@ -958,12 +1594,34 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
             params[name] = parse_business_number_list(question)
         except ManagedScopeParseError:
             pass
+    half_year_ranges = _extract_half_year_ranges_by_rule(question)
+    comparison_period_params = {}
+    if len(half_year_ranges) >= 2:
+        comparison_period_params = {
+            "기준기간_시작": half_year_ranges[0][0],
+            "기준기간_종료": half_year_ranges[0][1],
+            "대상기간_시작": half_year_ranges[1][0],
+            "대상기간_종료": half_year_ranges[1][1],
+        }
+        params.update({name: value for name, value in comparison_period_params.items() if name in names})
     start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
+    previous_day_source = any(
+        (accumulation_policy_for(table_name) or {}).get("cadence") == "previous_day"
+        for table_name in (table_names or [])
+    )
     for name in names:
         if not start_ym and not explicit_day:
             break
+        if name in comparison_period_params:
+            continue
         if name in {"기준년월일", "카드만료기준일"}:
-            params[name] = explicit_day or _month_end(end_ym)
+            use_today = name == "기준년월일" and re.search(
+                r"오늘|현재(?:\s*(?:시점|기준))?", question or ""
+            )
+            if name == "기준년월일" and previous_day_source and use_today:
+                params[name] = previous_day_ymd()
+            else:
+                params[name] = explicit_day or (kst_today().strftime("%Y%m%d") if use_today else _month_end(end_ym))
         elif name == "전월기준년월":
             params[name] = _months_back_ym(end_ym, 1)
         elif "최근6개월_시작" == name:
@@ -977,14 +1635,12 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
         elif name == "기준년":
             params[name] = end_ym[:4]
 
-    limit_match = re.search(r"(?:상위|하위|TOP|톱)\s*(\d+)", question or "", re.IGNORECASE)
-    if not limit_match:
-        limit_match = re.search(r"(\d+)\s*(?:개|곳|건|명)(?!월)", question or "")
-    if "limit" in names and limit_match:
-        params["limit"] = min(max(int(limit_match.group(1)), 1), 500)
+    row_request = parse_row_request(question)
+    if "limit" in names and row_request.limit is not None:
+        params["limit"] = min(row_request.limit, MAX_QUERY_ROW_LIMIT)
 
     amount_specs = {
-        "월평균금액": ("월평균", "평균 이용금액", "평균금액"),
+        "월평균금액": ("월평균", "월 평균", "평균 이용금액", "평균금액"),
         "월매출금액": ("월매출", "월 매출", "매출액", "매출금액"),
         "한도금액": ("총한도", "한도금액", "한도"),
     }
@@ -1000,10 +1656,22 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
         month_span = re.search(r"(?:최근|현재\s*시점\s*기준)?\s*(\d{1,3})\s*개월", question or "")
         if month_span:
             params["조회개월수"] = max(1, min(int(month_span.group(1)), 120))
+    if "가맹점번호" in names:
+        merchant_number = _extract_merchant_number_by_rule(question)
+        if merchant_number:
+            params["가맹점번호"] = merchant_number
     if "가맹점명" in names:
         merchant_name = _extract_merchant_name_by_rule(question)
         if merchant_name:
             params["가맹점명"] = merchant_name
+    if "기업명" in names:
+        company_name = _extract_company_name_by_rule(question)
+        if company_name:
+            params["기업명"] = company_name
+    if "상품명" in names:
+        product_name = _extract_card_product_name_by_rule(question)
+        if product_name:
+            params["상품명"] = product_name
     for name in ("LS", "IS"):
         if name in names:
             match = re.search(rf"(?<![A-Za-z]){name}\s*(?:[:=은는])?\s*(-?\d+(?:\.\d+)?)", question or "", re.IGNORECASE)
@@ -1019,6 +1687,15 @@ def _extract_params_by_rule(question: str, param_specs: list[dict]) -> dict:
                 break
     if "이름정확일치" in names and _is_exact_name_match_requested(question):
         params["이름정확일치"] = True
+    issue_start, issue_end, cancel_start, cancel_end = _extract_card_issue_cancel_periods_by_rule(question)
+    for name, value in {
+        "발급기간_시작": issue_start,
+        "발급기간_종료": issue_end,
+        "해지기간_시작": cancel_start,
+        "해지기간_종료": cancel_end,
+    }.items():
+        if name in names and value:
+            params[name] = value
     return params
 
 
@@ -1037,7 +1714,7 @@ def _normalize_params(params: dict, param_specs: list[dict]) -> dict:
                 if not re.fullmatch(r"[+-]?\d+", raw):
                     continue
                 number = int(raw)
-                normalized[name] = min(max(number, 1), 500) if name == "limit" else number
+                normalized[name] = min(max(number, 1), MAX_QUERY_ROW_LIMIT) if name == "limit" else number
             elif param_type in {"number", "float", "decimal"}:
                 raw = str(value).replace(",", "").strip().removesuffix("%")
                 if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", raw):
@@ -1057,9 +1734,10 @@ def _normalize_params(params: dict, param_specs: list[dict]) -> dict:
 
 
 def _relative_month_target(question: str) -> tuple[str, str]:
-    if re.search(r"저번\s*달|지난\s*달|전월", question):
+    if _has_previous_month_lookup(question):
         return _previous_ym(), "저번달/지난달/전월"
-    if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", question):
+    lookup_text = re.sub(_RECENT_CLOSURE_PERIOD_PATTERN, " ", question or "")
+    if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", lookup_text):
         return _current_ym(), "최근/이번달/최근 기준"
     return "", ""
 
@@ -1144,6 +1822,457 @@ def _apply_recent_month_sql_fix(question: str, sql: str) -> str:
     return fixed
 
 
+_TBDAADT01_TABLE = "tbdaadt01"
+_TBDAADT01_TIME_COLUMN = "실적기준년월일"
+_SQL_SOURCE_KEYWORDS = {
+    "where", "join", "left", "right", "inner", "full", "cross", "on",
+    "group", "order", "limit", "union", "having", "qualify", "window",
+}
+_SQL_RELATION_RE = re.compile(
+    r'\b(?P<kind>FROM|JOIN)\s+'
+    r'(?:(?:"(?P<quoted_schema>[A-Za-z_][A-Za-z0-9_]*)"|'
+    r'(?P<plain_schema>[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*)?'
+    r'(?:"(?P<quoted_table>[A-Za-z_][A-Za-z0-9_]*)"|'
+    r'(?P<plain_table>[A-Za-z_][A-Za-z0-9_]*))'
+    r'(?:\s+(?:AS\s+)?(?:"(?P<quoted_alias>[A-Za-z_][A-Za-z0-9_]*)"|'
+    r'(?P<plain_alias>[A-Za-z_][A-Za-z0-9_]*)))?',
+    re.IGNORECASE,
+)
+
+
+def _sql_table_bindings(sql: str) -> list[dict[str, object]]:
+    """Return physical table/alias bindings without treating CTEs as sources."""
+    used_tables = _extract_schema_tables(sql)
+    bindings: list[dict[str, object]] = []
+    for match in _SQL_RELATION_RE.finditer(sql or ""):
+        table = str(match.group("quoted_table") or match.group("plain_table") or "").lower()
+        if table not in used_tables:
+            continue
+        raw_alias = str(match.group("quoted_alias") or match.group("plain_alias") or "")
+        explicit_alias = bool(raw_alias) and raw_alias.lower() not in _SQL_SOURCE_KEYWORDS
+        alias = raw_alias if explicit_alias else table
+        table_group = "quoted_table" if match.group("quoted_table") is not None else "plain_table"
+        bindings.append(
+            {
+                "table": table,
+                "alias": alias.lower(),
+                "explicit_alias": explicit_alias,
+                "table_span": match.span(table_group),
+            }
+        )
+    return bindings
+
+
+def _table_aliases(sql: str, table_name: str) -> list[tuple[str, bool]]:
+    target = str(table_name or "").lower()
+    return list(
+        dict.fromkeys(
+            (str(binding["alias"]), bool(binding["explicit_alias"]))
+            for binding in _sql_table_bindings(sql)
+            if binding["table"] == target
+        )
+    )
+
+
+def _qualified_column(alias: str, column: str) -> str:
+    return (
+        rf'"?{re.escape(alias)}"?\s*\.\s*"?{re.escape(column)}"?'
+        r'(?![0-9A-Za-z_가-힣])'
+    )
+
+
+def _has_alias_column_equality(sql: str, left_alias: str, right_alias: str, column: str) -> bool:
+    left = _qualified_column(left_alias, column)
+    right = _qualified_column(right_alias, column)
+    return bool(
+        re.search(
+            rf'(?:{left}\s*=\s*{right}|{right}\s*=\s*{left})',
+            sql or "",
+            re.IGNORECASE,
+        )
+    )
+
+
+def _replace_physical_table(sql: str, source_table: str, target_table: str) -> str:
+    """Replace only physical relation names and their unaliased qualifiers."""
+    source = source_table.lower()
+    spans = [
+        binding["table_span"]
+        for binding in _sql_table_bindings(sql)
+        if binding["table"] == source
+    ]
+    rewritten = sql
+    for start, end in sorted(spans, reverse=True):
+        rewritten = rewritten[:start] + target_table + rewritten[end:]
+    # An unaliased source may qualify columns with its physical table name.
+    rewritten = re.sub(
+        rf'(?<![A-Za-z0-9_])"?{re.escape(source_table)}"?(?=\s*\.)',
+        target_table,
+        rewritten,
+        flags=re.IGNORECASE,
+    )
+    return rewritten
+
+
+def _recent_merchant_time_route(question: str) -> tuple[str, str, str]:
+    """Return ``(daily|monthly, start, end)`` for a recent merchant source."""
+    start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
+    if explicit_day:
+        recent_start, recent_end = recent_window_ymd(today=kst_today())
+        if recent_start <= explicit_day <= recent_end:
+            return "daily", explicit_day, explicit_day
+        return "monthly", explicit_day[:6], explicit_day[:6]
+
+    explicit_month = bool(
+        _has_historical_period_expression(question)
+        or re.search(r"이번\s*(?:달|월)", question or "")
+    )
+    if explicit_month and start_ym and end_ym:
+        return "monthly", start_ym, end_ym
+    return "", "", ""
+
+
+# Kept for compatibility with focused helpers/tests that use the old private name.
+_tbdaadt01_time_route = _recent_merchant_time_route
+
+
+def _routed_time_predicate(column: str, cadence: str, start: str, end: str) -> str:
+    routed_column = column
+    if cadence == "monthly":
+        routed_column = re.sub(
+            rf'"?{re.escape(_TBDAADT01_TIME_COLUMN)}"?',
+            '"기준년월"',
+            routed_column,
+            flags=re.IGNORECASE,
+        )
+    if start == end:
+        return f"{routed_column} = '{start}'"
+    return f"{routed_column} BETWEEN '{start}' AND '{end}'"
+
+
+def _rewrite_tbdaadt01_time_predicates(
+    sql: str,
+    cadence: str,
+    start: str,
+    end: str,
+    aliases: list[tuple[str, bool]] | None = None,
+) -> tuple[str, int]:
+    """Replace time predicates owned by the merchant source aliases only."""
+    dynamic_start = (
+        r"DATE_FORMAT\s*\(\s*DATE_ADD\s*\(\s*'day'\s*,\s*-9\s*,\s*"
+        r"CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'\s*\)\s*,\s*'%Y%m%d'\s*\)"
+    )
+    dynamic_end = (
+        r"DATE_FORMAT\s*\(\s*CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'"
+        r"\s*,\s*'%Y%m%d'\s*\)"
+    )
+    rewritten = sql or ""
+    replacements = 0
+    source_aliases = aliases or _table_aliases(sql, _TBDAADT01_TABLE)
+    for alias, explicit_alias in source_aliases:
+        qualifier = _qualified_column(alias, _TBDAADT01_TIME_COLUMN)
+        if not explicit_alias:
+            qualifier = (
+                rf'(?:(?:"?{re.escape(alias)}"?\s*\.\s*)?'
+                rf'"?{re.escape(_TBDAADT01_TIME_COLUMN)}"?)'
+            )
+        column = rf'(?P<column>{qualifier})'
+        patterns = (
+            rf"{column}\s+BETWEEN\s+{dynamic_start}\s+AND\s+{dynamic_end}",
+            rf"(?:SUBSTR|SUBSTRING)\s*\(\s*{column}\s*,\s*1\s*,\s*6\s*\)"
+            r"\s+BETWEEN\s+'20\d{4}'\s+AND\s+'20\d{4}'",
+            rf"(?:SUBSTR|SUBSTRING)\s*\(\s*{column}\s*,\s*1\s*,\s*6\s*\)"
+            r"\s*=\s*'20\d{4}'",
+            rf"{column}\s+BETWEEN\s+'20\d{{4,6}}'\s+AND\s+'20\d{{4,6}}'",
+            rf"{column}\s*=\s*'20\d{{4,6}}'",
+            rf"{column}\s*>=\s*'20\d{{4,6}}'\s+AND\s+{qualifier}"
+            r"\s*<=\s*'20\d{4,6}'",
+        )
+        for pattern in patterns:
+            rewritten, count = re.subn(
+                pattern,
+                lambda match: _routed_time_predicate(
+                    match.group("column"), cadence, start, end
+                ),
+                rewritten,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            replacements += count
+    return rewritten, replacements
+
+
+def _inject_routed_time_predicate(
+    sql: str,
+    predicate: str,
+    table_name: str,
+    alias: str = "",
+) -> str:
+    """Add a source filter to the SELECT scope that owns the routed source."""
+    source = re.search(
+        rf'\b(?:FROM|JOIN)\s+(?:(?:"?[A-Za-z_]\w*"?)\s*\.\s*)?"?{re.escape(table_name)}"?'
+        r'(?:\s+(?:AS\s+)?(?!(?:WHERE|JOIN|LEFT|RIGHT|INNER|FULL|CROSS|ON|GROUP|ORDER|'
+        r'HAVING|LIMIT|UNION)\b)"?[A-Za-z_]\w*"?)?',
+        sql or "",
+        re.IGNORECASE,
+    )
+    if not source:
+        return sql
+    tail = sql[source.end():]
+    where = re.search(r"\bWHERE\b", tail, re.IGNORECASE)
+    boundary = re.search(r"\b(?:GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION)\b", tail, re.IGNORECASE)
+    if where and (not boundary or where.start() < boundary.start()):
+        position = source.end() + where.end()
+        return f"{sql[:position]} {predicate} AND{sql[position:]}"
+    if boundary:
+        position = source.end() + boundary.start()
+        return f"{sql[:position]} WHERE {predicate} {sql[position:]}"
+    suffix = ";" if (sql or "").rstrip().endswith(";") else ""
+    base = (sql or "").rstrip().removesuffix(";").rstrip()
+    return f"{base} WHERE {predicate}{suffix}"
+
+
+def _ensure_archive_month_joins(sql: str, archive_aliases: list[str]) -> str:
+    """Pair monthly merchant snapshots with monthly facts at the same month."""
+    monthly_fact_tables = {"tmdaa5e11", "tbdaabt30"}
+    fact_aliases = [
+        str(binding["alias"])
+        for binding in _sql_table_bindings(sql)
+        if binding["table"] in monthly_fact_tables
+    ]
+    rewritten = sql
+    for archive_alias in archive_aliases:
+        for fact_alias in fact_aliases:
+            merchant_pair = (
+                rf'(?:{_qualified_column(archive_alias, "가맹점번호")}\s*=\s*'
+                rf'{_qualified_column(fact_alias, "가맹점번호")}|'
+                rf'{_qualified_column(fact_alias, "가맹점번호")}\s*=\s*'
+                rf'{_qualified_column(archive_alias, "가맹점번호")})'
+            )
+            if not re.search(merchant_pair, rewritten, re.IGNORECASE):
+                continue
+            if _has_alias_column_equality(rewritten, archive_alias, fact_alias, "기준년월"):
+                continue
+            match = re.search(merchant_pair, rewritten, re.IGNORECASE)
+            if match:
+                rewritten = (
+                    rewritten[: match.end()]
+                    + f' AND {archive_alias}."기준년월" = {fact_alias}."기준년월"'
+                    + rewritten[match.end() :]
+                )
+    return rewritten
+
+
+def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
+    """Route bounded merchant-master periods to their declared physical source."""
+    if _TBDAADT01_TABLE not in _extract_schema_tables(sql):
+        return sql
+    cadence, start, end = _tbdaadt01_time_route(question)
+    if not cadence:
+        return sql
+
+    policy = accumulation_policy_for(_TBDAADT01_TABLE) or {}
+    historical_source = policy.get("historical_source")
+    if cadence == "monthly" and not isinstance(historical_source, dict):
+        return sql
+
+    source_aliases = _table_aliases(sql, _TBDAADT01_TABLE)
+    routed, replacements = _rewrite_tbdaadt01_time_predicates(
+        sql, cadence, start, end, source_aliases
+    )
+    if cadence == "monthly":
+        table_name = str(historical_source.get("table") or "")
+        time_column = str(historical_source.get("query_time_dimension") or "")
+        if not table_name or not time_column:
+            return sql
+        routed = _replace_physical_table(routed, _TBDAADT01_TABLE, table_name)
+        archive_aliases = [alias for alias, _ in source_aliases]
+        routed = _ensure_archive_month_joins(routed, archive_aliases)
+    else:
+        table_name = _TBDAADT01_TABLE
+        time_column = _TBDAADT01_TIME_COLUMN
+
+    if replacements:
+        return routed
+    # A generated composition may put the merchant source after JOIN and omit
+    # its own period. Inject the archive predicate in the same SELECT scope.
+    for alias, explicit_alias in source_aliases:
+        qualifier = f'{alias}.' if explicit_alias else ""
+        predicate = _routed_time_predicate(
+            f'{qualifier}"{time_column}"', cadence, start, end
+        )
+        routed = _inject_routed_time_predicate(routed, predicate, table_name, alias)
+    return routed
+
+
+_PREVIOUS_DAY_ARCHIVE_TABLES = {
+    "tbdaaus01": "tmdaaus01",
+    "tbdaa1d12": "tmdaa1d12",
+}
+
+
+def _previous_day_archive_route(question: str) -> tuple[str, str]:
+    """Return the monthly bounds for an explicitly historical request."""
+    if not _has_historical_period_expression(question):
+        return "", ""
+    if re.search(r"오늘|전일|어제|최신|최근\s*기준", question or ""):
+        return "", ""
+    start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
+    if explicit_day == previous_day_ymd():
+        return "", ""
+    return (start_ym, end_ym) if start_ym and end_ym else ("", "")
+
+
+def _rewrite_previous_day_archive_select(
+    select_sql: str,
+    source_table: str,
+    target_table: str,
+    start_ym: str,
+    end_ym: str,
+) -> str:
+    """Route one SELECT scope from a D-1 source to its monthly archive."""
+    if source_table not in _extract_schema_tables(select_sql):
+        return select_sql
+    aliases = _table_aliases(select_sql, source_table)
+    if not aliases:
+        return select_sql
+    # A mixed query may use the live table once for its current population and
+    # again for historical measures. Preserve the exact D-1 population scope.
+    if _has_exact_table_axis_value(
+        select_sql,
+        source_table,
+        "기준년월일",
+        previous_day_ymd(),
+    ) or re.search(
+        r'"?기준년월일"?\s*=\s*"?[A-Za-z_]\w*"?\s*\.\s*"?현재기준일"?',
+        select_sql,
+        re.IGNORECASE,
+    ):
+        return select_sql
+
+    rewritten = select_sql
+    touched = False
+    operand = (
+        r"(?:CONCAT\s*\([^)]*\)|DATE_FORMAT\s*\([^)]*\)|"
+        r"'[^']*'|\{[^}]+\}|"
+        r"(?:(?:\"?[A-Za-z_][A-Za-z0-9_]*\"?)\s*\.\s*)?"
+        r'"?[A-Za-z가-힣_][A-Za-z0-9가-힣_]*"?)'
+    )
+    for alias, explicit_alias in aliases:
+        day_axis = _qualified_column(alias, "기준년월일")
+        if not explicit_alias:
+            day_axis = (
+                rf'(?:(?:"?{re.escape(source_table)}"?\s*\.\s*)?)'
+                r'"?기준년월일"?'
+            )
+        month_axis = f'{alias}."기준년월"' if explicit_alias else '"기준년월"'
+        patterns = (
+            rf'(?:SUBSTR|SUBSTRING)\s*\(\s*{day_axis}\s*,\s*1\s*,\s*6\s*\)'
+            rf"\s+BETWEEN\s+{operand}\s+AND\s+{operand}",
+            rf'(?:SUBSTR|SUBSTRING)\s*\(\s*{day_axis}\s*,\s*1\s*,\s*6\s*\)'
+            rf"\s*=\s*{operand}",
+            rf'{day_axis}\s+BETWEEN\s+{operand}\s+AND\s+{operand}',
+            rf'{day_axis}\s*>=\s*{operand}\s+AND\s+{day_axis}\s*<=\s*{operand}',
+            rf'{day_axis}\s*=\s*{operand}',
+        )
+        predicate = _routed_time_predicate(month_axis, "monthly", start_ym, end_ym)
+        for pattern in patterns:
+            rewritten, count = re.subn(
+                pattern,
+                predicate,
+                rewritten,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            touched = touched or bool(count)
+
+        # A D-1 cap is meaningful only on the live source. The archive already
+        # has an explicit load-month boundary.
+        if touched:
+            rewritten = re.sub(
+                rf'\s+AND\s+{day_axis}\s*<=\s*DATE_FORMAT\s*\(\s*DATE_ADD\s*\('
+                r"\s*'day'\s*,\s*-1\s*,\s*CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+"
+                r"'Asia/Seoul'\s*\)\s*,\s*'%Y%m%d'\s*\)",
+                "",
+                rewritten,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+    if not touched:
+        return select_sql
+    return _replace_physical_table(rewritten, source_table, target_table)
+
+
+def _apply_previous_day_historical_sources(question: str, sql: str) -> str:
+    """Route historical SELECT scopes while leaving current D-1 scopes intact."""
+    start_ym, end_ym = _previous_day_archive_route(question)
+    if not start_ym:
+        return sql
+
+    rewritten = sql
+
+    def cte_body_spans(value: str) -> list[tuple[int, int]]:
+        """Find balanced CTE bodies while ignoring parentheses in quotes."""
+        starts = list(
+            re.finditer(
+                r'(?:\bWITH|,)\s+"?[A-Za-z_][A-Za-z0-9_]*"?'
+                r'(?:\s*\([^)]*\))?\s+AS\s*\(',
+                value or "",
+                re.IGNORECASE,
+            )
+        )
+        spans: list[tuple[int, int]] = []
+        for match in starts:
+            open_index = match.end() - 1
+            depth = 1
+            quote = ""
+            index = open_index + 1
+            while index < len(value) and depth:
+                char = value[index]
+                if quote:
+                    if char == quote:
+                        if index + 1 < len(value) and value[index + 1] == quote:
+                            index += 2
+                            continue
+                        quote = ""
+                elif char in {"'", '"'}:
+                    quote = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        spans.append((open_index + 1, index))
+                        break
+                index += 1
+        return list(dict.fromkeys(spans))
+
+    for source_table, target_table in _PREVIOUS_DAY_ARCHIVE_TABLES.items():
+        spans = cte_body_spans(rewritten)
+        for start, end in sorted(spans, reverse=True):
+            body = rewritten[start:end]
+            routed_body = _rewrite_previous_day_archive_select(
+                body,
+                source_table,
+                target_table,
+                start_ym,
+                end_ym,
+            )
+            rewritten = rewritten[:start] + routed_body + rewritten[end:]
+        if not spans:
+            rewritten = _rewrite_previous_day_archive_select(
+                rewritten,
+                source_table,
+                target_table,
+                start_ym,
+                end_ym,
+            )
+    return rewritten
+
+
+def _apply_accumulation_historical_sources(question: str, sql: str) -> str:
+    routed = _apply_tbdaadt01_historical_source(question, sql)
+    return _apply_previous_day_historical_sources(question, routed)
+
+
 def _extract_merchant_from_question(question: str) -> str:
     """질문에서 가맹점(기업)명을 뽑는다.
 
@@ -1191,10 +2320,18 @@ _TOOL_SCHEMA_COMPATIBILITY: dict[str, bool] = {}
 
 
 def _tool_schema_compatible(tool: dict) -> bool:
-    """Disable deterministic SQL tools whose physical tables are not deployed."""
+    """Disable non-runtime or schema-incompatible deterministic SQL tools."""
     name = str(tool.get("name") or "")
     if name in _TOOL_SCHEMA_COMPATIBILITY:
         return _TOOL_SCHEMA_COMPATIBILITY[name]
+    linked_query_name = str(tool.get("sql_query_name") or "")
+    linked_query = next(
+        (query for query in VERIFIED_QUERIES if query.get("name") == linked_query_name),
+        None,
+    )
+    if linked_query and not _verified_query_is_executable(linked_query):
+        _TOOL_SCHEMA_COMPATIBILITY[name] = False
+        return False
     if name == "대손비용률_분석":
         _TOOL_SCHEMA_COMPATIBILITY[name] = True
         return True
@@ -1233,6 +2370,11 @@ def _tag_hits(question: str, tags: list[str]) -> int:
 def _rank_tool_candidates(question: str) -> list[tuple[int, dict]]:
     scores: list[tuple[int, dict]] = []
     for tool in TOOLS:
+        if tool["name"] == "corporate_card_active_no_usage_members" and not re.search(
+            r"6\s*무|무실적|미이용|이용.{0,5}없|사용.{0,5}없|쓰지\s*않|한\s*번도\s*쓰지",
+            question or "",
+        ):
+            continue
         if not _tool_schema_compatible(tool):
             continue
         hits = _tag_hits(question, tool.get("tags", []))
@@ -1289,6 +2431,303 @@ def _verified_query_capability_result(match: dict) -> dict:
     }
 
 
+def _current_corporate_limit_sql(monthly_sql: str) -> str:
+    """Use the live D-1 customer snapshot for a current limit request."""
+    rewritten = str(monthly_sql or "").replace(
+        "card_system.tmdaa1d12",
+        "card_system.tbdaa1d12",
+    )
+    rewritten = rewritten.replace(
+        'a."기준년월" AS "기준년월"',
+        'SUBSTR(a."기준년월일", 1, 6) AS "기준년월"',
+    )
+    rewritten = rewritten.replace(
+        'PARTITION BY a."고객식별자", a."기준년월"',
+        'PARTITION BY a."고객식별자"',
+    )
+    rewritten = rewritten.replace(
+        'a."기준년월" = \'{기준년월}\'',
+        (
+            'a."기준년월일" = DATE_FORMAT(\n'
+            "        DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'),\n"
+            "        '%Y%m%d'\n"
+            '      )'
+        ),
+    )
+    if (
+        "card_system.tmdaa1d12" in rewritten
+        or 'a."기준년월"' in rewritten
+        or 'a."기준년월일" = DATE_FORMAT(' not in rewritten
+    ):
+        raise ValueError("현재 기업 한도 VQ를 KST 전일 스냅샷으로 변환하지 못했습니다.")
+    return rewritten
+
+
+def _current_corporate_no_usage_sql(monthly_sql: str) -> str:
+    """Use D-1 for the current population and monthly rows for prior usage."""
+    if (
+        monthly_sql.count("card_system.tmdaa1d12") != 2
+        or 'a."기준년월" = \'{기준년월}\'' not in monthly_sql
+        or 'FROM card_system.tmdaa1d12 b' not in monthly_sql
+    ):
+        raise ValueError("현재 무실적 VQ의 월 원천 구조를 인식하지 못했습니다.")
+
+    sql = monthly_sql.replace(
+        "card_system.tmdaa1d12 a",
+        "card_system.tbdaa1d12 a",
+        1,
+    ).replace(
+        'a."기준년월" = \'{기준년월}\'',
+        (
+            'a."기준년월일" = DATE_FORMAT(\n'
+            "    DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'),\n"
+            "    '%Y%m%d'\n"
+            '  )'
+        ),
+        1,
+    )
+    # The monthly archive may not yet contain the current partial month. Its
+    # D-1 row carries month-to-date usage, so exclude those customers too.
+    sql = sql.replace(
+        '  AND NOT EXISTS (',
+        (
+            '  AND (\n'
+            '    COALESCE(a."금월신용카드이용금액", 0)\n'
+            '    + COALESCE(a."금월체크카드이용금액", 0)\n'
+            '  ) = 0\n'
+            '  AND NOT EXISTS ('
+        ),
+        1,
+    )
+    if (
+        sql.count("card_system.tbdaa1d12") != 1
+        or sql.count("card_system.tmdaa1d12") != 1
+        or 'a."기준년월일" = DATE_FORMAT(' not in sql
+        or 'b."기준년월" BETWEEN' not in sql
+    ):
+        raise ValueError("현재 무실적 VQ를 전일+월 이력 구조로 변환하지 못했습니다.")
+    return sql
+
+
+def _current_check_card_only_sql(monthly_sql: str) -> str:
+    """Combine prior monthly rows with the D-1 current-month snapshot."""
+    old = '''daily AS (
+  SELECT
+    a."기준년월일",
+    a."기준년월" AS "기준년월",
+    a."고객식별자",
+    a."사업자등록번호",
+    a."기업명",
+    a."유효기업신용카드수",
+    a."유효기업체크카드수",
+    a."금월신용카드이용금액",
+    a."금월체크카드이용금액"
+  FROM card_system.tmdaa1d12 a
+  CROSS JOIN params p
+  WHERE a."기준년월" BETWEEN p."연초년월" AND p."기준년월"
+),'''
+    new = '''daily AS (
+  SELECT
+    a."기준년월일",
+    a."기준년월" AS "기준년월",
+    a."고객식별자",
+    a."사업자등록번호",
+    a."기업명",
+    a."유효기업신용카드수",
+    a."유효기업체크카드수",
+    a."금월신용카드이용금액",
+    a."금월체크카드이용금액"
+  FROM card_system.tmdaa1d12 a
+  CROSS JOIN params p
+  WHERE a."기준년월" BETWEEN p."연초년월" AND DATE_FORMAT(
+    DATE_ADD('month', -1, DATE_PARSE(CONCAT(p."기준년월", '01'), '%Y%m%d')),
+    '%Y%m'
+  )
+
+  UNION ALL
+
+  SELECT
+    c."기준년월일",
+    SUBSTR(c."기준년월일", 1, 6) AS "기준년월",
+    c."고객식별자",
+    c."사업자등록번호",
+    c."기업명",
+    c."유효기업신용카드수",
+    c."유효기업체크카드수",
+    c."금월신용카드이용금액",
+    c."금월체크카드이용금액"
+  FROM card_system.tbdaa1d12 c
+  CROSS JOIN params p
+  WHERE SUBSTR(c."기준년월일", 1, 6) = p."기준년월"
+    AND c."기준년월일" = DATE_FORMAT(
+    DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'),
+    '%Y%m%d'
+  )
+),'''
+    sql = monthly_sql.replace(old, new, 1)
+    if (
+        sql == monthly_sql
+        or sql.count("card_system.tbdaa1d12") != 1
+        or sql.count("card_system.tmdaa1d12") != 1
+    ):
+        raise ValueError("현재 체크카드 교차영업 VQ를 전일+월 이력 구조로 변환하지 못했습니다.")
+    return sql
+
+
+def _current_target_industry_usage_sql(monthly_sql: str) -> str:
+    """Blend D-1 corporate state/MTD usage with prior monthly history."""
+    old = '''customer_daily AS (
+  SELECT
+    a."기준년월일",
+    a."기준년월" AS "기준년월",
+    a."고객식별자",
+    a."유효기업신용카드수",
+    a."유효기업체크카드수",
+    a."금월신용카드이용금액",
+    a."금월체크카드이용금액",
+    a."기업총한도금액",
+    a."기업총잔여한도금액"
+  FROM card_system.tmdaa1d12 a
+  CROSS JOIN params p
+  WHERE a."기준년월" BETWEEN LEAST(p."시작6개월", p."연초년월") AND p."기준년월"
+),'''
+    new = '''customer_daily AS (
+  SELECT
+    a."기준년월일",
+    a."기준년월" AS "기준년월",
+    a."고객식별자",
+    a."유효기업신용카드수",
+    a."유효기업체크카드수",
+    a."금월신용카드이용금액",
+    a."금월체크카드이용금액",
+    a."기업총한도금액",
+    a."기업총잔여한도금액"
+  FROM card_system.tmdaa1d12 a
+  CROSS JOIN params p
+  WHERE a."기준년월" BETWEEN LEAST(p."시작6개월", p."연초년월") AND DATE_FORMAT(
+    DATE_ADD('month', -1, DATE_PARSE(CONCAT(p."기준년월", '01'), '%Y%m%d')),
+    '%Y%m'
+  )
+
+  UNION ALL
+
+  SELECT
+    c."기준년월일",
+    SUBSTR(c."기준년월일", 1, 6) AS "기준년월",
+    c."고객식별자",
+    c."유효기업신용카드수",
+    c."유효기업체크카드수",
+    c."금월신용카드이용금액",
+    c."금월체크카드이용금액",
+    c."기업총한도금액",
+    c."기업총잔여한도금액"
+  FROM card_system.tbdaa1d12 c
+  CROSS JOIN params p
+  WHERE SUBSTR(c."기준년월일", 1, 6) = p."기준년월"
+    AND c."기준년월일" = DATE_FORMAT(
+    DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'),
+    '%Y%m%d'
+  )
+),'''
+    sql = monthly_sql.replace(old, new, 1)
+    old_check_target = '''  SELECT
+    m."고객식별자",
+    '3_체크카드교차영업' AS "대상구분"
+  FROM customer_monthly m
+  CROSS JOIN params p
+  WHERE m."기준년월" BETWEEN p."연초년월" AND p."기준년월"
+  GROUP BY m."고객식별자"
+  HAVING MAX(COALESCE(m."유효기업신용카드수", 0)) = 0
+    AND MAX(COALESCE(m."유효기업체크카드수", 0)) > 0
+    AND SUM(COALESCE(m."금월신용카드이용금액", 0)) = 0
+    AND SUM(COALESCE(m."금월체크카드이용금액", 0))
+      / NULLIF(CAST(MAX(p."평균산정월수") AS DOUBLE), 0.0) >= {월평균금액}'''
+    new_check_target = '''  SELECT
+    c."고객식별자",
+    '3_체크카드교차영업' AS "대상구분"
+  FROM current_customers c
+  JOIN customer_monthly m
+    ON c."고객식별자" = m."고객식별자"
+  CROSS JOIN params p
+  WHERE m."기준년월" BETWEEN p."연초년월" AND p."기준년월"
+    AND COALESCE(c."유효기업신용카드수", 0) = 0
+    AND COALESCE(c."유효기업체크카드수", 0) > 0
+  GROUP BY c."고객식별자"
+  HAVING MAX(COALESCE(m."유효기업신용카드수", 0)) = 0
+    AND SUM(COALESCE(m."금월신용카드이용금액", 0)) = 0
+    AND SUM(COALESCE(m."금월체크카드이용금액", 0))
+      / NULLIF(CAST(MAX(p."평균산정월수") AS DOUBLE), 0.0) >= {월평균금액}'''
+    sql = sql.replace(old_check_target, new_check_target, 1)
+    if (
+        sql == monthly_sql
+        or new_check_target not in sql
+        or sql.count("card_system.tbdaa1d12") != 1
+        or "card_system.tmdaa1d12" not in sql
+        or "card_system.tbdaabt30" not in sql
+    ):
+        raise ValueError("현재 영업대상 업종 VQ의 기업 모집단을 전일 기준으로 변환하지 못했습니다.")
+    return sql
+
+
+def _verified_query_corporate_sources(question: str, query_name: str) -> set[str]:
+    """Resolve the declared daily/monthly corporate sources for one VQ."""
+    for collection in ("semantic_query_contracts", "query_references"):
+        for entry in SCHEMA.get(collection, []):
+            if str(entry.get("verified_query") or "") == query_name:
+                return {
+                    str(table).rsplit(".", 1)[-1].lower()
+                    for table in source_tables_for_question(entry, question)
+                }
+    return set()
+
+
+def _route_verified_query_accumulation(
+    question: str,
+    matched_query_name: str,
+    sql: str,
+) -> str:
+    """Apply request-sensitive cadence routing to reusable VQ templates."""
+    explicit_current_request = bool(
+        re.search(r"현재|현시점|오늘|전일|어제|최신|지금", question or "")
+    )
+    corporate_sources = _verified_query_corporate_sources(
+        question, matched_query_name
+    )
+    if (
+        matched_query_name == "corporate_check_card_only_high_monthly_avg"
+        and "tbdaa1d12" in corporate_sources
+        and explicit_current_request
+    ):
+        return _current_check_card_only_sql(sql)
+    if (
+        matched_query_name == "managed_company_delinquency"
+        and "tbdaa1d12" in corporate_sources
+    ):
+        return _current_corporate_limit_sql(sql)
+    if matched_query_name == "corporate_target_industry_usage":
+        current_term = bool(
+            re.search(r"현재|현시점|오늘|전일|어제|최신|지금", question or "")
+        )
+        historical_as_of = bool(
+            re.search(
+                r"(?:20\d{2}\s*년\s*\d{1,2}\s*월|(?<!\d)20\d{4}(?!\d))"
+                r"\s*(?:현재|기준|당시)",
+                question or "",
+            )
+        )
+        if current_term and not historical_as_of:
+            return _current_target_industry_usage_sql(sql)
+    if (
+        matched_query_name == "corporate_limit_status_at_month"
+        and "tbdaa1d12" in corporate_sources
+    ):
+        return _current_corporate_limit_sql(sql)
+    if matched_query_name == "corporate_card_active_no_usage_members":
+        if explicit_current_request:
+            return _current_corporate_no_usage_sql(sql)
+    return _apply_accumulation_historical_sources(question, sql)
+
+
 def _rule_match_tool(question: str) -> str:
     """질문에 Tool tags가 등장하는지로 Tool을 우선 매칭한다.
 
@@ -1330,7 +2769,8 @@ def _extract_tool_selection_with_llm(question: str, candidate_tools: list[dict],
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작: "202501", 기간_종료: "202512"
    "올해" → 기간_시작: "{datetime.now().year}01", 기간_종료: "{datetime.now().year}{datetime.now().month:02d}"
-3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
+3. 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"만 현재월 1개월로 해석 → 기간_시작/기간_종료 모두 "{datetime.now().year}{datetime.now().month:02d}"
+   "최근 N개월/N달/반년/N년"은 기간 조건으로 유지하고, 명시 기준월이 있으면 그 월을 종료월로 사용하세요.
 4. "상위 N개", "톱 N" → limit: N
 5. "등급별", "신용등급별" → 등급별: true
 6. 언급되지 않은 파라미터는 포함하지 마세요.
@@ -1353,6 +2793,112 @@ JSON:"""
     return tool_name, params
 
 
+def _asks_scalar_count(question: str) -> bool:
+    """Whether the question wants a single count rather than a per-entity list.
+
+    단독 '기업'도 개수를 묻는다("기업 수와 총한도를 알려줘"). 이게 빠져 있어서
+    기업별 한도 목록 VQ가 그대로 나갔다. ``수(?!수료)`` 는 조사가 붙은 "수와"·"수를"은
+    받고 "수수료"만 걸러낸다.
+    """
+    return bool(
+        re.search(
+            r"(?:기업회원|법인회원|회원|고객|가맹점|업체|기업)\s*(?:수(?!수료)|개수|몇\s*(?:명|개|곳))",
+            question or "",
+        )
+        and not re.search(r"(?:상위|하위|목록|명단|리스트|상세|별)", question or "")
+    )
+
+
+_ENTITY_ID_COLUMNS = (
+    "고객식별자", "사업자등록번호", "기업명", "가맹점번호", "가맹점명",
+    "회원일련번호", "카드구분키번호", "특수채권관리번호",
+)
+_AGGREGATE_CALL_RE = re.compile(
+    r"(?<![0-9A-Za-z_])(?:SUM|COUNT|AVG|MIN|MAX|ARBITRARY|ANY_VALUE)\s*\(", re.IGNORECASE
+)
+
+
+def _vq_lists_entities(sql: str) -> bool:
+    """Whether the query's final SELECT emits one row per business entity.
+
+    개수 질문에 붙으면 안 되는 것은 "집계가 아닌 쿼리"가 아니라 **업체별 목록**이다.
+    corporate_cards_issued_then_cancelled_count 는 GROUP BY 가 조회기준일 하나뿐인
+    카운트 쿼리라 목록이 아니고, 질문이 요구한 카드좌수·업체수를 그대로 낸다.
+    반면 corporate_limit_status_at_month 는 고객식별자·기업명을 그대로 뽑는 목록이다.
+    """
+    text = str(sql or "")
+    last = None
+    for match in re.finditer(r"(?<![0-9A-Za-z_])SELECT(?![0-9A-Za-z_])", text, re.IGNORECASE):
+        last = match
+    if last is None:
+        return False
+    tail = text[last.end():]
+    from_at = re.search(r"(?<![0-9A-Za-z_])FROM(?![0-9A-Za-z_])", tail, re.IGNORECASE)
+    select_list = tail[: from_at.start()] if from_at else tail
+
+    # 집계 호출을 인자까지 통째로 지운다. 함수 이름만 지우면
+    # COUNT(DISTINCT m."고객식별자") 의 고객식별자가 남아 전부 목록으로 잡힌다.
+    stripped: list[str] = []
+    index = 0
+    while index < len(select_list):
+        call = _AGGREGATE_CALL_RE.search(select_list, index)
+        if not call:
+            stripped.append(select_list[index:])
+            break
+        stripped.append(select_list[index : call.start()])
+        depth, cursor = 0, call.end() - 1
+        while cursor < len(select_list):
+            if select_list[cursor] == "(":
+                depth += 1
+            elif select_list[cursor] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            cursor += 1
+        index = cursor + 1
+    # 집계 호출을 지운 뒤에도 엔티티 식별자가 남아 있으면 행이 엔티티 단위다.
+    return any(column in "".join(stripped) for column in _ENTITY_ID_COLUMNS)
+
+
+def _tool_request_is_supported(question: str, tool: dict) -> bool:
+    """Return whether a deterministic Tool can preserve the question's shape."""
+    name = str(tool.get("name") or "")
+    row_request = parse_row_request(question)
+    if name == "대손비용률_분석":
+        return bool(
+            not row_request.limit
+            and not row_request.mode
+            and re.search(r"대손(?:비용)?(?:률|율)|대손비율|보정계수", question or "")
+            and not re.search(r"(?:회원|기업|가맹점|업종|지역|등급)별", question or "")
+        )
+    if name == "merchant_corporate_sales_target_no_corporate_card" and not (
+        re.search(r"매출", question or "")
+        and re.search(r"법인사업자|법인\s*가맹점", question or "")
+        and re.search(r"(?:기업|법인)카드.{0,8}(?:미보유|없|보유하지\s*않)", question or "")
+    ):
+        return False
+
+    linked_name = str(tool.get("sql_query_name") or "")
+    linked_query = next(
+        (query for query in VERIFIED_QUERIES if str(query.get("name") or "") == linked_name),
+        None,
+    )
+    if linked_query and not _vq_row_request_is_supported(row_request, linked_query, question):
+        return False
+    if not linked_query:
+        if row_request.mode in {"top", "bottom", "latest", "tail"}:
+            return False
+        if row_request.limit is not None and not any(
+            str(spec.get("name") or "") == "limit" for spec in tool.get("parameters", [])
+        ):
+            return False
+
+    asks_scalar_count = _asks_scalar_count(question or "")
+    if asks_scalar_count and (not linked_query or not is_scalar_aggregate_query(str(linked_query.get("sql") or ""))):
+        return False
+    return True
+
+
 def _select_tool_capability(
     question: str,
     candidate_tools: list[dict],
@@ -1360,7 +2906,16 @@ def _select_tool_capability(
     domain_context: str = "",
 ) -> dict:
     if forced_tool:
-        candidate_tools = [TOOL_MAP[forced_tool]]
+        forced = TOOL_MAP.get(forced_tool)
+        if not forced or not _tool_request_is_supported(question, forced):
+            return _empty_capability_selection()
+        candidate_tools = [forced]
+    else:
+        candidate_tools = [
+            tool for tool in candidate_tools if _tool_request_is_supported(question, tool)
+        ]
+        if not candidate_tools:
+            return _empty_capability_selection()
 
     try:
         tool_name, params = _extract_tool_selection_with_llm(question, candidate_tools, domain_context)
@@ -1374,9 +2929,17 @@ def _select_tool_capability(
         tool_name = forced_tool
     if tool_name == "NONE" or tool_name not in TOOL_MAP:
         return _empty_capability_selection()
+    if not _tool_request_is_supported(question, TOOL_MAP[tool_name]):
+        return _empty_capability_selection()
 
     param_specs = TOOL_MAP[tool_name]["parameters"]
-    rule_params = _extract_params_by_rule(question, param_specs)
+    linked_query_name = str(TOOL_MAP[tool_name].get("sql_query_name") or "")
+    linked_query = next(
+        (query for query in VERIFIED_QUERIES if str(query.get("name") or "") == linked_query_name),
+        None,
+    )
+    tool_tables = _sql_table_names(str(linked_query.get("sql") or "")) if linked_query else set()
+    rule_params = _extract_params_by_rule(question, param_specs, tool_tables)
     params = _normalize_params({**params, **rule_params}, param_specs)
     if any(str(spec.get("name") or "") in _ENTITY_NAME_PARAM_NAMES for spec in param_specs):
         if _is_exact_name_match_requested(question):
@@ -1395,8 +2958,9 @@ def select_tool(state: Text2SQLState) -> dict:
     if state.get("selected_tool") and state.get("tool_params") is not None:
         selected = TOOL_MAP.get(state["selected_tool"])
         params = state.get("tool_params", {})
-        if selected:
-            params = _normalize_params(params, selected.get("parameters", []))
+        if not selected or not _tool_request_is_supported(state.get("question", ""), selected):
+            return _empty_capability_selection()
+        params = _normalize_params(params, selected.get("parameters", []))
         return _tool_capability_result(state["selected_tool"], params)
     if state.get("matched_query_name") and state.get("matched_query_sql"):
         return _verified_query_capability_result(
@@ -1408,8 +2972,9 @@ def select_tool(state: Text2SQLState) -> dict:
         )
 
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     domain_context = state.get("domain_context", "")
-    semantic_contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    semantic_contracts = semantic_query_contract_candidates(SCHEMA, retrieval_question, max_count=1)
     if semantic_contracts:
         contract = semantic_contracts[0]
         support_status = str(contract.get("support_status") or "supported").lower()
@@ -1419,10 +2984,16 @@ def select_tool(state: Text2SQLState) -> dict:
                 reasons = [reasons]
             details = "\n".join(f"- {reason}" for reason in reasons if reason)
             result = _empty_capability_selection()
+            result["question_type"] = "reject"
             result["answer"] = (
                 "현재 semantic layer만으로는 이 지표를 안전하게 계산할 수 없습니다.\n\n"
                 f"{details or '- 필요한 원천 컬럼 또는 코드 의미가 정의되지 않았습니다.'}"
             )
+            return result
+        if str(contract.get("execution_mode") or "").lower() == "semantic_generation":
+            result = _empty_capability_selection()
+            result["selected_capability_type"] = "semantic_generation"
+            result["selected_capability_name"] = str(contract.get("name") or "")
             return result
     # An exact/rule VQ is more specific than a broad tag-based tool.  In
     # particular, "관리기업 한도 감액" must not be captured by the generic
@@ -1431,11 +3002,11 @@ def select_tool(state: Text2SQLState) -> dict:
     if verified_query:
         return verified_query
 
-    forced_tool = _rule_match_tool(question)
+    forced_tool = _rule_match_tool(retrieval_question)
     if forced_tool:
         return _select_tool_capability(question, [], forced_tool, domain_context)
 
-    candidate_tools = _tool_candidates(question)
+    candidate_tools = _tool_candidates(retrieval_question)
     if candidate_tools:
         return _select_tool_capability(question, candidate_tools, domain_context=domain_context)
     return _empty_capability_selection()
@@ -1476,17 +3047,54 @@ def execute_tool(state: Text2SQLState) -> dict:
     try:
         result = tool["fn"](params)
         if isinstance(result, dict) and result.get("is_complete"):
+            final_sql = prepare_sql_for_backend(
+                _apply_name_filter_mode(state.get("question", ""), result.get("sql", ""))
+            )
+            rows = list(result.get("rows", []) or [])
+            visible_rows = rows[:_DISPLAY_ROW_LIMIT]
             return {
-                "final_sql": prepare_sql_for_backend(
-                    _apply_name_filter_mode(state.get("question", ""), result.get("sql", ""))
-                ),
+                "final_sql": final_sql,
                 "query_columns": result.get("columns", []),
-                "query_rows": result.get("rows", []),
+                "query_rows": visible_rows,
+                "result_scope": build_result_scope(
+                    final_sql,
+                    fetched_row_count=len(rows),
+                    displayed_row_count=len(visible_rows),
+                ),
                 "answer": result.get("answer", ""),
                 "bad_debt_excel_path": result.get("excel_path", ""),
                 "tool_completed": True,
             }
+        linked_query_name = str(tool.get("sql_query_name") or "")
+        linked_query = next(
+            (
+                query
+                for query in VERIFIED_QUERIES
+                if str(query.get("name") or "") == linked_query_name
+            ),
+            None,
+        )
+        if isinstance(result, str) and linked_query:
+            routed_template = _route_verified_query_accumulation(
+                _retrieval_question(state),
+                linked_query_name,
+                str(linked_query.get("sql") or ""),
+            )
+            result = _apply_params_to_vq(
+                routed_template,
+                params,
+                linked_query_name,
+                linked_query.get("parameters", {}),
+            )
         sql = _apply_name_filter_mode(state.get("question", ""), result)
+        row_issues = _validate_requested_row_constraints(state.get("question", ""), sql)
+        if row_issues:
+            return {
+                "final_sql": "",
+                "query_error": "Tool이 요청한 결과 제약을 충족하지 못했습니다: " + " ".join(row_issues),
+                "selected_tool": "",
+                "tool_completed": False,
+            }
         formatted_sql = sqlparse.format(sql, reindent=True, keyword_case="upper")
         return {"final_sql": prepare_sql_for_backend(formatted_sql), "tool_completed": False}
     except Exception as e:
@@ -1497,14 +3105,51 @@ def run_tool_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", "")
     if not sql:
         return {"query_columns": [], "query_rows": [], "query_error": "SQL이 생성되지 않았습니다.", "selected_tool": "", "final_sql": ""}
+    sql = _apply_accumulation_historical_sources(_retrieval_question(state), sql)
     prepared_sql = prepare_sql_for_backend(sql)
-    columns, rows, error = execute_sql(prepared_sql)
+    availability_error = _availability_execution_error(state, prepared_sql)
+    if availability_error:
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": f"테이블 적재 주기 위반: {availability_error}",
+            "selected_tool": "",
+            "final_sql": prepared_sql,
+        }
+    columns, rows, error = execute_sql(
+        prepared_sql,
+        max_rows=DEFAULT_FETCH_ROW_LIMIT,
+        allow_cross_cycle_fallback=_allow_cross_cycle_fallback(
+            state.get("question", ""), prepared_sql
+        ),
+    )
     if error:
-        return {"query_columns": [], "query_rows": [], "query_error": error, "selected_tool": "", "final_sql": ""}
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": error,
+            "selected_tool": "",
+            "final_sql": prepared_sql,
+        }
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": prepared_sql,
+        "result_scope": build_result_scope(
+            prepared_sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+        ),
+    }
 
 
-def _match_vq_by_embedding(question: str) -> dict | None:
+def _match_vq_by_embedding(
+    question: str,
+    *,
+    intent_question: str = "",
+) -> dict | None:
     """Embedding cosine similarity로 Verified Query 매칭. 실패 시 None 반환."""
     if not EMBEDDINGS_AVAILABLE or not VQ_EMBEDDINGS:
         return None
@@ -1515,7 +3160,11 @@ def _match_vq_by_embedding(question: str) -> dict | None:
         best_score = scores[best_idx]
         if best_score >= EMBED_MATCH_THRESHOLD:
             matched = VERIFIED_QUERIES[best_idx]
-            if not _verified_query_matches_intent(question, matched):
+            if not _verified_query_matches_intent(
+                intent_question or question,
+                matched,
+                contract_question=question,
+            ):
                 return None
             return {
                 "matched_query_name": matched["name"],
@@ -1527,14 +3176,35 @@ def _match_vq_by_embedding(question: str) -> dict | None:
     return None
 
 
-def _verified_query_matches_intent(question: str, matched: dict) -> bool:
-    """Reject broad semantic matches when the user's metric intent differs."""
+def _verified_query_matches_intent(
+    question: str,
+    matched: dict,
+    *,
+    contract_question: str = "",
+) -> bool:
+    """Authorize a retrieved VQ only when its fixed capability fits the request."""
+    if not _verified_query_is_executable(matched):
+        return False
+    if not _verified_query_time_source_compatible(question, matched):
+        return False
     question_text = question or ""
-    matched_text = " ".join(
-        str(matched.get(key, ""))
-        for key in ("name", "question", "description", "sql")
+
+    # v2: 참고 SQL은 컬럼이 고정된 완제품이라 매칭되면 그대로 실행된다. 질문이
+    # 이름을 댄 기간·축·지표를 못 내놓는 VQ는 어휘가 아무리 겹쳐도 답이 아니다.
+    # 여기서 거부하면 LLM 생성 경로로 내려간다.
+    output_gap = _v2_vq_output_gap(
+        contract_question or question_text,
+        matched,
+        column_names=_schema_column_names(),
     )
-    matched_text += " " + " ".join(str(tag) for tag in matched.get("tags", []))
+    if output_gap:
+        return False
+    matched_metadata = " ".join(
+        str(matched.get(key, ""))
+        for key in ("name", "question")
+    )
+    matched_metadata += " " + " ".join(str(tag) for tag in matched.get("tags", []))
+    matched_text = matched_metadata + " " + str(matched.get("sql") or "")
 
     matched_name = str(matched.get("name") or "")
     bound_contracts = [
@@ -1543,22 +3213,80 @@ def _verified_query_matches_intent(question: str, matched: dict) -> bool:
         if str(contract.get("verified_query") or "") == matched_name
     ]
     if bound_contracts:
-        matched_contract_names = {
-            str(contract.get("name") or "")
-            for contract in semantic_query_contract_candidates(
-                SCHEMA,
-                question_text,
-                max_count=max(1, len(SCHEMA.get("semantic_query_contracts", []))),
-            )
-        }
+        top_contracts = semantic_query_contract_candidates(
+            SCHEMA,
+            contract_question or question_text,
+            max_count=1,
+        )
+        if not top_contracts:
+            return False
+        top_contract_name = str(top_contracts[0].get("name") or "")
         compatible_contracts = [
             contract
             for contract in bound_contracts
-            if str(contract.get("name") or "") in matched_contract_names
+            if str(contract.get("name") or "") == top_contract_name
             and _semantic_contract_bindings_satisfied(question_text, contract, matched)
         ]
         if not compatible_contracts:
             return False
+    else:
+        # Lexical/embedding retrieval is allowed to propose an unbound VQ, but
+        # it cannot waive that template's required entity inputs.
+        param_defs = matched.get("parameters") if isinstance(matched.get("parameters"), dict) else {}
+        required_bindings = [
+            {
+                "name": name,
+                "type": info.get("type", "string"),
+                "description": info.get("description", ""),
+            }
+            for name, info in param_defs.items()
+            if isinstance(info, dict)
+            and info.get("required")
+            and name in _ENTITY_NAME_PARAM_NAMES.union({"가맹점번호"})
+            and not re.search(r"(?:년월|기간|시작|종료|기준일|기준년)", str(name))
+        ]
+        extracted_bindings = _extract_params_by_rule(question_text, required_bindings)
+        if any(extracted_bindings.get(spec["name"]) in (None, "") for spec in required_bindings):
+            return False
+
+    # Some concepts change the metric or cardinality rather than merely adding
+    # a filter.  They must be present on both sides of an unstructured match.
+    asks_delinquency = bool(re.search(r"연체|채권", question_text))
+    if asks_delinquency and not re.search(r"연체|채권", matched_metadata):
+        return False
+    candidate_is_new_customer = bool(
+        re.search(r"신규\s*(?:고객|회원)|가입\s*(?:고객|회원)|등록\s*(?:고객|회원)", matched_metadata)
+    )
+    if candidate_is_new_customer and not re.search(
+        r"신규|새로\s*(?:가입|등록)|가입\s*(?:고객|회원)|등록\s*(?:고객|회원)",
+        question_text,
+    ):
+        return False
+    candidate_is_peak = bool(re.search(r"최다|피크|가장\s*(?:많|높|큰)|최대\s*(?:이용|사용)", matched_metadata))
+    if candidate_is_peak and not re.search(
+        r"최다|피크|가장\s*(?:많|높|큰)|최대\s*(?:이용|사용)",
+        question_text,
+    ):
+        return False
+    asks_no_usage = bool(
+        re.search(r"무실적|미이용|이용.{0,5}없|사용.{0,5}없|쓰지\s*않|한\s*번도\s*쓰지", question_text)
+    )
+    if asks_no_usage and not re.search(
+        r"무실적|미이용|이용.{0,5}없|사용.{0,5}없|쓰지\s*않",
+        matched_metadata,
+    ):
+        return False
+
+    row_request = parse_row_request(question_text)
+    if not _vq_row_request_is_supported(row_request, matched, question_text):
+        return False
+
+    # v2: 개수를 묻는 질문에 업체별 목록을 내는 VQ가 붙으면 결과 단위가 다르다.
+    # "기업 수와 총한도를 알려줘" 에 corporate_limit_status_at_month(기업별 한도 목록)가
+    # 매칭돼 스칼라 두 개 대신 기업 목록이 나갔다. 같은 검사가 Tool 선택 쪽에는
+    # 있었지만 VQ 경로에는 없었다.
+    if _asks_scalar_count(question_text) and _vq_lists_entities(str(matched.get("sql") or "")):
+        return False
 
     asks_sales = bool(re.search(r"매출(?:액|금액|건수)?|판매(?:액|금액|건수)", question_text))
     if asks_sales and not re.search(r"매출|판매", matched_text):
@@ -1571,6 +3299,164 @@ def _verified_query_matches_intent(question: str, matched: dict) -> bool:
             or re.search(r"COUNT\s*\(\s*DISTINCT\s+[^)]*가맹점번호", matched_text, re.IGNORECASE)
         )
     return True
+
+
+def _fixed_vq_limits(sql: str) -> list[int]:
+    value = outer_limit(sql)
+    return [value] if value is not None else []
+
+
+_RANK_METRIC_ALIASES = (
+    ("limit_utilization", ("한도소진율", "한도 소진율", "한도사용률", "한도 사용률")),
+    ("remaining_limit", ("기업총잔여한도금액", "총잔여한도금액", "잔여한도금액", "잔여 한도 금액", "잔여한도", "잔여 한도", "가용한도", "가용 한도")),
+    ("used_limit", ("기업한도사용금액", "한도사용금액", "한도 사용 금액", "사용한도", "사용 한도")),
+    ("total_limit", ("기업총한도금액", "총한도금액", "총 한도 금액", "총한도", "총 한도", "여신한도", "한도")),
+    ("sales_count", ("총매출건수", "매출건수", "매출 건수", "거래건수", "거래 건수")),
+    ("sales_amount", ("총매출금액", "매출금액", "매출 금액", "매출액", "매출")),
+    ("fee_rate", ("평균수수료율", "수수료율", "수수료 비율")),
+    ("fee_amount", ("수수료금액", "수수료 금액", "수수료수입", "수수료 수입", "수수료")),
+    ("delinquency_rate", ("연체율", "채권연체율")),
+    ("delinquency_amount", ("총연체원금", "연체원금", "연체 원금", "연체금액", "연체 금액", "채권금액", "채권 금액")),
+    ("decline_amount", ("하락금액", "하락 금액", "감소금액", "감소 금액", "감액금액", "감액 금액")),
+    ("usage_amount", ("총이용금액", "이용금액", "이용 금액", "이용액", "사용금액", "사용 금액", "사용액")),
+    ("member_count", ("회원수", "회원 수", "고객수", "고객 수", "명수")),
+    ("merchant_count", ("가맹점수", "가맹점 수", "업체수", "업체 수")),
+)
+
+
+def _explicit_rank_metric(question: str) -> str:
+    """Return a metric explicitly attached to ``상위/하위`` wording."""
+    for metric, aliases in _RANK_METRIC_ALIASES:
+        for alias in aliases:
+            if re.search(
+                rf"{re.escape(alias)}\s*(?:기준(?:으로)?|순(?:으로)?|이|가|의|을|를)?\s*"
+                rf"(?:상위|하위|TOP|BOTTOM|톱|오름차순|내림차순|낮은\s*순|높은\s*순)",
+                question or "",
+                re.IGNORECASE,
+            ):
+                return metric
+    return ""
+
+
+def _rank_metric(text: str) -> str:
+    compact = re.sub(r"[\s_\"'.]", "", str(text or "")).lower()
+    for metric, aliases in _RANK_METRIC_ALIASES:
+        if any(re.sub(r"\s+", "", alias).lower() in compact for alias in aliases):
+            return metric
+    return ""
+
+
+def _vq_row_request_is_supported(
+    row_request: RowRequest,
+    matched: dict,
+    question: str = "",
+) -> bool:
+    """Return whether a VQ can preserve the requested row direction/count."""
+    if row_request.mode in {"bottom", "latest", "tail"}:
+        # VQs currently have fixed ORDER BY clauses and no direction parameter.
+        # Reversing a LIMIT or changing only ASC/DESC would not preserve ties,
+        # metric choice, or the meaning of an outer query.
+        return False
+
+    if (
+        row_request.limit is not None
+        and row_request.limit > 1
+        and is_scalar_aggregate_query(str(matched.get("sql") or ""))
+    ):
+        return False
+
+    rank_metric = _explicit_rank_metric(question)
+    if row_request.mode == "top" and rank_metric:
+        first_key = first_order_key(str(matched.get("sql") or ""))
+        ordered_metric = _rank_metric(first_key)
+        if ordered_metric != rank_metric or not re.search(r"\bDESC\b", first_key, re.IGNORECASE):
+            return False
+    elif row_request.mode == "top" and not rank_metric:
+        if not re.search(
+            r"\bDESC\b",
+            first_order_key(str(matched.get("sql") or "")),
+            re.IGNORECASE,
+        ):
+            return False
+    if row_request.limit is None:
+        return True
+
+    fixed_limits = _fixed_vq_limits(str(matched.get("sql") or ""))
+    parameter_defs = matched.get("parameters") if isinstance(matched.get("parameters"), dict) else {}
+    limit_is_parameterized = "limit" in parameter_defs or any(
+        str(spec.get("name") or "") == "limit"
+        for spec in VQ_PARAM_SPECS.get(str(matched.get("name") or ""), []) or []
+    )
+    if fixed_limits and not limit_is_parameterized:
+        return all(value == row_request.limit for value in fixed_limits)
+    return True
+
+
+def _verified_query_is_executable(query: dict) -> bool:
+    """Keep migration/reference SQL available as documentation, not runtime templates."""
+    return str(query.get("runtime_mode") or "executable").lower() != "reference_only"
+
+
+def _verified_query_time_source_compatible(question: str, query: dict) -> bool:
+    """Require a declared archive source before ranking a bounded daily-only VQ."""
+    cadence, _, _ = _tbdaadt01_time_route(question)
+    if cadence != "monthly" or _TBDAADT01_TABLE not in _sql_table_names(str(query.get("sql") or "")):
+        return True
+    historical_source = (accumulation_policy_for(_TBDAADT01_TABLE) or {}).get("historical_source")
+    return bool(
+        isinstance(historical_source, dict)
+        and historical_source.get("table")
+        and historical_source.get("query_time_dimension")
+    )
+
+
+# 파생 인덱스는 스키마 딕셔너리 안에 담는다.
+#
+# 전역 하나로 캐시하면 workflow.SCHEMA 를 바꿔 끼우는 테스트에서 앞 테스트가 채운
+# 값이 그대로 남는다. id(SCHEMA) 를 키로 쓰는 것도 안 된다 — 임시 스키마가 GC 되면
+# CPython 이 그 id 를 재사용해서 엉뚱한 스키마의 인덱스를 돌려준다. 실제로 파일 하나만
+# 돌리면 통과하고 전체 스위트에서는 깨지는 순서 의존이 났다.
+_COLUMN_NAMES_KEY = "_v2_column_names_cache"
+_TABLE_COLUMN_INDEX_KEY = "_v2_table_column_index_cache"
+
+
+def _schema_column_names() -> frozenset[str]:
+    """Every dimension/measure column name, for VQ output-coverage checks."""
+    cached = SCHEMA.get(_COLUMN_NAMES_KEY)
+    if cached is None:
+        cached = frozenset(
+            str(column.get("name") or "")
+            for table in SCHEMA.get("tables", [])
+            for section in ("dimensions", "measures")
+            for column in (table.get(section) or [])
+            if column.get("name")
+        )
+        SCHEMA[_COLUMN_NAMES_KEY] = cached
+    return cached
+
+
+def _table_column_index() -> tuple[dict[str, set[str]], dict[str, list[str]]]:
+    """(테이블 → 컬럼 집합, 컬럼 → 그 컬럼을 가진 테이블 목록)."""
+    cached = SCHEMA.get(_TABLE_COLUMN_INDEX_KEY)
+    if cached is None:
+        by_table: dict[str, set[str]] = {}
+        by_column: dict[str, list[str]] = {}
+        for table in SCHEMA.get("tables", []):
+            name = str(table.get("name") or "")
+            if not name:
+                continue
+            columns: set[str] = set()
+            for section in ("dimensions", "measures", "time_dimensions"):
+                for column in table.get(section) or []:
+                    column_name = str(column.get("name") or "")
+                    if not column_name:
+                        continue
+                    columns.add(column_name)
+                    by_column.setdefault(column_name, []).append(name)
+            by_table[name] = columns
+        cached = (by_table, by_column)
+        SCHEMA[_TABLE_COLUMN_INDEX_KEY] = cached
+    return cached
 
 
 def _semantic_contract_bindings_satisfied(question: str, contract: dict, vq: dict) -> bool:
@@ -1601,26 +3487,31 @@ def _semantic_contract_bindings_satisfied(question: str, contract: dict, vq: dic
     return all(extracted.get(str(binding["parameter"])) not in (None, "") for binding in required)
 
 
-def _match_vq_by_semantic_contract(question: str) -> dict | None:
+def _match_vq_by_semantic_contract(
+    question: str,
+    *,
+    intent_question: str = "",
+) -> dict | None:
     """Select a VQ through reusable semantic-layer intent contracts."""
-    contracts = semantic_query_contract_candidates(
-        SCHEMA,
-        question,
-        max_count=max(1, len(SCHEMA.get("semantic_query_contracts", []))),
-    )
+    contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    if not contracts:
+        return None
+    contract = contracts[0]
+    if str(contract.get("support_status") or "supported").lower().startswith("blocked"):
+        return None
     queries_by_name = {str(vq.get("name") or ""): vq for vq in VERIFIED_QUERIES}
-    for contract in contracts:
-        if str(contract.get("support_status") or "supported").lower().startswith("blocked"):
-            continue
-        matched = queries_by_name.get(str(contract.get("verified_query") or ""))
-        if not matched or not _verified_query_matches_intent(question, matched):
-            continue
-        return {
-            "matched_query_name": matched["name"],
-            "matched_query_sql": matched["sql"].strip(),
-            "matched_query_params": matched.get("parameters", {}),
-        }
-    return None
+    matched = queries_by_name.get(str(contract.get("verified_query") or ""))
+    if not matched or not _verified_query_matches_intent(
+        intent_question or question,
+        matched,
+        contract_question=question,
+    ):
+        return None
+    return {
+        "matched_query_name": matched["name"],
+        "matched_query_sql": matched["sql"].strip(),
+        "matched_query_params": matched.get("parameters", {}),
+    }
 
 
 _VQ_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣_]+")
@@ -1652,6 +3543,8 @@ def _rank_vq_candidate_scores(question: str) -> list[tuple[int, dict]]:
     scored = [
         (score, vq)
         for vq in VERIFIED_QUERIES
+        if _verified_query_is_executable(vq)
+        if _verified_query_time_source_compatible(question, vq)
         if (score := _score_vq_candidate(question, vq)) >= VERIFIED_QUERY_MIN_LEXICAL_SCORE
     ]
     scored.sort(key=lambda item: (item[0], item[1].get("name", "")), reverse=True)
@@ -1663,7 +3556,7 @@ def _rank_vq_candidates(question: str) -> list[dict]:
     return [vq for _, vq in scored[:VERIFIED_QUERY_LLM_CANDIDATE_LIMIT]]
 
 
-def _match_vq_by_rules(question: str) -> dict | None:
+def _match_vq_by_rules(question: str, *, intent_question: str = "") -> dict | None:
     scored = _rank_vq_candidate_scores(question)
     if not scored:
         return None
@@ -1672,7 +3565,11 @@ def _match_vq_by_rules(question: str) -> dict | None:
         return None
     if len(scored) > 1 and top_score - scored[1][0] < VERIFIED_QUERY_RULE_MATCH_MARGIN:
         return None
-    if not _verified_query_matches_intent(question, matched):
+    if not _verified_query_matches_intent(
+        intent_question or question,
+        matched,
+        contract_question=question,
+    ):
         return None
     return {
         "matched_query_name": matched["name"],
@@ -1681,7 +3578,7 @@ def _match_vq_by_rules(question: str) -> dict | None:
     }
 
 
-def _match_vq_by_llm(question: str) -> dict:
+def _match_vq_by_llm(question: str, *, intent_question: str = "") -> dict:
     """LLM으로 Verified Query 매칭 (embedding 폴백)."""
     vqs = _rank_vq_candidates(question)
     if not vqs:
@@ -1702,8 +3599,9 @@ def _match_vq_by_llm(question: str) -> dict:
 
 ## 판단 규칙
 1. 사용자의 질문 핵심 의도가 사전 정의된 쿼리와 동일해야 매칭입니다.
-2. 추가 조건이 붙어도 기본 의도가 같으면 매칭입니다.
-3. 의도가 다르면 NONE입니다.
+2. 요청한 지표, 결과 단위, 필터, 정렬 방향, 행 개수를 해당 쿼리와 파라미터가 모두 표현할 수 있어야 합니다.
+3. 추가 조건 하나라도 표현할 수 없거나 결과 단위가 다르면 NONE입니다.
+4. 의도가 다르면 NONE입니다.
 
 ## 사용자 질문
 {question}
@@ -1721,7 +3619,11 @@ def _match_vq_by_llm(question: str) -> dict:
         return {"matched_query_name": ""}
     idx = valid_indices[0]
     matched = vqs[idx]
-    if not _verified_query_matches_intent(question, matched):
+    if not _verified_query_matches_intent(
+        intent_question or question,
+        matched,
+        contract_question=question,
+    ):
         return {"matched_query_name": ""}
     return {
         "matched_query_name": matched["name"],
@@ -1733,24 +3635,69 @@ def _match_vq_by_llm(question: str) -> dict:
 def _select_verified_query_capability(question: str, state: Text2SQLState | dict) -> dict | None:
     if not ENABLE_VERIFIED_QUERY_MATCHING or state.get("skip_verified_query_matching"):
         return None
+    retrieval_question = _retrieval_question({**state, "question": question})
+    contracts = semantic_query_contract_candidates(SCHEMA, retrieval_question, max_count=1)
+    if contracts and str(contracts[0].get("execution_mode") or "").lower() == "semantic_generation":
+        return None
 
-    result = _match_vq_by_semantic_contract(question)
-    if result:
+    def capability(result: dict | None) -> dict | None:
+        if not result:
+            return None
+        matched = next(
+            (vq for vq in VERIFIED_QUERIES if vq.get("name") == result.get("matched_query_name")),
+            None,
+        )
+        if matched and not _vq_matches_selected_domain(matched, str(state.get("selected_domain") or "")):
+            return None
+        result = dict(result)
+        result["matched_query_sql"] = _route_verified_query_accumulation(
+            retrieval_question,
+            str(result.get("matched_query_name") or ""),
+            str(result.get("matched_query_sql") or ""),
+        )
         return _verified_query_capability_result(result)
 
-    result = _match_vq_by_embedding(question)
+    result = _match_vq_by_semantic_contract(retrieval_question, intent_question=question)
     if result:
-        return _verified_query_capability_result(result)
+        return capability(result)
 
-    result = _match_vq_by_rules(question)
+    result = _match_vq_by_embedding(retrieval_question, intent_question=question)
     if result:
-        return _verified_query_capability_result(result)
+        return capability(result)
+
+    result = _match_vq_by_rules(retrieval_question, intent_question=question)
+    if result:
+        return capability(result)
 
     if ENABLE_VERIFIED_QUERY_LLM_FALLBACK:
-        result = _match_vq_by_llm(question)
+        result = _match_vq_by_llm(retrieval_question, intent_question=question)
         if result.get("matched_query_name"):
-            return _verified_query_capability_result(result)
+            return capability(result)
     return None
+
+
+def _vq_matches_selected_domain(matched: dict, selected_domain: str) -> bool:
+    """Use the routed domain as a second guard for unbound lexical VQs."""
+    if not selected_domain:
+        return True
+    matched_name = str(matched.get("name") or "")
+    if any(
+        str(contract.get("verified_query") or "") == matched_name
+        for contract in SCHEMA.get("semantic_query_contracts", [])
+    ):
+        return True
+    explicit_domains = matched.get("domains", matched.get("domain", []))
+    if not explicit_domains:
+        # Inferred table-domain membership is incomplete for legacy VQs and
+        # can reject exact intents such as overseas card usage.  Keep domain
+        # enforcement authoritative only where the VQ declares its domain.
+        return True
+    return _entry_matches_domain(
+        SCHEMA,
+        matched,
+        selected_domain,
+        _sql_table_names(str(matched.get("sql") or "")),
+    )
 
 
 def _missing_vq_required_params(vq_params_def: dict, params: dict) -> list[dict]:
@@ -1780,22 +3727,42 @@ def _missing_vq_required_params(vq_params_def: dict, params: dict) -> list[dict]
 
 def extract_and_apply_params(state: Text2SQLState) -> dict:
     question = state["question"]
-    base_sql = state["matched_query_sql"]
+    routing_question = _retrieval_question(state)
+    row_request = parse_row_request(question)
     vq_name = state.get("matched_query_name", "")
     vq_params_def = state.get("matched_query_params", {})
-    base_specs = VQ_PARAM_SPECS.get(vq_name, [
-        {"name": "기간_시작", "type": "string", "description": "조회 시작 기준년월 (YYYYMM)"},
-        {"name": "기간_종료", "type": "string", "description": "조회 종료 기준년월 (YYYYMM)"},
-        {"name": "기업명", "type": "string", "description": "기업/상호명 (부분일치)"},
-        {"name": "가맹점명", "type": "string", "description": "가맹점명 (부분일치)"},
-        {"name": "업종", "type": "string", "description": "업종명/업종 대분류 (부분일치)"},
-        {"name": "limit", "type": "integer", "description": "결과 행수 제한"},
-    ])
+    pristine_vq = next(
+        (query for query in VERIFIED_QUERIES if str(query.get("name") or "") == vq_name),
+        None,
+    )
+    base_sql = str((pristine_vq or {}).get("sql") or state["matched_query_sql"])
+    base_sql = _route_verified_query_accumulation(routing_question, vq_name, base_sql)
+    base_specs = VQ_PARAM_SPECS.get(vq_name)
+    if base_specs is None:
+        base_specs = [] if vq_params_def else [
+            {"name": "기간_시작", "type": "string", "description": "조회 시작 기준년월 (YYYYMM)"},
+            {"name": "기간_종료", "type": "string", "description": "조회 종료 기준년월 (YYYYMM)"},
+            {"name": "기업명", "type": "string", "description": "기업/상호명 (부분일치)"},
+            {"name": "가맹점명", "type": "string", "description": "가맹점명 (부분일치)"},
+            {"name": "업종", "type": "string", "description": "업종명/업종 대분류 (부분일치)"},
+            {"name": "limit", "type": "integer", "description": "결과 행수 제한"},
+        ]
     param_specs = [dict(spec) for spec in base_specs]
     for pname, pinfo in vq_params_def.items():
-        if not any(s["name"] == pname for s in param_specs):
-            info = pinfo if isinstance(pinfo, dict) else {}
-            param_specs.append({"name": pname, "type": info.get("type", "string"), "description": info.get("description", "")})
+        info = pinfo if isinstance(pinfo, dict) else {}
+        existing = next((spec for spec in param_specs if spec["name"] == pname), None)
+        if existing is None:
+            param_specs.append({"name": pname, **info})
+        else:
+            for key, value in info.items():
+                existing.setdefault(key, value)
+    if row_request.limit is not None and not any(spec.get("name") == "limit" for spec in param_specs):
+        # An explicit result count is a request constraint, not optional VQ
+        # metadata.  The capability gate has already rejected incompatible
+        # fixed-cardinality/direction templates.
+        param_specs.append(
+            {"name": "limit", "type": "integer", "description": "사용자가 요청한 결과 행수 제한"}
+        )
     if (
         any(str(spec.get("name") or "") in _ENTITY_NAME_PARAM_NAMES for spec in param_specs)
         and not any(spec.get("name") == "이름정확일치" for spec in param_specs)
@@ -1817,11 +3784,11 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 1. 사용자가 명시적으로 언급한 값만 추출하세요.
 2. 기간 변환: "2025년" → 기간_시작:"202501", 기간_종료:"202512"
    "올해" → 기간_시작:"{datetime.now().year}01", 기간_종료:"{datetime.now().year}{datetime.now().month:02d}"
-3. "최근", "이번달", "이번 월"은 현재월 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_current_ym()}"
+3. 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"만 현재월 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_current_ym()}"
 4. "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 지난달 1개월로 해석 → 기준년월/기간_시작/기간_종료 모두 "{_previous_ym()}"
    단, "전월 대비", "전월비", "전월과 비교"의 전월은 비교 기준이므로 조회기간 파라미터로 추출하지 마세요.
 5. "최근 N개월/N달"은 기준년월을 종료월로 보고 N개월 구간으로 해석합니다.
-6. "상위 N개" → limit: N
+6. "상위/앞/최근 N개", "N개만" → limit: N. "최근 N개월"은 기간이며 limit이 아닙니다.
 7. "개인카드 미보유" → 보유구분:"개인카드미보유", "기업카드 미보유/법인카드 미보유" → 보유구분:"기업카드미보유"
 8. 이름 검색은 기본 부분일치입니다. "이름 고정", "이름만으로", "정확 일치"를 명시한 경우에만 이름정확일치:true로 추출하세요.
 9. JSON만 반환하세요. 없으면 빈 오브젝트 {{}}.
@@ -1830,7 +3797,7 @@ def extract_and_apply_params(state: Text2SQLState) -> dict:
 {question}
 
 JSON:"""
-    rule_params = _extract_params_by_rule(question, param_specs)
+    rule_params = _extract_params_by_rule(question, param_specs, _sql_table_names(base_sql))
     try:
         llm_params = _parse_llm_json(_call_llm(extract_prompt, max_tokens=512))
     except Exception:
@@ -1845,12 +3812,38 @@ JSON:"""
         },
         param_specs,
     )
+    if row_request.limit is not None and any(spec.get("name") == "limit" for spec in param_specs):
+        # Deterministic wording wins over a model omission or an unrelated
+        # number selected by the parameter extractor.
+        extracted["limit"] = min(row_request.limit, MAX_QUERY_ROW_LIMIT)
     if any(str(spec.get("name") or "") in _ENTITY_NAME_PARAM_NAMES for spec in param_specs):
         if _is_exact_name_match_requested(question):
             extracted["이름정확일치"] = True
         else:
             extracted.pop("이름정확일치", None)
-    if "기준년월" in vq_params_def and not extracted.get("기준년월"):
+    current_d1_basis = any(
+        (accumulation_policy_for(table_name) or {}).get("cadence") == "previous_day"
+        and _has_exact_table_axis_value(
+            base_sql,
+            table_name,
+            str((accumulation_policy_for(table_name) or {}).get("query_time_dimension") or ""),
+            previous_day_ymd(),
+        )
+        for table_name in _sql_table_names(base_sql)
+    )
+    explicit_current_request = bool(
+        re.search(r"현재|현시점|오늘|전일|어제|최신|지금", routing_question or "")
+    ) or (state.get("user_provided_params", {}) or {}).get("_cadence_hint") == "current"
+    default_current_vqs = {"corporate_limit_status_at_month"}
+    if (
+        "기준년월" in vq_params_def
+        and current_d1_basis
+        and (explicit_current_request or vq_name in default_current_vqs)
+    ):
+        # The routed SQL already fixes the live population to KST D-1; its
+        # month, not a separate history/fact period, anchors the current state.
+        extracted["기준년월"] = _current_ym()
+    elif "기준년월" in vq_params_def and not extracted.get("기준년월"):
         ym = _extract_ym_from_question(question) or extracted.get("기간_종료")
         if ym:
             extracted["기준년월"] = ym
@@ -1864,11 +3857,29 @@ JSON:"""
             extracted.setdefault("기간_시작", _months_back_ym(end_ym, span - 1))
             if "기준년월" in vq_params_def:
                 extracted.setdefault("기준년월", end_ym)
+    if extracted.get("기준년월"):
+        basis_question = f'{extracted["기준년월"]} 기준'
+        if (
+            current_d1_basis
+            and str(extracted["기준년월"]) == _current_ym()
+            and (explicit_current_request or vq_name in default_current_vqs)
+        ):
+            basis_question = "현재"
+        base_sql = _route_verified_query_accumulation(
+            basis_question,
+            vq_name,
+            str((pristine_vq or {}).get("sql") or base_sql),
+        )
     missing = _missing_vq_required_params(vq_params_def, extracted)
     if missing:
+        provided_params = dict(extracted)
+        if (state.get("user_provided_params", {}) or {}).get("_cadence_hint"):
+            provided_params["_cadence_hint"] = (
+                state.get("user_provided_params", {}) or {}
+            )["_cadence_hint"]
         return {
             "extracted_params": extracted,
-            "user_provided_params": extracted,
+            "user_provided_params": provided_params,
             "param_stage": "need_params",
             "missing_params": missing,
         }
@@ -1880,21 +3891,70 @@ JSON:"""
 
 def run_matched_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", "")
+    sql = _apply_accumulation_historical_sources(_retrieval_question(state), sql)
     prepared_sql = prepare_sql_for_backend(sql)
-    columns, rows, error = execute_sql(prepared_sql)
+    availability_error = _availability_execution_error(state, prepared_sql)
+    if availability_error:
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": f"테이블 적재 주기 위반: {availability_error}",
+            "validation_result": f"Verified Query 적재 주기 위반: {availability_error}",
+            "is_valid": False,
+            "retry_count": state.get("retry_count", 0) + 1,
+            "final_sql": prepared_sql,
+        }
+    columns, rows, error = execute_sql(
+        prepared_sql,
+        max_rows=DEFAULT_FETCH_ROW_LIMIT,
+        allow_cross_cycle_fallback=_allow_cross_cycle_fallback(
+            state.get("question", ""), prepared_sql
+        ),
+    )
     if error:
-        return {"query_columns": [], "query_rows": [], "query_error": error, "matched_query_name": "", "final_sql": ""}
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
+        retry = state.get("retry_count", 0) + 1
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": error,
+            "validation_result": f"Verified Query DB 실행 오류: {error}",
+            "is_valid": False,
+            "retry_count": retry,
+            "final_sql": prepared_sql,
+        }
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": prepared_sql,
+        "result_scope": build_result_scope(
+            prepared_sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+        ),
+    }
 
 
 def direct_answer(state: Text2SQLState) -> dict:
     question = state["question"]
     selected_domain = state.get("selected_domain", "")
     glossary = build_glossary_summary(SCHEMA, question, selected_domain)
-    table_summary = _compact_table_catalog(_rule_rank_tables(question))
-    metrics = build_metrics_summary(SCHEMA, question, selected_domain)
+    rule_tables = _rule_rank_tables(question)
+    schema_question = _looks_like_schema_question(question)
+    table_summary = (
+        _table_details(rule_tables, question, max_columns=24, max_total_columns=48)
+        if schema_question and rule_tables
+        else _compact_table_catalog(rule_tables)
+    )
+    metrics = _route_merchant_time_context(
+        question, build_metrics_summary(SCHEMA, question, selected_domain)
+    )
     semantic_contract = build_semantic_contract_summary(SCHEMA)
-    references = find_relevant_references(SCHEMA, question, domain_name=selected_domain)
+    references = _route_merchant_time_context(
+        question,
+        find_relevant_references(SCHEMA, question, domain_name=selected_domain),
+    )
     prompt = f"""당신은 KB카드 기업영업 데이터베이스 전문가입니다.
 사용자의 질문에 대해 아래 정보를 바탕으로 명확한 한국어 답변을 작성하세요.
 
@@ -1903,6 +3963,9 @@ def direct_answer(state: Text2SQLState) -> dict:
 
 ## 비즈니스 용어집
 {glossary}
+
+## 재사용 가능한 Semantic Attribute
+{build_semantic_attributes_summary(SCHEMA, question, selected_domain)}
 
 ## 메트릭 정의
 {metrics}
@@ -1923,6 +3986,8 @@ def direct_answer(state: Text2SQLState) -> dict:
         answer = ""
     if answer:
         return {"answer": answer}
+    if schema_question and table_summary and "사용 가능한 테이블 없음" not in table_summary:
+        return {"answer": table_summary}
 
     q_compact = re.sub(r"\s+", "", question.lower())
     for glossary_item in SCHEMA.get("glossary", []):
@@ -1945,6 +4010,11 @@ def reject_answer(state: Text2SQLState) -> dict:
 
 _GENERIC_TABLE_TERMS = {"기준년월", "기준년월일", "고객식별자", "회원일련번호", "금액", "건수"}
 
+# 이 개수 이하의 테이블만 가진 컬럼은 그 테이블을 특정하는 단서로 본다.
+_DISTINCTIVE_OWNER_LIMIT = 3
+_DISTINCTIVE_WEIGHT = 12
+_DISTINCTIVE_CAP = 1
+
 
 def _is_semantic_table_visible(table: dict) -> bool:
     return str(table.get("semantic_visibility") or "default").lower() != "restricted"
@@ -1965,9 +4035,239 @@ def _visible_table_columns(table: dict, section: str) -> list[dict]:
     ]
 
 
-def _phrase_in_question(question_compact: str, phrase: object) -> bool:
-    normalized = re.sub(r"[^0-9A-Za-z가-힣_]", "", str(phrase or "").lower())
-    return len(normalized) >= 2 and normalized in question_compact
+def _phrase_in_question(question: str, phrase: object) -> bool:
+    return _phrase_in_text(question, phrase)
+
+
+def _contract_source_tables(question: str, contract: dict) -> list[str]:
+    return source_tables_for_question(contract, question)
+
+
+def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
+    """Choose current or historical mappings from a declarative attribute policy."""
+    mappings = list(attribute.get("source_mappings", []))
+    policy = attribute.get("source_selection")
+    if not isinstance(policy, dict):
+        return mappings
+
+    q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
+    start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
+    historical_shape = _has_historical_period_expression(question)
+    has_period = bool(start_ym or end_ym or explicit_day or historical_shape)
+    current_terms = [
+        re.sub(r"[^0-9A-Za-z가-힣_]", "", str(term or "").lower())
+        for term in policy.get("current_terms", [])
+    ]
+    attribute_cues = [
+        re.sub(r"[^0-9A-Za-z가-힣_]", "", str(term or "").lower())
+        for term in [
+            attribute.get("korean_name", ""),
+            attribute.get("parameter_name", ""),
+            *attribute.get("aliases", []),
+        ]
+    ]
+    date_scope_tail = re.compile(
+        r"(?:20\d{2}년(?:\d{1,2}월)?|20\d{4}(?:\d{2})?|\d{1,2}월)(?:기준|의)?$"
+    )
+    explicitly_current_attribute = False
+    for current in current_terms:
+        for cue in attribute_cues:
+            if not current or not cue:
+                continue
+            for match in re.finditer(
+                rf"{re.escape(current)}(?:기준|의)?{re.escape(cue)}",
+                q_compact,
+            ):
+                if not date_scope_tail.search(q_compact[: match.start()]):
+                    explicitly_current_attribute = True
+                    break
+            if explicitly_current_attribute or re.search(
+                rf"{re.escape(cue)}(?:은|는|이|가|을|를)?{re.escape(current)}",
+                q_compact,
+            ):
+                explicitly_current_attribute = True
+                break
+        if explicitly_current_attribute:
+            break
+    generic_current = any(current and current in q_compact for current in current_terms)
+    compares_current_and_period = bool(
+        has_period
+        and any(current and current in q_compact for current in current_terms)
+        and re.search(r"비교|대비|변화|변동|추이", question or "")
+    )
+    if compares_current_and_period:
+        return mappings
+    use_period = has_period and not (
+        explicitly_current_attribute or (generic_current and not historical_shape)
+    )
+    prefix_key = "period_role_prefix" if use_period else "default_role_prefix"
+    prefix = str(policy.get(prefix_key) or "")
+    preferred = [
+        mapping
+        for mapping in mappings
+        if prefix and str(mapping.get("role") or "").startswith(prefix)
+    ]
+    return preferred or mappings
+
+
+def _attribute_snapshot_exclusions(question: str) -> set[str]:
+    """Return alternate snapshot tables forbidden by a matched attribute policy."""
+    if any(
+        str(contract.get("table_selection_mode") or "").lower() == "authoritative"
+        for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2)
+    ):
+        return set()
+
+    preferred_tables: set[str] = set()
+    alternate_tables: set[str] = set()
+    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
+        if not isinstance(attribute.get("source_selection"), dict):
+            continue
+        all_tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in attribute.get("source_mappings", [])
+            if mapping.get("table")
+        }
+        selected_tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in _attribute_source_mappings(question, attribute)
+            if mapping.get("table")
+        }
+        preferred_tables.update(selected_tables)
+        alternate_tables.update(all_tables - selected_tables)
+    return alternate_tables - preferred_tables
+
+
+def _contract_entity_bindings_available(question: str, contract: dict) -> bool:
+    """Whether an authoritative contract's required entity inputs are in the question.
+
+    ``named_corporate_limit_status_at_month`` 은 기업명이 required 인데
+    match.required 가 ["한도"] 하나뿐이라, 이름 없는 "현재 기준 CA한도별 CA한도금액"
+    같은 질문까지 잡아 tbdaa1d12 를 authoritative 로 못박았다. 그러면 아래 점수
+    계산이 통째로 생략돼 CA한도금액을 실제로 가진 tbdaaat03 은 후보에도 못 든다.
+    goldenset v2 easy 실패 6건이 전부 이 조기 반환이었다.
+    """
+    bound_vq = next(
+        (
+            vq
+            for vq in VERIFIED_QUERIES
+            if str(vq.get("name") or "") == str(contract.get("verified_query") or "")
+        ),
+        None,
+    )
+    return _semantic_contract_bindings_satisfied(question, contract, bound_vq or {})
+
+
+def _route_accumulation_table_names(
+    question: str,
+    table_names: list[str],
+    contract: dict | None = None,
+) -> list[str]:
+    """Resolve bounded historical sources before SQL generation."""
+    cadence, _, _ = _tbdaadt01_time_route(question)
+    historical_source = (accumulation_policy_for(_TBDAADT01_TABLE) or {}).get(
+        "historical_source"
+    )
+    archive_table = (
+        str(historical_source.get("table") or "")
+        if cadence == "monthly" and isinstance(historical_source, dict)
+        else ""
+    )
+    routed: list[str] = []
+    historical_start, _ = _previous_day_archive_route(question)
+    verified_tables: set[str] = set()
+    policy_tables = {
+        str(table).rsplit(".", 1)[-1].lower()
+        for table in (_contract_source_tables(question, contract) if contract else [])
+    }
+    if contract:
+        verified_query_name = str(contract.get("verified_query") or "")
+        verified_query = next(
+            (
+                query
+                for query in VERIFIED_QUERIES
+                if str(query.get("name") or "") == verified_query_name
+            ),
+            None,
+        )
+        if verified_query:
+            routed_verified_sql = _route_verified_query_accumulation(
+                question,
+                verified_query_name,
+                str(verified_query.get("sql") or ""),
+            )
+            verified_tables = {
+                str(table).rsplit(".", 1)[-1].lower()
+                for table in _sql_table_names(routed_verified_sql)
+            }
+
+    def add(name: str) -> None:
+        if name and name not in routed:
+            routed.append(name)
+
+    for raw_name in table_names:
+        name = str(raw_name or "").rsplit(".", 1)[-1]
+        if archive_table and name.lower() == _TBDAADT01_TABLE:
+            name = archive_table
+        elif historical_start:
+            monthly_name = _PREVIOUS_DAY_ARCHIVE_TABLES.get(name.lower())
+            if (
+                monthly_name
+                and name.lower() in policy_tables
+                and monthly_name.lower() in policy_tables
+            ):
+                add(name)
+                continue
+            if monthly_name and verified_tables:
+                # A verified composition is authoritative about whether the
+                # live D-1 population, its monthly history, or both are needed.
+                if name.lower() in verified_tables:
+                    add(name)
+                if monthly_name.lower() in verified_tables:
+                    add(monthly_name)
+                if name.lower() in verified_tables or monthly_name.lower() in verified_tables:
+                    continue
+            name = monthly_name or name
+        add(name)
+    return routed
+
+
+def _route_merchant_time_context(question: str, context: str) -> str:
+    """Align metric/reference prompt text with preselected archive tables."""
+    rendered = str(context or "")
+    historical_start, _ = _previous_day_archive_route(question)
+    if historical_start:
+        matched_contracts = semantic_query_contract_candidates(
+            SCHEMA, question, max_count=2
+        )
+        corporate_sources = {
+            str(table).rsplit(".", 1)[-1].lower()
+            for contract in matched_contracts
+            for table in _contract_source_tables(question, contract)
+        }
+        preserve_live_corporate_source = {
+            "tbdaa1d12",
+            "tmdaa1d12",
+        }.issubset(corporate_sources)
+        for source_table, target_table in _PREVIOUS_DAY_ARCHIVE_TABLES.items():
+            if source_table == "tbdaa1d12" and preserve_live_corporate_source:
+                continue
+            rendered = re.sub(
+                rf'(?<![A-Za-z0-9_]){re.escape(source_table)}(?![A-Za-z0-9_])',
+                target_table,
+                rendered,
+                flags=re.IGNORECASE,
+            )
+        rendered = rendered.replace("SUBSTR(기준년월일,1,6)", "기준년월")
+    cadence, _, _ = _tbdaadt01_time_route(question)
+    if cadence != "monthly":
+        return rendered
+    return re.sub(
+        rf'(?<![A-Za-z0-9_]){re.escape(_TBDAADT01_TABLE)}(?![A-Za-z0-9_])',
+        "tmdaa5d01",
+        rendered,
+        flags=re.IGNORECASE,
+    ).replace(_TBDAADT01_TIME_COLUMN, "기준년월")
 
 
 def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
@@ -1977,16 +4277,22 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
     for contract in matched_contracts:
         if str(contract.get("table_selection_mode") or "").lower() != "authoritative":
             continue
+        if not _contract_entity_bindings_available(question, contract):
+            continue
         selected = []
-        for table_name in contract.get("source_tables", []):
+        for table_name in _contract_source_tables(question, contract):
             name = str(table_name or "").rsplit(".", 1)[-1]
             if name and name not in selected:
                 selected.append(name)
         if selected:
-            return selected[:max_tables]
+            return _route_accumulation_table_names(
+                question, selected, contract=contract
+            )[:max_tables]
 
     scores: dict[str, int] = {}
     order: dict[str, int] = {}
+    named_columns = set(_v2_named_columns(question, _schema_column_names()))
+    _, column_owners = _table_column_index()
 
     def add(table_name: object, score: int) -> None:
         name = str(table_name or "").rsplit(".", 1)[-1]
@@ -1997,11 +4303,18 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
 
     for metric in SCHEMA.get("canonical_metrics", []):
         terms = [metric.get("name", ""), *metric.get("synonyms", [])]
-        if any(_phrase_in_question(q_compact, term) for term in terms):
+        if any(_phrase_in_question(question, term) for term in terms):
             add(metric.get("source_table"), 20)
 
+    for position, attribute in enumerate(
+        semantic_attribute_candidates(SCHEMA, question, max_count=6)
+    ):
+        attribute_score = 36 if position == 0 else max(3, 18 - position * 3)
+        for mapping in _attribute_source_mappings(question, attribute):
+            add(mapping.get("table"), attribute_score)
+
     for contract in matched_contracts:
-        for table_name in contract.get("source_tables", []):
+        for table_name in _contract_source_tables(question, contract):
             add(table_name, 28)
 
     references: list[tuple[int, int, dict]] = []
@@ -2013,12 +4326,54 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
             for token in re.findall(r"[0-9A-Za-z가-힣_]+", str(value))
             if len(token) >= 2
         }
-        exact_matches = sum(1 for phrase in ref.get("when_user_says", []) if _phrase_in_question(q_compact, phrase))
+        exact_matches = sum(
+            1
+            for phrase in ref.get("when_user_says", [])
+            if _phrase_in_question(question, phrase)
+        )
         score = sum(1 for token in tokens if token in q_compact) + 4 * exact_matches
         references.append((exact_matches, score, ref))
     references.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    reference_snapshot_exclusions: set[str] = set()
+    reference_routed_sources: set[str] = set()
+    reference_routing_entry: dict | None = None
     if references and references[0][1] >= 2:
         exact_matches, best_score, best_ref = references[0]
+        if isinstance(best_ref.get("source_table_policy"), dict):
+            reference_routing_entry = best_ref
+        declared_sources = {
+            str(table).rsplit(".", 1)[-1]
+            for table in source_tables_for_question(best_ref, question)
+        }
+        governed_sources = {
+            str(table).rsplit(".", 1)[-1]
+            for table in (best_ref.get("source_table_policy") or {}).get("default", [])
+        }
+        governed_sources.update(
+            str(table).rsplit(".", 1)[-1]
+            for table in (best_ref.get("source_table_policy") or {}).get("period_snapshot", [])
+        )
+        if str(best_ref.get("verified_query") or "") == "corporate_target_industry_usage":
+            target_vq = next(
+                (
+                    query
+                    for query in VERIFIED_QUERIES
+                    if str(query.get("name") or "") == "corporate_target_industry_usage"
+                ),
+                None,
+            )
+            if target_vq:
+                routed_tables = _sql_table_names(
+                    _route_verified_query_accumulation(
+                        question,
+                        "corporate_target_industry_usage",
+                        str(target_vq.get("sql") or ""),
+                    )
+                )
+                reference_routed_sources = governed_sources.intersection(routed_tables)
+                declared_sources.update(reference_routed_sources)
+        reference_snapshot_exclusions = governed_sources - declared_sources
+        best_ref = resolve_query_reference_for_question(best_ref, question)
         # The workbook reference questions are curated, high-confidence intent
         # anchors.  When one of their normalized phrases is present, keep its
         # required tables ahead of broad metric/table-name hits such as "회원".
@@ -2026,6 +4381,8 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         join_weight = 100 + min(best_score, 12) if exact_matches else 4 + min(best_score, 4)
         add(best_ref.get("primary_table"), primary_weight)
         for table_name in best_ref.get("join_tables", []):
+            add(table_name, join_weight)
+        for table_name in reference_routed_sources:
             add(table_name, join_weight)
 
     for index, table in enumerate(SCHEMA.get("tables", [])):
@@ -2035,19 +4392,39 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         physical = str(table.get("physical_table") or logical).rsplit(".", 1)[-1]
         order.setdefault(logical, index)
         identity_terms = [logical, physical, table.get("korean_name", ""), *table.get("synonyms", [])]
-        if any(_phrase_in_question(q_compact, term) for term in identity_terms):
+        if any(_phrase_in_question(question, term) for term in identity_terms):
             add(logical, 14)
         column_hits = 0
+        exact_hits = 0
+        distinctive_hits = 0
         for section in ("dimensions", "measures", "time_dimensions"):
             for column in _visible_table_columns(table, section):
-                terms = [column.get("name", ""), *column.get("synonyms", [])]
+                name = str(column.get("name") or "")
+                terms = [name, *column.get("synonyms", [])]
                 if any(
-                    str(term or "") not in _GENERIC_TABLE_TERMS and _phrase_in_question(q_compact, term)
+                    str(term or "") not in _GENERIC_TABLE_TERMS
+                    and _phrase_in_question(question, term)
                     for term in terms
                 ):
                     column_hits += 1
+                    if 0 < len(column_owners.get(name, ())) <= _DISTINCTIVE_OWNER_LIMIT:
+                        distinctive_hits += 1
+                if name in named_columns:
+                    exact_hits += 1
         if column_hits:
             add(logical, min(column_hits, 4) * 3)
+        # v2: 몇 안 되는 테이블만 가진 컬럼이 질문에 잡히면 그 자체가 강한 단서다.
+        # "모바일 카드로 발급된 기업카드 좌수" 의 모바일카드여부는 tbdaaat05 계열에만
+        # 있는데, 동의어 겹침 3점으로 묶여 있어서 카드 보유수 semantic attribute(36점)를
+        # 가진 tbdaa1d12·tmdaa1d12 에 밀렸다. 정답 테이블이 후보에도 못 올랐다.
+        if distinctive_hits:
+            add(logical, min(distinctive_hits, _DISTINCTIVE_CAP) * _DISTINCTIVE_WEIGHT)
+        # v2: 질문이 컬럼명을 그대로 부른 경우("CA한도금액", "부서사업장이용한도금액",
+        # "가맹점월승인한도금액")는 동의어 겹침과 격이 다른 증거다. 그런데 동의어와
+        # 같은 3점짜리로 묶여 있어서, 그 컬럼이 없는 tbdaa1d12 가 semantic attribute
+        # 점수(36)로 이겼고 모델은 없는 컬럼을 "가장 가까운 컬럼"으로 대체했다.
+        if exact_hits:
+            add(logical, min(exact_hits, 2) * 40)
 
     known_by_physical = {
         str(table.get("physical_table") or table.get("name") or "").rsplit(".", 1)[-1]: str(table.get("name") or "")
@@ -2059,8 +4436,15 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         logical = known_by_physical.get(name, name)
         if logical:
             normalized_scores[logical] = normalized_scores.get(logical, 0) + score
+    for excluded in _attribute_snapshot_exclusions(question):
+        normalized_scores.pop(known_by_physical.get(excluded, excluded), None)
+    for excluded in reference_snapshot_exclusions:
+        normalized_scores.pop(known_by_physical.get(excluded, excluded), None)
     ranked = sorted(normalized_scores, key=lambda name: (-normalized_scores[name], order.get(name, 10_000), name))
-    return [name for name in ranked if normalized_scores[name] >= 3][:max_tables]
+    selected = [name for name in ranked if normalized_scores[name] >= 3]
+    return _route_accumulation_table_names(
+        question, selected, contract=reference_routing_entry
+    )[:max_tables]
 
 
 def _parse_table_selection(raw: object) -> list[str]:
@@ -2093,18 +4477,29 @@ def _parse_table_selection(raw: object) -> list[str]:
     return selected
 
 
-def _compact_table_catalog(rule_tables: list[str]) -> str:
+def _compact_table_catalog(
+    rule_tables: list[str],
+    excluded_tables: set[str] | None = None,
+) -> str:
     """Build a small selection catalog instead of serializing every column."""
+    excluded = {
+        str(name or "").rsplit(".", 1)[-1]
+        for name in (excluded_tables or set())
+        if name
+    }
     candidate_names = set(rule_tables)
     if candidate_names:
         for path in semantic_join_paths_for_tables(SCHEMA, candidate_names, require_both=False):
             candidate_names.update(
                 name for name in (path.get("from_table"), path.get("to_table")) if name
             )
+    candidate_names.difference_update(excluded)
     tables = [
         table
         for table in SCHEMA.get("tables", [])
-        if _is_semantic_table_visible(table) and (not candidate_names or table.get("name") in candidate_names)
+        if _is_semantic_table_visible(table)
+        and str(table.get("name") or "") not in excluded
+        and (not candidate_names or table.get("name") in candidate_names)
     ]
     # Direct-neighbour expansion can be large around customer master tables.
     if candidate_names and len(tables) > 10:
@@ -2135,7 +4530,9 @@ def _column_evidence(question: str, table_names: list[str]) -> str:
     q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
     for metric in SCHEMA.get("canonical_metrics", []):
         terms = [metric.get("name", ""), *metric.get("synonyms", [])]
-        if metric.get("source_table") in table_names and any(_phrase_in_question(q_compact, term) for term in terms):
+        if metric.get("source_table") in table_names and any(
+            _phrase_in_question(question, term) for term in terms
+        ):
             evidence.extend(
                 [
                     metric.get("name", ""),
@@ -2147,6 +4544,22 @@ def _column_evidence(question: str, table_names: list[str]) -> str:
                     json.dumps(metric.get("time_policy", {}), ensure_ascii=False),
                     json.dumps(metric.get("name_filter", {}), ensure_ascii=False),
                     " ".join(str(value) for value in metric.get("required_filters", [])),
+                ]
+            )
+    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
+        mapped_tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in attribute.get("source_mappings", [])
+        }
+        if mapped_tables.intersection(table_names):
+            evidence.extend(
+                [
+                    attribute.get("name", ""),
+                    attribute.get("korean_name", ""),
+                    attribute.get("business_definition", ""),
+                    json.dumps(attribute.get("source_mappings", []), ensure_ascii=False),
+                    json.dumps(attribute.get("value_semantics", {}), ensure_ascii=False),
+                    " ".join(str(value) for value in attribute.get("semantic_cautions", [])),
                 ]
             )
     for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2):
@@ -2226,8 +4639,15 @@ def _table_details(
         relationship_lines.append(line)
         join_text += " " + str(path.get("sql") or "")
 
+    prompt_column_budget = max(
+        (
+            int(contract.get("prompt_column_budget") or 0)
+            for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2)
+        ),
+        default=0,
+    )
     per_table_limit = min(
-        max_columns,
+        max(max_columns, prompt_column_budget),
         max(8, max_total_columns // max(len(selected_tables), 1)),
     )
     blocks = []
@@ -2261,7 +4681,7 @@ def _table_details(
                 if semantic_role == "시간":
                     score += 35 if _has_time_expression(question) else 18
                 terms = [name, *column.get("synonyms", [])]
-                if any(_phrase_in_question(question_compact, term) for term in terms):
+                if any(_phrase_in_question(question, term) for term in terms):
                     score += 70
                 if name and name.lower() in evidence_lower:
                     score += 45
@@ -2290,6 +4710,9 @@ def _table_details(
             lines.append(f"- source_definition: {source_definition}")
         if primary_time:
             lines.append(f"- primary_time_dimension: {primary_time}")
+        accumulation_summary = format_accumulation_policy(table.get("accumulation_policy"))
+        if accumulation_summary:
+            lines.append(f"- accumulation_policy: {accumulation_summary}")
 
         policy = table.get("aggregation_policy") if isinstance(table.get("aggregation_policy"), dict) else {}
         if policy:
@@ -2331,6 +4754,8 @@ def _table_details(
                 metadata.append("format=" + str(column.get("format")))
             if column.get("role"):
                 metadata.append("time_role=" + str(column.get("role")))
+            if column.get("codebook_ref"):
+                metadata.append("codebook_ref=" + str(column.get("codebook_ref")))
             if column.get("value_semantics"):
                 value_text = json.dumps(column.get("value_semantics"), ensure_ascii=False)
                 provenance = str(column.get("value_semantics_provenance") or "")
@@ -2358,12 +4783,45 @@ def analyze_question(state: Text2SQLState) -> dict:
         return {"selected_tables": state["selected_tables"], "table_details": state["table_details"]}
 
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     selected_domain = state.get("selected_domain", "")
     domain_context = state.get("domain_context") or build_domain_context(SCHEMA, selected_domain)
     domain_trace = state.get("domain_routing_trace", "")
     semantic_contract = build_semantic_contract_summary(SCHEMA)
-    join_context = build_semantic_join_context(SCHEMA, selected_domain, question, max_paths=5)
-    rule_tables = _rule_rank_tables(question)
+    join_context = build_semantic_join_context(SCHEMA, selected_domain, retrieval_question, max_paths=5)
+    rule_tables = _rule_rank_tables(retrieval_question)
+    authoritative_contract = any(
+        str(contract.get("table_selection_mode") or "").lower() == "authoritative"
+        for contract in semantic_query_contract_candidates(
+            SCHEMA,
+            retrieval_question,
+            domain_name=selected_domain,
+            max_count=2,
+        )
+    )
+    if authoritative_contract and rule_tables:
+        table_names = rule_tables[:4]
+        return {
+            "selected_tables": table_names,
+            "table_details": _table_details(table_names, retrieval_question),
+        }
+    excluded_snapshot_tables = _attribute_snapshot_exclusions(retrieval_question)
+    metrics_context = _route_merchant_time_context(
+        retrieval_question,
+        build_metrics_summary(SCHEMA, retrieval_question, selected_domain),
+    )
+    contracts_context = _route_merchant_time_context(
+        retrieval_question,
+        find_relevant_semantic_query_contracts(
+            SCHEMA, retrieval_question, selected_domain
+        ),
+    )
+    references_context = _route_merchant_time_context(
+        retrieval_question,
+        find_relevant_references(
+            SCHEMA, retrieval_question, domain_name=selected_domain
+        ),
+    )
     prompt = f"""당신은 KB카드 기업영업 데이터베이스 전문가입니다.
 사용자의 질문을 분석하여 필요한 테이블을 선택하세요.
 
@@ -2383,19 +4841,22 @@ def analyze_question(state: Text2SQLState) -> dict:
 {', '.join(rule_tables) if rule_tables else "(명확한 후보 없음)"}
 
 ## 사용 가능한 테이블 (후보 및 직접 연결 테이블)
-{_compact_table_catalog(rule_tables)}
+{_compact_table_catalog(rule_tables, excluded_snapshot_tables)}
 
 ## 비즈니스 용어집
-{build_glossary_summary(SCHEMA, question, selected_domain)}
+{build_glossary_summary(SCHEMA, retrieval_question, selected_domain)}
+
+## 재사용 가능한 Semantic Attribute
+{build_semantic_attributes_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 사전 정의된 메트릭
-{build_metrics_summary(SCHEMA, question, selected_domain)}
+{metrics_context}
 
 ## 재사용 가능한 Semantic Query Contract
-{find_relevant_semantic_query_contracts(SCHEMA, question, selected_domain)}
+{contracts_context}
 
 ## 질문과 가까운 질의 작성 Reference
-{find_relevant_references(SCHEMA, question, domain_name=selected_domain)}
+{references_context}
 
 ## 규칙
 1. 필요한 테이블만 선택. 2. JOIN 필요 시 관련 테이블 포함.
@@ -2414,10 +4875,20 @@ def analyze_question(state: Text2SQLState) -> dict:
         if not rule_tables:
             raise
         llm_tables = []
-    # A parseable explicit selection is the model's adjudication; rules are a
-    # deterministic fallback for malformed/empty small-model output.
-    table_names = llm_tables[:4] if llm_tables else rule_tables[:4]
-    return {"selected_tables": table_names, "table_details": _table_details(table_names, question)}
+    llm_tables = [name for name in llm_tables if name not in excluded_snapshot_tables]
+    if excluded_snapshot_tables:
+        # A matched current/monthly attribute policy is deterministic.  Keep
+        # its allowed rule tables ahead of any model-selected join additions.
+        table_names = list(dict.fromkeys([*rule_tables, *llm_tables]))[:4]
+    else:
+        # A parseable explicit selection is the model's adjudication; rules are
+        # a deterministic fallback for malformed/empty small-model output.
+        table_names = llm_tables[:4] if llm_tables else rule_tables[:4]
+    table_names = _route_accumulation_table_names(retrieval_question, table_names)
+    return {
+        "selected_tables": table_names,
+        "table_details": _table_details(table_names, retrieval_question),
+    }
 
 
 def check_sql_gen_params(state: Text2SQLState) -> dict:
@@ -2426,6 +4897,9 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
 
     question = state["question"]
     needed = _missing_ambiguous_target_params(question)
+    query_frame = state.get("query_frame") or {}
+    if needed and query_frame.get("entities"):
+        needed = [item for item in needed if item.get("name") != "대상명"]
 
     if needed:
         return {
@@ -2433,6 +4907,41 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
             "param_stage": "need_params",
         }
     return {"missing_params": [], "param_stage": "done"}
+
+
+def _corporate_scope_tables(selected_tables: list[str]) -> list[str]:
+    """Selected tables that carry the individual/corporate discriminator."""
+    wanted = {str(name).rsplit(".", 1)[-1].lower() for name in selected_tables or []}
+    return [
+        str(table.get("name") or "")
+        for table in SCHEMA.get("tables", [])
+        if str(table.get("name") or "").lower() in wanted
+        and any(
+            str(column.get("name") or "") == "개인기업구분코드"
+            for column in (table.get("dimensions") or [])
+        )
+    ]
+
+
+def _corporate_scope_rule(selected_tables: list[str]) -> str:
+    """Spell out the corporate-only scope for the tables actually in the prompt.
+
+    goldenset v2 정답 452건 중 276건이 ``개인기업구분코드 = '2'`` 를 쓰는데 모델은
+    99건에만 붙였다. 질문에 "법인"·"기업" 이라는 말이 없으면 개인까지 함께 세서
+    행 수와 금액이 전부 어긋난다. 이 에이전트의 조회 대상 자체가 기업영업이므로
+    기본값으로 못 박고, 해당 컬럼을 가진 테이블 이름까지 같이 적는다.
+    """
+    tables = _corporate_scope_tables(selected_tables)
+    if not tables:
+        return ""
+    return (
+        "\n## 조회 대상 범위 (기업영업)\n"
+        "이 시스템은 기업(법인·개인사업자) 고객만 다룹니다. 아래 테이블에는 "
+        '"개인기업구분코드" = \'2\' 조건을 반드시 넣으세요. '
+        "질문에 '법인'·'기업'이라는 말이 없어도 마찬가지입니다. "
+        "질문이 개인 고객이나 전체를 명시한 경우에만 뺍니다.\n"
+        f"- 대상 테이블: {', '.join(tables)}\n"
+    )
 
 
 def _sql_dialect_name() -> str:
@@ -2451,7 +4960,7 @@ def _sql_dialect_rules() -> str:
     """백엔드별 SQL 작성 주의사항. Athena(Trino)는 PostgreSQL과 방언이 다르다."""
     if DB_BACKEND == "athena":
         return (
-            "16. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
+            "18. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
             "    - 타입 캐스트는 CAST(expr AS type)만 사용 (PostgreSQL의 expr::type 금지).\n"
             "    - 실수 나눗셈은 CAST(... AS DOUBLE), 정수는 CAST(... AS INTEGER).\n"
             "    - 대소문자 무시 이름 검색은 기본적으로 LOWER(col) LIKE LOWER('%값%') 사용 (ILIKE 금지). 이름 고정·이름만·정확 일치를 명시한 경우만 %를 제거.\n"
@@ -2468,47 +4977,68 @@ def _multiturn_sql_context(state: Text2SQLState | dict) -> str:
     previous_sql = str(state.get("previous_sql") or "").strip()
     previous_answer = str(state.get("previous_answer") or "").strip()
     followup_question = str(state.get("followup_question") or "").strip()
-    if not any((previous_question, previous_sql, previous_answer, followup_question)):
+    query_frame = state.get("query_frame") or {}
+    if not any((previous_question, previous_sql, previous_answer, followup_question, query_frame)):
         return ""
     return """## 멀티턴 문맥
 - 이전 질문: {previous_question}
 - 실제 후속 질문: {followup_question}
 - 이전 답변 요약: {previous_answer}
+- 구조화된 조회 상태:
+{query_frame}
 - 이전 실행 SQL:
 {previous_sql}
 
-이전 SQL은 엔티티/필터/집계 기준을 이어받기 위한 참고입니다. 실제 후속 질문에서 변경한 기간·정렬·비교 조건을 우선 적용하고, 새 질문에 없는 엔티티 조건은 유지하세요.
+구조화된 조회 상태를 조건 상속의 기준으로 사용하세요. 이전 SQL은 보조 참고입니다. 실제 후속 질문에서 변경한 기간·지표·정렬·비교 조건을 우선 적용하고, 새 질문에 없는 대상 조건은 유지하세요. "소스 재탐색 필요: 예"이면 이전 도메인·테이블은 상속하지 말고 현재 도메인 라우팅과 테이블 상세를 사용하세요.
 """.format(
         previous_question=previous_question[:1000] or "(없음)",
         followup_question=followup_question[:1000] or "(없음)",
         previous_answer=previous_answer[:1200] or "(없음)",
+        query_frame=query_frame_prompt(query_frame),
         previous_sql=previous_sql[:5000] or "(없음)",
     )
 
 
 def generate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
+    retrieval_question = _retrieval_question(state)
     table_details = state["table_details"]
     retry_count = state.get("retry_count", 0)
     validation_result = state.get("validation_result", "")
     selected_domain = state.get("selected_domain", "")
     selected_tables = state.get("selected_tables", [])
-    relevant_queries = find_relevant_queries(SCHEMA, question, domain_name=selected_domain)
-    relevant_references = find_relevant_references(SCHEMA, question, domain_name=selected_domain)
-    relevant_semantic_contracts = find_relevant_semantic_query_contracts(
-        SCHEMA,
-        question,
-        selected_domain,
+    relevant_queries = _route_merchant_time_context(
+        retrieval_question,
+        find_relevant_queries(SCHEMA, retrieval_question, domain_name=selected_domain),
+    )
+    relevant_references = _route_merchant_time_context(
+        retrieval_question,
+        find_relevant_references(SCHEMA, retrieval_question, domain_name=selected_domain),
+    )
+    relevant_semantic_contracts = _route_merchant_time_context(
+        retrieval_question,
+        find_relevant_semantic_query_contracts(
+            SCHEMA,
+            retrieval_question,
+            selected_domain,
+        ),
+    )
+    relevant_metrics = _route_merchant_time_context(
+        retrieval_question,
+        build_metrics_summary(SCHEMA, retrieval_question, selected_domain),
     )
     domain_context = state.get("domain_context") or build_domain_context(SCHEMA, selected_domain)
     domain_trace = state.get("domain_routing_trace", "")
     semantic_contract = build_semantic_contract_summary(SCHEMA)
-    join_context = build_semantic_join_context(
+    join_context = _route_merchant_time_context(
+        retrieval_question,
+        build_semantic_join_context(
         SCHEMA,
         selected_domain,
-        question,
+        retrieval_question,
         max_paths=5,
         table_names=selected_tables,
+        ),
     )
     multiturn_context = _multiturn_sql_context(state)
     retry_context = ""
@@ -2540,13 +5070,16 @@ def generate_sql(state: Text2SQLState) -> dict:
 {table_details}
 
 ## 사전 정의된 메트릭
-{build_metrics_summary(SCHEMA, question, selected_domain)}
+{relevant_metrics}
+
+## 재사용 가능한 Semantic Attribute
+{build_semantic_attributes_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 재사용 가능한 Semantic Query Contract
 {relevant_semantic_contracts}
 
 ## 비즈니스 용어집
-{build_glossary_summary(SCHEMA, question, selected_domain)}
+{build_glossary_summary(SCHEMA, retrieval_question, selected_domain)}
 
 ## 질문과 가까운 질의 작성 Reference
 {relevant_references}
@@ -2556,7 +5089,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 
 {multiturn_context}
 {retry_context}{user_params_context}
-
+{_corporate_scope_rule(selected_tables)}
 ## SQL 작성 규칙
 1. 위 테이블 정보에 있는 컬럼만 사용. 2. 메트릭 정의된 경우 해당 SQL 공식 사용.
 3. 도메인 라우팅 결과의 canonical_metrics, required_filters, default_time_dimension을 우선 반영.
@@ -2568,30 +5101,455 @@ def generate_sql(state: Text2SQLState) -> dict:
 10. 질문에 없는 테이블명은 절대 만들지 말고, 위 테이블 상세/Reference/도메인 컨텍스트에 있는 실테이블만 사용.
 11. "신규/가입/등록 고객"은 tbdaaat01.최초등록년월일 기준으로 해석.
 12. "여성 고객"은 성별구분코드 = '2'를 기본값으로 사용.
-13. 상세 목록 조회는 LIMIT 100 이하를 기본으로 둡니다. 집계 결과는 의미있는 순서로 정렬합니다.
+13. 상세 목록 조회는 요청 개수가 없으면 LIMIT {DEFAULT_QUERY_ROW_LIMIT}을 적용합니다. 집계 결과는 의미있는 순서로 정렬하고, CTE와 서브쿼리를 포함해 SELECT * 대신 필요한 컬럼만 명시합니다.
 14. 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본적으로 LIKE '%이름%' 부분일치를 사용합니다. 사용자가 "이름 고정", "이름만으로", "정확 일치"를 명시한 경우에만 앞뒤 % 없이 정확히 비교합니다.
-15. 읽기 쉬운 alias. 16. 순수 SQL만 반환.
-{_time_resolution_instruction(question)}
+15. 사용자가 N개/N건을 명시하면 최종 결과에 LIMIT N을 적용합니다. 상위/최근/최신/마지막/뒤에서 N은 요청 지표 또는 시간축을 DESC로, 하위 N은 ASC로 정렬한 뒤 LIMIT N을 적용합니다. "최근 N개월"은 행 개수가 아니라 조회 기간입니다.
+16. 읽기 쉬운 alias. 17. 순수 SQL만 반환.
+{_time_resolution_instruction(question, selected_tables)}
 {_sql_dialect_rules()}
 
 ## 사용자 질문
 {question}
 
 SQL:"""
-    sql = _extract_sql_from_llm(_call_llm(prompt, max_tokens=2048))
+    # v2: 2048 토큰에서 복잡한 질의가 문장 중간에 끊겨 mismatched input '<EOF>' 가 났다.
+    sql = _extract_sql_from_llm(_call_llm(prompt, max_tokens=SQL_GENERATION_MAX_TOKENS))
+
+    # v2: 모델이 SQL 대신 "컬럼명을 알려주시면..." 으로 되묻는 응답을 내면 그대로
+    # 실행 단계로 넘어가 읽기 전용 가드에서 죽는다. 재시도로 돌린다.
+    if _v2_looks_like_prose(sql):
+        return {
+            "generated_sql": sql,
+            "validation_result": _v2_prose_reason(sql),
+            "is_valid": False,
+            "retry_count": retry_count + 1,
+        }
+
+    sql = _v2_normalize_sql(sql)
     sql = _apply_recent_month_sql_fix(question, sql)
     sql = _apply_name_filter_mode(question, sql)
     return {"generated_sql": sql}
 
 
+def _validate_required_semantic_tables(
+    question: str,
+    sql: str,
+    selected_tables: list[str],
+) -> list[str]:
+    contracts = semantic_query_contract_candidates(SCHEMA, question, max_count=1)
+    if not contracts or not contracts[0].get("require_all_selected_tables"):
+        return []
+    used_tables = _extract_schema_tables(sql)
+    required_tables = {
+        str(table).rsplit(".", 1)[-1].lower()
+        for table in selected_tables
+        if table
+    }
+    missing = sorted(required_tables - used_tables)
+    if not missing:
+        return []
+    return [
+        "Semantic Query Contract 필수 테이블 누락: "
+        + ", ".join(missing)
+        + ". 선택된 현재/과거 기업규모 원천과 실적 테이블을 모두 사용하세요."
+    ]
+
+
+def _validate_requested_row_constraints(question: str, sql: str) -> list[str]:
+    """Check that generated SQL preserves an explicit result count/direction."""
+    request = parse_row_request(question)
+    if request.limit is None and not request.mode:
+        return []
+
+    issues: list[str] = []
+    rendered_limit = outer_limit(sql)
+    if request.limit is not None and rendered_limit != min(request.limit, MAX_QUERY_ROW_LIMIT):
+        issues.append(f"요청한 결과 행수 LIMIT {request.limit}이 최종 SQL에 반영되지 않았습니다.")
+
+    if request.mode in {"top", "bottom", "latest", "tail"}:
+        outer_order = first_order_key(sql)
+        wants_desc = request.mode in {"top", "latest", "tail"}
+        expected_direction = "DESC" if wants_desc else "ASC"
+        if not outer_order:
+            issues.append(
+                f"'{request.mode}' 행 선택에 필요한 최종 ORDER BY {expected_direction}가 없습니다."
+            )
+        elif not re.search(rf"\b{expected_direction}\b", outer_order, re.IGNORECASE):
+            issues.append(
+                f"'{request.mode}' 요청의 최종 정렬 방향은 {expected_direction}여야 합니다."
+            )
+        if request.mode in {"latest", "tail"} and outer_order and not re.search(
+            r"년월|일자|날짜|일시|시각|(?:^|[_\.])(?:date|day|month|year|time|timestamp|ym)(?=[_\.]|\s+(?:ASC|DESC)\b|$)",
+            outer_order,
+            re.IGNORECASE,
+        ):
+            issues.append(f"'{request.mode}' 요청의 첫 ORDER BY 기준은 시간 컬럼이어야 합니다.")
+        requested_metric = _explicit_rank_metric(question)
+        if request.mode in {"top", "bottom"} and requested_metric:
+            ordered_metric = _rank_metric(outer_order)
+            if ordered_metric and ordered_metric != requested_metric:
+                issues.append("요청한 순위 지표가 최종 ORDER BY의 첫 정렬 기준과 일치하지 않습니다.")
+    if request.limit is not None and request.limit > 1 and is_scalar_aggregate_query(sql):
+        issues.append("단일 집계값 SQL은 여러 결과 행 요청을 충족할 수 없습니다.")
+    return issues
+
+
+def _where_regions(sql: str) -> list[str]:
+    """Return WHERE regions from every CTE and subquery."""
+    regions: list[str] = []
+
+    def visit(token: object) -> None:
+        if isinstance(token, sqlparse.sql.Where):
+            regions.append(str(token))
+            return
+        if isinstance(token, sqlparse.sql.TokenList):
+            for child in token.tokens:
+                visit(child)
+
+    try:
+        for statement in sqlparse.parse(sql or ""):
+            visit(statement)
+    except Exception:
+        return []
+    return regions
+
+
+def _table_axis_patterns(sql: str, table_name: str, column: str) -> list[str]:
+    """Build table-owned load-axis patterns, preserving explicit aliases."""
+    patterns: list[str] = []
+    for alias, explicit_alias in _table_aliases(sql, table_name):
+        if explicit_alias:
+            patterns.append(_qualified_column(alias, column))
+        else:
+            patterns.append(
+                rf'(?<![0-9A-Za-z_가-힣])'
+                rf'(?:(?:"?{re.escape(table_name)}"?\s*\.\s*)?)'
+                rf'"?{re.escape(column)}"?'
+                rf'(?![0-9A-Za-z_가-힣])'
+            )
+    return list(dict.fromkeys(patterns))
+
+
+def _has_table_axis_filter(sql: str, table_name: str, column: str) -> bool:
+    """Whether the declared load axis participates in a WHERE predicate."""
+    tail = r"(?:(?!\b(?:AND|OR|WHERE|HAVING)\b).){0,120}"
+    operators = r"(?:=|<>|!=|<=|>=|<|>|\bBETWEEN\b|\bIN\b|\bIS\b|\bLIKE\b)"
+    for region in _where_regions(sql):
+        for axis in _table_axis_patterns(sql, table_name, column):
+            if re.search(
+                rf"(?:{axis}{tail}{operators}|{operators}{tail}{axis})",
+                region,
+                re.IGNORECASE | re.DOTALL,
+            ):
+                return True
+    return False
+
+
+def _table_axis_literal_values(sql: str, table_name: str, column: str) -> list[str]:
+    """Extract only date literals compared with a table's declared load axis."""
+    values: list[str] = []
+    tail = r"(?:(?!\b(?:AND|OR|WHERE|HAVING)\b).){0,100}"
+    for region in _where_regions(sql):
+        for axis in _table_axis_patterns(sql, table_name, column):
+            patterns = (
+                rf"{axis}{tail}\bBETWEEN\s*'(20\d{{2,6}})'\s+AND\s+'(20\d{{2,6}})'",
+                rf"{axis}{tail}(?:=|<>|!=|<=|>=|<|>)\s*'(20\d{{2,6}})'",
+                rf"'(20\d{{2,6}})'\s*(?:=|<>|!=|<=|>=|<|>){tail}{axis}",
+                rf"{axis}{tail}\bIN\s*\(([^)]*)\)",
+            )
+            for pattern in patterns:
+                for match in re.finditer(pattern, region, re.IGNORECASE | re.DOTALL):
+                    for group in match.groups():
+                        values.extend(re.findall(r"(?<!\d)20\d{2,6}(?!\d)", group or ""))
+    return list(dict.fromkeys(values))
+
+
+def _has_exact_table_axis_value(
+    sql: str,
+    table_name: str,
+    column: str,
+    value: str,
+) -> bool:
+    """Whether a load axis is fixed to the requested one-day snapshot."""
+    dynamic_previous_day = (
+        r"DATE_FORMAT\s*\(\s*DATE_ADD\s*\(\s*'day'\s*,\s*-1\s*,\s*"
+        r"CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'\s*\)\s*,\s*"
+        r"'%Y%m%d'\s*\)"
+    )
+    exact_value = rf"(?:'{re.escape(value)}'|{dynamic_previous_day})"
+    for region in _where_regions(sql):
+        for axis in _table_axis_patterns(sql, table_name, column):
+            if re.search(
+                rf"(?:{axis}\s*=\s*{exact_value}|{exact_value}\s*=\s*{axis}|"
+                rf"{axis}\s+BETWEEN\s+{exact_value}\s+AND\s+{exact_value})",
+                region,
+                re.IGNORECASE | re.DOTALL,
+            ):
+                return True
+    return False
+
+
+def _has_recent_table_axis_window(
+    sql: str,
+    table_name: str,
+    column: str,
+    start: str,
+    end: str,
+) -> bool:
+    values = _table_axis_literal_values(sql, table_name, column)
+    if start in values and end in values:
+        return True
+    for region in _where_regions(sql):
+        if not any(
+            re.search(axis, region, re.IGNORECASE)
+            for axis in _table_axis_patterns(sql, table_name, column)
+        ):
+            continue
+        if re.search(
+            r"DATE_ADD\s*\(\s*'day'\s*,\s*-9\b.*?"
+            r"CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'",
+            region,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            return True
+    return False
+
+
+def _monthly_archive_join_issues(sql: str) -> list[str]:
+    """Reject merchant-only joins between monthly snapshots and facts."""
+    archive_aliases = [
+        str(binding["alias"])
+        for binding in _sql_table_bindings(sql)
+        if binding["table"] == "tmdaa5d01"
+    ]
+    fact_aliases = [
+        str(binding["alias"])
+        for binding in _sql_table_bindings(sql)
+        if binding["table"] in {"tmdaa5e11", "tbdaabt30"}
+    ]
+    for archive_alias in archive_aliases:
+        for fact_alias in fact_aliases:
+            if not _has_alias_column_equality(sql, archive_alias, fact_alias, "가맹점번호"):
+                continue
+            if not _has_alias_column_equality(sql, archive_alias, fact_alias, "기준년월"):
+                return [
+                    "월별 가맹점 스냅샷(tmdaa5d01)과 월별 실적 테이블은 "
+                    '"가맹점번호"와 "기준년월"을 모두 같게 조인해야 합니다.'
+                ]
+    return []
+
+
+def _availability_policy_issues(
+    question: str,
+    sql: str,
+    selected_tables: list[str] | None = None,
+) -> list[str]:
+    """Validate each physical source against its declared accumulation axis."""
+    del selected_tables  # Physical SQL sources, not retrieval candidates, are authoritative.
+    used_tables = _extract_schema_tables(sql)
+    governed_tables = sorted(
+        table for table in used_tables if accumulation_policy_for(table)
+    )
+    if not governed_tables:
+        return []
+
+    issues = _monthly_archive_join_issues(sql)
+    latest_previous_day = previous_day_ymd()
+    recent_start, recent_end = recent_window_ymd()
+    has_requested_period = _has_time_expression(question)
+
+    for table_name in governed_tables:
+        policy = accumulation_policy_for(table_name) or {}
+        cadence = str(policy.get("cadence") or "")
+        column = str(policy.get("query_time_dimension") or "")
+
+        if policy.get("has_reference_month") is False:
+            reference_month_patterns = _table_axis_patterns(
+                sql, table_name, "기준년월"
+            )
+            if any(
+                re.search(pattern, sql or "", re.IGNORECASE)
+                for pattern in reference_month_patterns
+            ):
+                issues.append(
+                    f'{table_name}에는 물리 "기준년월" 컬럼이 없습니다. '
+                    f'SUBSTR("{column}", 1, 6)으로 월을 파생하세요.'
+                )
+
+        if cadence == "previous_day":
+            current_request = not _has_historical_period_expression(question) or bool(
+                re.search(
+                    r"오늘|현재|전일|어제|최신|최근\s*기준",
+                    question or "",
+                )
+            )
+            axis_values = [
+                value
+                for value in _table_axis_literal_values(sql, table_name, column)
+                if len(value) == 8
+            ]
+            if any(value > latest_previous_day for value in axis_values):
+                issues.append(
+                    f'{table_name}의 최신 가용일은 KST 전일 {latest_previous_day}입니다. '
+                    f'"{column}"에 금일/미래 일자를 사용하지 마세요.'
+                )
+            if current_request and not _has_exact_table_axis_value(
+                sql, table_name, column, latest_previous_day
+            ):
+                issues.append(
+                    f'{table_name}의 현재 가용일은 KST 전일 {latest_previous_day}입니다. '
+                    f'"{column}"을 전일로 제한하고 MAX 전체시점이나 금일을 사용하지 마세요.'
+                )
+            elif not current_request and not _has_table_axis_filter(
+                sql, table_name, column
+            ):
+                issues.append(
+                    f'{table_name}의 명시 기간은 "{column}"(YYYYMMDD)로 제한해야 합니다.'
+                )
+            continue
+
+        available_days = int(policy.get("available_days") or 0)
+        if available_days:
+            if not _has_table_axis_filter(sql, table_name, column):
+                issues.append(
+                    f'{table_name}은 최근 {available_days}일만 제공되므로 '
+                    f'"{column}" 기간 조건이 필요합니다.'
+                )
+                continue
+
+            day_literals = [
+                value
+                for value in _table_axis_literal_values(sql, table_name, column)
+                if len(value) == 8
+            ]
+            if any(value < recent_start or value > recent_end for value in day_literals):
+                issues.append(
+                    f"{table_name}의 조회 가능 범위는 KST {recent_start}~{recent_end}입니다. "
+                    "범위 밖 일자는 조회할 수 없습니다."
+                )
+            explicit_requested_day = _extract_period_by_rule(question)[2]
+            if explicit_requested_day:
+                if explicit_requested_day not in day_literals:
+                    issues.append(
+                        f'{table_name}의 명시 일자는 "{column}" = '
+                        f"'{explicit_requested_day}' 조건으로 조회해야 합니다."
+                    )
+            elif not _has_recent_table_axis_window(
+                sql, table_name, column, recent_start, recent_end
+            ):
+                issues.append(
+                    f'{table_name}의 기본 조회는 "{column}"을 KST 최근 {available_days}일 '
+                    f"({recent_start}~{recent_end})로 제한해야 합니다."
+                )
+            continue
+
+        if has_requested_period and cadence in {"daily", "monthly", "yearly"}:
+            if not _has_table_axis_filter(sql, table_name, column):
+                cadence_label = {
+                    "daily": "일별",
+                    "monthly": "월별",
+                    "yearly": "연별",
+                }[cadence]
+                issues.append(
+                    f'{table_name}의 {cadence_label} 적재 기간은 "{column}"'
+                    f'({policy.get("format") or ""}) 조건으로 제한해야 합니다.'
+                )
+
+    return list(dict.fromkeys(issues))
+
+
+def _availability_execution_error(state: Text2SQLState, sql: str) -> str:
+    question = _retrieval_question(state)
+    # Low-level/backwards-compatible callers can provide only rendered SQL.
+    # In that mode the DB layer's registered TBD→TMD fallback remains the
+    # source of truth because there is no user period intent to validate.
+    if not str(question or "").strip():
+        return ""
+    issues = _availability_policy_issues(
+        question,
+        sql,
+        state.get("selected_tables", []),
+    )
+    return " ".join(issues)
+
+
+def _uses_exact_previous_day_snapshot(sql: str) -> bool:
+    """Whether SQL fixes a previous-day table to the one latest KST day."""
+    previous_day_value = previous_day_ymd()
+    day_column = r'(?:(?:"?[A-Za-z_]\w*"?)\s*\.\s*)?"?기준년월일"?'
+    exact_value = (
+        rf"'{previous_day_value}'|"
+        r"DATE_FORMAT\s*\(\s*DATE_ADD\s*\(\s*'day'\s*,\s*-1\s*,"
+        r".*?CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'.*?"
+        r"\)\s*,\s*'%Y%m%d'\s*\)"
+    )
+    return bool(
+        re.search(
+            rf"{day_column}\s*=\s*(?:{exact_value})|(?:{exact_value})\s*=\s*{day_column}",
+            sql or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
+def _allow_cross_cycle_fallback(question: str, sql: str) -> bool:
+    """Allow daily→monthly archival fallback only for historical requests.
+
+    The DB layer cannot infer user intent from a rendered query. Keeping this
+    decision here preserves old VQ fallbacks for explicit periods while a
+    current/latest previous-day snapshot never silently changes its cadence.
+    """
+    used_tables = _extract_schema_tables(sql)
+    if not any(
+        (accumulation_policy_for(table) or {}).get("cadence") == "previous_day"
+        for table in used_tables
+    ):
+        return True
+    # Low-level/backwards-compatible callers may not carry the natural-language
+    # question. Preserve the historical DB fallback in that case.
+    if not str(question or "").strip():
+        return True
+    # "전월 매입금액"처럼 전월이 스냅샷 안의 지표명인 VQ도 있다.
+    # SQL이 최신 가용일(D-1) 한 날을 정확히 고르면 현재 스냅샷이므로,
+    # 질문의 단어보다 SQL의 시간 조건을 우선한다.
+    if _uses_exact_previous_day_snapshot(sql):
+        return False
+    if _has_historical_period_expression(question) and not re.search(
+        r"어제|전일", question or ""
+    ):
+        return True
+    return bool(
+        re.search(
+            r"최근\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)|"
+            r"지난\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)|"
+            r"상반기|하반기|전월|지난\s*달|저번\s*달",
+            question or "",
+        )
+    )
+
+
 def validate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
-    sql = _apply_recent_month_sql_fix(question, state["generated_sql"])
+    retrieval_question = _retrieval_question(state)
+    sql = _apply_accumulation_historical_sources(retrieval_question, state["generated_sql"])
+    sql = _apply_recent_month_sql_fix(question, sql)
     sql = _apply_name_filter_mode(question, sql)
+    # v2: expr::type 은 Athena 문법 오류다. 실행 전에 CAST(...)로 교정한다.
+    sql = _v2_normalize_sql(sql)
+    # v2: 실행 실패 40건 중 27건이 COLUMN_NOT_FOUND 였다. 축약·오타는 여기서 고치고,
+    # 못 고치는 건 "그 컬럼은 어느 테이블에 있다"까지 적어 재시도로 넘긴다.
+    table_columns, column_owners = _table_column_index()
+    sql, column_issues = _v2_repair_columns(sql, table_columns, column_owners=column_owners)
     sql = prepare_sql_for_backend(sql)
     selected_tables = state["selected_tables"]
     issues = _validate_sql_against_schema(sql, selected_tables)
+    issues.extend(column_issues)
+    # v2: QUALIFY·WHERE 절 윈도함수·잘린 SQL 은 Athena 가 거절하므로 미리 잡아 재시도시킨다.
+    issues.extend(_v2_audit_sql(sql))
+    issues.extend(_validate_required_semantic_tables(retrieval_question, sql, selected_tables))
     issues.extend(_validate_recent_month_semantics(question, sql))
+    issues.extend(_validate_requested_row_constraints(question, sql))
+    issues.extend(_availability_policy_issues(retrieval_question, sql, selected_tables))
     implicit_time_basis = _implicit_time_basis_note(question, sql)
     current_ym = _current_ym()
     try:
@@ -2622,6 +5580,9 @@ def validate_sql(state: Text2SQLState) -> dict:
     if issues:
         return invalid_result(issues)
 
+    if state.get("question_type") == "direct_sql":
+        return valid_result("VALID (사용자 입력 SQL 정적 검증 통과)")
+
     validation_prompt = f"""SQL 검증 전문가로서, 아래 SQL이 사용자 질문에 정확히 답하는지 검증하세요.
 
 사용자 질문: {question}
@@ -2629,20 +5590,21 @@ SQL:
 {sql}
 사용 테이블: {', '.join(selected_tables)}
 검증 기준:
-- 이 앱에서 "최근", "최근 기준", "이번달", "이번 월"은 반드시 현재월({current_ym}) 기준입니다.
-- 위 표현이 있는 질문에서 SQL이 현재월({current_ym}) 조건을 포함하면 날짜 해석은 올바릅니다.
-- 위 표현이 있는 질문에서 전체 데이터의 MAX(기준년월/기준년월일)만 사용하면 잘못입니다.
+- 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"은 현재월({current_ym}) 1개월 기준입니다.
+- "최근 N개월/N달", "최근 반년/N년"은 기간 표현입니다. 명시 기준월이 있으면 그 월을 종료로, 없으면 CURRENT_DATE/현재월을 종료로 사용한 SQL이 올바릅니다.
+- 기준월의 사전 집계 "최근N개월" 지표를 사용하는 경우에도 질문의 명시 기준월을 유지하면 올바릅니다.
 - "저번달", "지난달", 조회시점을 뜻하는 단독 "전월"은 {_current_date_context()}의 지난달 기준으로 해석합니다.
 - "전월 대비", "전월비", "전월과 비교"는 조회기간이 아닌 비교 연산입니다. 질문의 명시 기간을 유지한 SQL이어야 합니다.
 - 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본 LIKE '%이름%'여야 합니다. "이름 고정", "이름만으로", "정확 일치"가 명시된 경우에만 앞뒤 %가 없어야 합니다.
 - 질문에 특정 시점/기간 표현이 없으면 시스템이 기준시점을 정해 조회할 수 있으며, 이것만으로 SQL을 실패 처리하지 않습니다.
 - 질문에 특정 시점/기간 표현이 없고 "소지/보유/현황/유효" 같은 스냅샷성 질문이면 데이터 최신 MAX(기준년월/기준년월일) 또는 현재 실행일 기준 유효성 조건을 사용할 수 있습니다.
 - 시스템이 정한 기준시점이 SQL에 있으면 결과 답변에서 그 기준시점을 명시하면 됩니다.
+- N개/N건 요청은 최종 LIMIT N과 요청 방향의 ORDER BY가 모두 있어야 합니다. 최근/최신/마지막/뒤에서 N은 DESC, 하위 N은 ASC입니다. "최근 N개월"은 행 제한이 아닙니다.
 메트릭 정의:
-{build_metrics_summary(SCHEMA, question, state.get('selected_domain', ''))}
+{_route_merchant_time_context(retrieval_question, build_metrics_summary(SCHEMA, retrieval_question, state.get('selected_domain', '')))}
 
 Semantic Query Contract:
-{find_relevant_semantic_query_contracts(SCHEMA, question, state.get('selected_domain', ''))}
+{_route_merchant_time_context(retrieval_question, find_relevant_semantic_query_contracts(SCHEMA, retrieval_question, state.get('selected_domain', '')))}
 
 스키마 기반 사전 검증 결과:
 {chr(10).join(issues) if issues else "사전 검증 이슈 없음"}
@@ -2669,8 +5631,26 @@ Semantic Query Contract:
 
 def run_query(state: Text2SQLState) -> dict:
     sql = state.get("final_sql", state.get("generated_sql", ""))
+    sql = _apply_accumulation_historical_sources(_retrieval_question(state), sql)
     prepared_sql = prepare_sql_for_backend(sql)
-    columns, rows, error = execute_sql(prepared_sql)
+    availability_error = _availability_execution_error(state, prepared_sql)
+    if availability_error:
+        return {
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": f"테이블 적재 주기 위반: {availability_error}",
+            "validation_result": f"SQL 적재 주기 위반: {availability_error}",
+            "is_valid": False,
+            "retry_count": state.get("retry_count", 0) + 1,
+            "final_sql": prepared_sql,
+        }
+    columns, rows, error = execute_sql(
+        prepared_sql,
+        max_rows=DEFAULT_FETCH_ROW_LIMIT,
+        allow_cross_cycle_fallback=_allow_cross_cycle_fallback(
+            state.get("question", ""), prepared_sql
+        ),
+    )
     if error:
         retry = state.get("retry_count", 0) + 1
         return {
@@ -2682,7 +5662,18 @@ def run_query(state: Text2SQLState) -> dict:
             "retry_count": retry,
             "final_sql": prepared_sql,
         }
-    return {"query_columns": columns, "query_rows": rows[:100], "query_error": "", "final_sql": prepared_sql}
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": prepared_sql,
+        "result_scope": build_result_scope(
+            prepared_sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+        ),
+    }
 
 
 def _markdown_cell(value: object, max_length: int = 80) -> str:
@@ -2734,9 +5725,16 @@ def generate_answer(state: Text2SQLState) -> dict:
     columns = state.get("query_columns", [])
     rows = state.get("query_rows", [])
     if not rows:
-        return {"answer": "쿼리 결과가 없습니다. 조건을 확인해주세요."}
+        lines = ["조회 결과가 0건입니다."]
+        basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
+        if basis:
+            lines.append(f"- 조회 기준: {basis}")
+        lines.append("- 기간을 넓히거나 이름·업종 등의 검색어를 줄여서 다시 시도해 보세요.")
+        return {"answer": "\n".join(lines)}
     implicit_time_basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
     fallback_answer = _deterministic_result_answer(columns, rows, implicit_time_basis)
+    if state.get("question_type") == "direct_sql":
+        return {"answer": fallback_answer}
     result_text = " | ".join(columns) + "\n" + "-" * 40 + "\n"
     for row in rows[:20]:
         result_text += " | ".join(_mask_business_numbers_for_llm(v) for v in row) + "\n"
@@ -2793,9 +5791,22 @@ def generate_answer(state: Text2SQLState) -> dict:
 
 
 def handle_error(state: Text2SQLState) -> dict:
+    failed_sql = state.get("final_sql") or state.get("generated_sql") or ""
+    direct_sql = state.get("question_type") == "direct_sql"
     return {
-        "error_message": f"SQL 생성/실행에 실패했습니다 (재시도 {state.get('retry_count', 0)}회).\n마지막 검증 결과:\n{state.get('validation_result', '알 수 없는 오류')}\n\n마지막 SQL:\n{state.get('generated_sql', '없음')}",
-        "answer": "죄송합니다. 질문에 대한 SQL을 생성하지 못했습니다. 질문을 다시 표현해주세요.",
+        "error_message": (
+            f"SQL 생성/실행에 실패했습니다 (시도 {state.get('retry_count', 0)}회).\n"
+            f"마지막 검증 결과:\n{state.get('validation_result', '알 수 없는 오류')}\n\n"
+            f"마지막 SQL:\n{failed_sql or '없음'}"
+        ),
+        "answer": (
+            "입력한 SQL을 실행하지 못했습니다. 실패 원인 분석과 SQL을 확인해 수정해 주세요."
+            if direct_sql
+            else (
+                "질문에 대한 SQL을 생성하거나 실행하지 못했습니다.\n\n"
+                "실패 원인 분석과 마지막 SQL을 확인하거나, 조회 대상과 기간을 더 구체적으로 입력해 주세요."
+            )
+        ),
     }
 
 
@@ -2803,13 +5814,38 @@ def handle_error(state: Text2SQLState) -> dict:
 # 10. 라우팅
 # ---------------------------------------------------------------------------
 
-def route_by_question_type(state: Text2SQLState) -> Literal["route_domain", "direct_answer", "reject_answer"]:
+def prepare_direct_sql(state: Text2SQLState) -> dict:
+    """Prepare user-authored SQL for the same read-only validation/execution path."""
+    sql = _extract_sql_from_llm(state.get("question", ""))
+    used_tables = _extract_schema_tables(sql)
+    selected_tables = []
+    for table in SCHEMA.get("tables", []):
+        logical = str(table.get("name") or "")
+        physical = str(table.get("physical_table") or "")
+        candidates = {logical.lower(), physical.lower(), physical.rsplit(".", 1)[-1].lower()}
+        if candidates.intersection(used_tables):
+            selected_tables.append(logical)
+    return {
+        "selected_domain": "direct_sql",
+        "selected_capability_type": "direct_sql",
+        "selected_capability_name": "사용자 입력 SQL",
+        "selected_tables": selected_tables,
+        "table_details": _table_details(selected_tables, state.get("question", "")),
+        "generated_sql": sql,
+    }
+
+
+def route_by_question_type(
+    state: Text2SQLState,
+) -> Literal["refine_search_query", "prepare_direct_sql", "direct_answer", "reject_answer"]:
     qtype = state.get("question_type", "need_sql")
+    if qtype == "direct_sql":
+        return "prepare_direct_sql"
     if qtype == "direct":
         return "direct_answer"
     if qtype == "reject":
         return "reject_answer"
-    return "route_domain"
+    return "refine_search_query"
 
 
 def after_tool_selection(state: Text2SQLState) -> Literal["check_tool_params", "extract_and_apply_params", "analyze_question", "__end__"]:
@@ -2838,8 +5874,11 @@ def after_tool_query(state: Text2SQLState) -> Literal["generate_answer", "analyz
     return "analyze_question" if state.get("query_error") else "generate_answer"
 
 
-def after_matched_query(state: Text2SQLState) -> Literal["generate_answer", "analyze_question"]:
-    return "analyze_question" if state.get("query_error") else "generate_answer"
+def after_matched_query(state: Text2SQLState) -> Literal["generate_answer", "handle_error"]:
+    # A Verified Query is the authoritative SQL for its intent. Replacing it
+    # with unconstrained generated SQL after a DB error can silently drop the
+    # required business filters and return a false-success result.
+    return "handle_error" if state.get("query_error") else "generate_answer"
 
 
 def after_extract_params(state: Text2SQLState) -> Literal["run_matched_query", "__end__"]:
@@ -2857,11 +5896,15 @@ def after_check_sql_gen_params(state: Text2SQLState) -> Literal["generate_sql", 
 def after_validate(state: Text2SQLState) -> Literal["run_query", "generate_sql", "handle_error"]:
     if state.get("is_valid", False):
         return "run_query"
+    if state.get("question_type") == "direct_sql":
+        return "handle_error"
     return "handle_error" if state.get("retry_count", 0) >= 3 else "generate_sql"
 
 
 def after_query(state: Text2SQLState) -> Literal["generate_answer", "generate_sql", "handle_error"]:
     if state.get("query_error"):
+        if state.get("question_type") == "direct_sql":
+            return "handle_error"
         return "handle_error" if state.get("retry_count", 0) >= 3 else "generate_sql"
     return "generate_answer"
 
@@ -2874,6 +5917,8 @@ def build_graph() -> StateGraph:
     graph = StateGraph(Text2SQLState)
 
     graph.add_node("classify_question", classify_question)
+    graph.add_node("refine_search_query", refine_search_query)
+    graph.add_node("prepare_direct_sql", prepare_direct_sql)
     graph.add_node("route_domain", route_domain)
     graph.add_node("select_tool", select_tool)
     graph.add_node("check_tool_params", check_tool_params)
@@ -2893,6 +5938,8 @@ def build_graph() -> StateGraph:
 
     graph.set_entry_point("classify_question")
     graph.add_conditional_edges("classify_question", route_by_question_type)
+    graph.add_edge("refine_search_query", "route_domain")
+    graph.add_edge("prepare_direct_sql", "validate_sql")
     graph.add_edge("route_domain", "select_tool")
 
     graph.add_edge("direct_answer", END)
@@ -2924,8 +5971,9 @@ def build_graph() -> StateGraph:
 
 def _new_initial_state(question: str) -> Text2SQLState:
     return {
-        "question": question, "question_type": "",
+        "question": question, "retrieval_query": "", "question_type": "",
         "previous_question": "", "previous_sql": "", "previous_answer": "", "followup_question": "",
+        "query_frame": {},
         "selected_domain": "", "domain_candidates": [], "domain_routing_trace": "", "domain_context": "",
         "selected_tool": "", "tool_params": {}, "tool_completed": False, "skip_tool_selection": False,
         "selected_capability_type": "", "selected_capability_name": "",
@@ -2935,7 +5983,7 @@ def _new_initial_state(question: str) -> Text2SQLState:
         "selected_tables": [], "table_details": "",
         "generated_sql": "", "validation_result": "", "is_valid": False, "retry_count": 0, "final_sql": "",
         "implicit_time_basis": "",
-        "query_columns": [], "query_rows": [], "query_error": "",
+        "query_columns": [], "query_rows": [], "query_error": "", "result_scope": {},
         "answer": "", "error_message": "",
         "bad_debt_excel_path": "",
     }

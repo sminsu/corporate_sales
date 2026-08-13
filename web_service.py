@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import uuid
+from calendar import monthrange
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import date, datetime
@@ -38,10 +39,27 @@ from text2sql_agent.managed_scope import (  # noqa: E402
     parse_business_number_list,
     parse_managed_scope_upload,
 )
-from text2sql_agent.schema import SCHEMA, _extract_schema_tables  # noqa: E402
+from text2sql_agent.query_frame import (  # noqa: E402
+    build_query_frame,
+    ensure_query_frame,
+    infer_result_scope,
+    query_frame_prompt,
+)
+from text2sql_agent.schema import (  # noqa: E402
+    SCHEMA,
+    _extract_schema_tables,
+    _is_semantic_table_visible,
+)
 from text2sql_agent.session_store import SessionOwnershipError, create_session_store  # noqa: E402
+from text2sql_agent.time_policy import (  # noqa: E402
+    accumulation_policy_for,
+    format_accumulation_policy,
+    kst_today,
+    previous_day_ymd,
+)
 from text2sql_agent.workflow import (  # noqa: E402
     _get_app as _get_compiled_graph,
+    _parse_llm_json,
     _table_details as _bounded_table_details,
 )
 
@@ -96,6 +114,8 @@ MANAGED_SCOPE_TEMPLATE_PATH = (
 
 NODE_LABELS = {
     "classify_question": ("question_analysis", "질문 분석", "업무 범위와 질문 유형을 분류했습니다."),
+    "refine_search_query": ("query_refinement", "질의 정제", "검색 후보 탐색을 위한 내부 질의를 정제했습니다."),
+    "prepare_direct_sql": ("sql_generation", "입력 SQL 준비", "사용자가 입력한 SQL을 읽기 전용 검증 경로로 준비했습니다."),
     "route_domain": ("domain_routing", "도메인 라우팅", "질문에 맞는 업무 도메인을 선택했습니다."),
     "select_tool": ("capability_selection", "Capability 선택", "사용 가능한 Tool과 검증 쿼리 경로를 판단했습니다."),
     "check_tool_params": ("parameter_check", "파라미터 확인", "Tool 실행에 필요한 입력값을 확인했습니다."),
@@ -681,7 +701,90 @@ def _public_result_error(error: Any) -> str:
     """Hide SQL/provider diagnostics kept in state from normal API consumers."""
     if not str(error or "").strip():
         return ""
-    return "조회 처리 중 오류가 발생했습니다. 질문 조건을 확인하거나 다시 시도해 주세요."
+    return "SQL 처리에 실패했습니다. 아래 실패 원인 분석과 마지막 SQL을 확인해 주세요."
+
+
+def _public_sql_failure_reason(error: Any) -> tuple[str, str]:
+    """Classify DB/validation failures without returning raw infrastructure details."""
+    detail = str(error or "").strip()
+    lowered = detail.lower()
+    patterns = [
+        (
+            r"column_not_found|column .*does not exist|cannot be resolved|unknown column|컬럼.*(?:없|찾)",
+            "SQL에 작성한 컬럼을 찾을 수 없습니다.",
+            "테이블 상세에서 실제 컬럼명을 확인하고 별칭과 철자를 수정해 주세요.",
+        ),
+        (
+            r"table_not_found|relation .*does not exist|table .*does not exist|unknown table|스키마에 없는 테이블|테이블.*(?:없|찾)",
+            "SQL에 작성한 테이블을 찾을 수 없습니다.",
+            "테이블 탭에서 물리 테이블명과 스키마 prefix를 확인해 주세요.",
+        ),
+        (
+            r"syntax error|mismatched input|parse error|sql 파싱|구문",
+            "SQL 구문을 해석하지 못했습니다.",
+            "괄호, 쉼표, 따옴표, SELECT/FROM/GROUP BY 구문을 확인해 주세요.",
+        ),
+        (
+            r"access denied|permission denied|not authorized|권한|접근이 제한",
+            "해당 데이터에 대한 조회 권한이 없습니다.",
+            "접근 가능한 테이블인지 확인하거나 데이터 권한 담당자에게 문의해 주세요.",
+        ),
+        (
+            r"timeout|timed out|time limit|시간.*초과",
+            "SQL 실행 시간이 제한을 초과했습니다.",
+            "조회 기간, 대상 컬럼, JOIN 범위를 줄여 다시 실행해 주세요.",
+        ),
+        (
+            r"type mismatch|cannot cast|invalid cast|operator does not exist|자료형|타입",
+            "SQL의 컬럼 자료형 또는 연산 방식이 맞지 않습니다.",
+            "비교·집계 대상 컬럼의 자료형과 CAST 구문을 확인해 주세요.",
+        ),
+        (
+            r"read-only|select.*only|select 문만|읽기 전용",
+            "읽기 전용 SELECT/WITH SQL만 실행할 수 있습니다.",
+            "INSERT, UPDATE, DELETE, DDL 문을 제거하고 조회 SQL로 작성해 주세요.",
+        ),
+    ]
+    for pattern, reason, suggestion in patterns:
+        if re.search(pattern, lowered, flags=re.IGNORECASE):
+            return reason, suggestion
+    return (
+        "SQL을 검증하거나 실행하는 과정에서 오류가 발생했습니다.",
+        "아래 SQL과 선택 테이블을 확인하고 조건을 단순화해 다시 실행해 주세요.",
+    )
+
+
+def _sql_failure_details(result: dict[str, Any]) -> dict[str, Any] | None:
+    raw_error = result.get("query_error") or result.get("error_message") or result.get("validation_result")
+    if not str(raw_error or "").strip():
+        return None
+    if result.get("query_error"):
+        stage = "sql_execution"
+        stage_label = "SQL 실행"
+        analysis_source = result.get("query_error")
+    elif result.get("generated_sql") or result.get("final_sql"):
+        stage = "sql_validation"
+        stage_label = "SQL 검증"
+        analysis_source = result.get("validation_result") or raw_error
+    else:
+        stage = "sql_generation"
+        stage_label = "SQL 생성"
+        analysis_source = raw_error
+    reason, suggestion = _public_sql_failure_reason(analysis_source)
+    validation_summary = ""
+    if not result.get("query_error"):
+        validation_summary = " ".join(str(result.get("validation_result") or "").split())[:1200]
+    return {
+        "stage": stage,
+        "stage_label": stage_label,
+        "reason": reason,
+        "suggestion": suggestion,
+        "retry_count": int(result.get("retry_count") or 0),
+        "selected_domain": str(result.get("selected_domain") or ""),
+        "selected_tables": list(result.get("selected_tables") or []),
+        "validation_summary": validation_summary,
+        "sql": str(result.get("final_sql") or result.get("generated_sql") or ""),
+    }
 
 
 def _get_or_create_session(session_id: str | None, user_id: str = "ui", agent_name: str = "corporate_sales") -> dict[str, Any]:
@@ -778,6 +881,27 @@ def _normalize_korean_ym(text: str) -> str:
     return stripped
 
 
+def _normalize_korean_ymd(text: str) -> str:
+    stripped = text.strip()
+    match = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", stripped)
+    if match:
+        candidate = f"{match.group(1)}{int(match.group(2)):02d}{int(match.group(3)):02d}"
+    else:
+        match = re.search(r"\b(20\d{2})[-./\s](\d{1,2})[-./\s](\d{1,2})\b", stripped)
+        candidate = f"{match.group(1)}{int(match.group(2)):02d}{int(match.group(3)):02d}" if match else stripped
+    if re.fullmatch(r"20\d{6}", candidate):
+        try:
+            datetime.strptime(candidate, "%Y%m%d")
+            return candidate
+        except ValueError:
+            return stripped
+    ym = _normalize_korean_ym(stripped)
+    if re.fullmatch(r"20\d{4}", ym):
+        year, month = int(ym[:4]), int(ym[4:])
+        return f"{ym}{monthrange(year, month)[1]:02d}"
+    return stripped
+
+
 def _normalize_korean_year(text: str) -> str:
     import re
 
@@ -805,7 +929,11 @@ def _extract_named_value(name: str, text: str) -> str:
     return ""
 
 
-def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> dict[str, Any]:
+def _natural_params_by_rule(
+    natural_input: str,
+    missing_params: list[Any],
+    table_names: list[str] | None = None,
+) -> dict[str, Any]:
     import re
 
     natural_input = natural_input.strip()
@@ -816,15 +944,17 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         if isinstance(param, dict) and _param_name(param)
     }
     parsed: dict[str, Any] = {}
-    current_ym = f"{datetime.now().year}{datetime.now().month:02d}"
-    current_index = datetime.now().year * 12 + datetime.now().month - 1
+    business_today = kst_today()
+    current_ym = f"{business_today.year}{business_today.month:02d}"
+    current_index = business_today.year * 12 + business_today.month - 1
 
     def shifted_ym(months: int) -> str:
         target = current_index + months
         return f"{target // 12:04d}{target % 12 + 1:02d}"
 
+    is_previous_day = bool(re.search(r"어제|전일", natural_input))
     is_previous = bool(re.search(r"전월|지난\s*달|저번\s*달", natural_input))
-    is_current = bool(re.search(r"이번\s*달|이번\s*월|현재\s*월|금월", natural_input))
+    is_current = bool(re.search(r"이번\s*달|이번\s*월|현재(?:\s*(?:월|기준|시점))?|오늘|금월", natural_input))
     recent_span = re.search(r"최근\s*(\d+)\s*개월", natural_input)
     is_recent = is_current or bool(re.search(r"최근", natural_input))
     if is_previous:
@@ -833,6 +963,24 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         ym_value = current_ym
     else:
         ym_value = _normalize_korean_ym(natural_input)
+    previous_day_source = any(
+        (accumulation_policy_for(table_name) or {}).get("cadence") == "previous_day"
+        for table_name in (table_names or [])
+    )
+    if is_previous_day:
+        ymd_value = previous_day_ymd(business_today)
+        ym_value = ymd_value[:6]
+    elif is_current or is_recent:
+        ymd_value = (
+            previous_day_ymd(business_today)
+            if previous_day_source
+            else business_today.strftime("%Y%m%d")
+        )
+    elif is_previous:
+        year, month = int(ym_value[:4]), int(ym_value[4:])
+        ymd_value = f"{ym_value}{monthrange(year, month)[1]:02d}"
+    else:
+        ymd_value = _normalize_korean_ymd(natural_input)
     year_value = _normalize_korean_year(natural_input)
 
     for name in names:
@@ -846,11 +994,14 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         # 1) '이름=값' 등 명시적 패턴이 있으면 최우선 채택 (LS/IS 같은 자유 숫자 파라미터 포함).
         named = _extract_named_value(name, natural_input)
         if named:
-            parsed[name] = named
-            continue
+            if name != "기준년월일" or re.fullmatch(r"20\d{6}", named):
+                parsed[name] = named
+                continue
 
         lowered = name.lower()
-        if any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
+        if name == "기준년월일":
+            parsed[name] = ymd_value
+        elif any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
             parsed[name] = ym_value
         elif any(key in lowered for key in ["기간_시작", "start", "from", "시작"]):
             if recent_span:
@@ -896,7 +1047,7 @@ def _natural_params_by_rule(natural_input: str, missing_params: list[Any]) -> di
         entity_value = re.sub(r"20\d{2}\s*년(?:\s*\d{1,2}\s*월)?", " ", entity_value)
         entity_value = re.sub(r"\b20\d{2}(?:0[1-9]|1[0-2])\b", " ", entity_value)
         entity_value = re.sub(
-            r"(?:전월|지난\s*달|저번\s*달|이번\s*(?:달|월)|현재\s*월|금월|최근\s*\d*\s*개월)",
+            r"(?:어제|전일|전월|지난\s*달|저번\s*달|이번\s*(?:달|월)|현재\s*월|금월|최근\s*\d*\s*개월)",
             " ",
             entity_value,
         )
@@ -929,6 +1080,7 @@ def _natural_params_by_llm(natural_input: str, missing_params: list[Any], contin
 - JSON object만 반환하세요.
 - key는 필요한 파라미터의 name을 그대로 사용하세요.
 - 기준년월/년월은 YYYYMM 형식으로 변환하세요. 예: 2025년 12월 -> 202512
+- 기준년월일은 YYYYMMDD 형식으로 변환하세요. 월만 주어지면 해당 월 말일을 사용하세요. 예: 2026년 7월 -> 20260731
 - "최근", "이번달", "이번 월"은 이번달({datetime.now().year}{datetime.now().month:02d})로 변환하세요.
 - 기간 시작/종료가 연도만 주어졌으면 시작은 YYYY01, 종료는 YYYY12로 변환하세요.
 - 모르는 값은 포함하지 마세요.
@@ -957,9 +1109,15 @@ def _coerce_natural_params(params: dict[str, Any], continuation: dict[str, Any])
     if not natural_input:
         return params
     missing_params = continuation.get("missing_params") or []
-    parsed = _natural_params_by_rule(natural_input, missing_params)
+    parsed = _natural_params_by_rule(
+        natural_input,
+        missing_params,
+        continuation.get("selected_tables") or [],
+    )
     explicit = {key: value for key, value in params.items() if not key.startswith("_")}
     explicit.update(parsed)
+    if re.search(r"현재|현시점|오늘|전일|어제|최신|지금", natural_input):
+        explicit["_cadence_hint"] = "current"
     unresolved = [
         item
         for item in missing_params
@@ -1019,6 +1177,8 @@ def _state_from_request(req: CompatibleQueryRequest, session: dict[str, Any]) ->
         state["matched_query_sql"] = continuation.get("matched_query_sql", "")
         state["matched_query_params"] = continuation.get("matched_query_params", {})
         state["user_provided_params"] = merged
+        if merged.get("_cadence_hint") == "current":
+            state["retrieval_query"] = "현재"
     else:
         merged = dict(continuation.get("user_provided_params") or {})
         merged.update(params)
@@ -1070,7 +1230,7 @@ def _result_data_sources(result: dict[str, Any]) -> list[str]:
 def _result_meta(result: dict[str, Any], source_override: str | None = None) -> dict[str, Any]:
     rows = result.get("query_rows", []) or []
     local_scope = result.get("local_result_scope", {}) or {}
-    scope_input_rows = int(local_scope.get("input_rows") or 0)
+    result_scope = infer_result_scope(result)
     sql_tables = _table_names_from_sql(result.get("final_sql", ""))
     planned_tables = list(result.get("selected_tables", []) or [])
     return {
@@ -1080,8 +1240,11 @@ def _result_meta(result: dict[str, Any], source_override: str | None = None) -> 
         "planned_data_sources": planned_tables,
         "conditions": _result_conditions(result),
         "displayed_rows": len(rows),
-        "display_row_limit": 100,
-        "rows_may_be_limited": len(rows) >= 100 or scope_input_rows >= 100,
+        "display_row_limit": int(result_scope.get("display_limit") or 100),
+        "rows_may_be_limited": not bool(result_scope.get("is_complete", True)),
+        "result_complete": bool(result_scope.get("is_complete", True)),
+        "completeness_reason": str(result_scope.get("reason") or ""),
+        "result_scope": result_scope,
         "selected_domain": result.get("selected_domain", ""),
         "selected_tool": result.get("selected_tool", ""),
         "matched_query_name": result.get("matched_query_name", ""),
@@ -1228,6 +1391,8 @@ def _param_example_value(name: str) -> str:
     lowered = name.lower()
     if name == MANAGED_SCOPE_PARAMETER or "사업자등록번호" in lowered:
         return "123-45-67890, 234-56-78901"
+    if name == "기준년월일":
+        return f"{name}={datetime.now().strftime('%Y%m%d')}"
     if any(key in lowered for key in ["년월", "기준월", "ym", "base_ym"]):
         return f"{name}={datetime.now().year}{datetime.now().month:02d}"
     if any(key in lowered for key in ["기간_시작", "start", "시작", "from"]):
@@ -1263,7 +1428,7 @@ def _param_instruction_line(item: Any) -> str:
 def _requires_params_answer(result: dict[str, Any]) -> str:
     missing = result.get("missing_params", []) or []
     if not missing:
-        return "추가 입력이 필요해요. 팝업 또는 질문창에 필요한 정보를 입력해 주세요."
+        return "추가 입력이 필요해요. 진행 영역의 입력값을 확인해 주세요."
     names = [_param_name(item) for item in missing if _param_name(item)]
     example = ", ".join(_param_example_value(name) for name in names) or "필요한 값"
     managed_scope_help = ""
@@ -1282,7 +1447,7 @@ def _requires_params_answer(result: dict[str, Any]) -> str:
         + "\n".join(_param_instruction_line(item) for item in missing)
         + "\n\n"
         f"예: `{example}`\n"
-        "팝업의 문장 입력칸이나 아래 질문창에 이어서 입력하면 같은 질문을 계속 실행합니다."
+        "진행 영역의 입력값을 확인하거나 수정한 뒤 `계속`을 누르면 같은 질문을 이어서 실행합니다."
         + managed_scope_help
     )
 
@@ -1294,6 +1459,9 @@ def _result_payload(
     top_k: int,
     source_override: str | None = None,
 ) -> dict[str, Any]:
+    original_question = str(result.get("original_question") or result.get("question") or "")
+    if original_question:
+        result["original_question"] = original_question
     requires_params = result.get("param_stage") == "need_params"
     if requires_params:
         status = "requires_params"
@@ -1305,6 +1473,12 @@ def _result_payload(
     else:
         status = "complete"
         result_id = uuid.uuid4().hex
+        result["result_scope"] = infer_result_scope(result)
+        result["query_frame"] = build_query_frame(
+            result,
+            previous_frame=result.get("query_frame") or None,
+            last_question=str(result.get("followup_question") or ""),
+        )
         result["suggestions"] = _suggest_followups(result)
         _SESSION_STORE.save_result(result_id, session, dict(result))
         _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
@@ -1312,7 +1486,10 @@ def _result_payload(
         documents = _documents_from_result(result, top_k, source_override)
         continuation = None
 
-    error = _public_result_error(result.get("error_message", "") or result.get("query_error", ""))
+    result_error = result.get("error_message", "") or result.get("query_error", "")
+    error = _public_result_error(result_error)
+    failure_details = _sql_failure_details(result) if error else None
+    result_sql = result.get("final_sql", "") or (result.get("generated_sql", "") if error else "")
     excel_file = _register_file(result.get("bad_debt_excel_path", ""), session=session)
     data = {
         "answer": answer,
@@ -1325,22 +1502,27 @@ def _result_payload(
         "status": status,
         "result_id": result_id,
         "question": result.get("question", ""),
+        "original_question": original_question,
         "followup_question": result.get("followup_question", ""),
         "question_type": result.get("question_type", ""),
         "source": _source_label(result, source_override),
         "selected_tool": result.get("selected_tool", ""),
         "matched_query_name": result.get("matched_query_name", ""),
         "selected_tables": result.get("selected_tables", []),
-        "sql": result.get("final_sql", ""),
+        "sql": result_sql,
         "columns": result.get("query_columns", []),
         "rows": result.get("query_rows", []),
+        "query_frame": result.get("query_frame", {}),
+        "result_scope": result.get("result_scope", {}),
         "result_meta": _result_meta(result, source_override),
         "error": error,
+        "failure_details": failure_details,
         "excel_file": excel_file,
         "suggestions": result.get("suggestions", []),
         "original_answer": result.get("original_answer", result.get("answer", "")),
         "analysis_history": result.get("analysis_history", []),
         "followup_mode": result.get("followup_mode", ""),
+        "followup_route": result.get("followup_route", {}),
         "followup_operations": result.get("followup_operations", []),
         "chart": result.get("chart"),
         "parent_result_id": result.get("parent_result_id", ""),
@@ -1359,16 +1541,22 @@ def _finalize_assistant_message(session: dict[str, Any], data: dict[str, Any], m
         "assistant",
         data.get("answer", ""),
         message_id=message_id,
-        status=data.get("status"),
+        status="error" if data.get("error") else data.get("status"),
+        error=data.get("error"),
+        failure_details=data.get("failure_details"),
         missing_params=data.get("missing_params"),
         continuation=data.get("continuation"),
         result_id=data.get("result_id"),
+        original_question=data.get("original_question"),
         source=data.get("source"),
         sql=data.get("sql"),
         columns=data.get("columns"),
         rows=data.get("rows"),
         result_meta=data.get("result_meta"),
+        query_frame=data.get("query_frame"),
+        result_scope=data.get("result_scope"),
         followup_mode=data.get("followup_mode"),
+        followup_route=data.get("followup_route"),
         followup_operations=data.get("followup_operations"),
         chart=data.get("chart"),
         row_count=len(data.get("rows", []) or []),
@@ -1401,7 +1589,16 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
     answer = result.get("answer", "") or result.get("error_message", "") or (fallback_message or {}).get("text", "")
     columns = result.get("query_columns", []) or (fallback_message or {}).get("columns", [])
     rows = result.get("query_rows", []) or (fallback_message or {}).get("rows", [])
-    sql = result.get("final_sql", "") or (fallback_message or {}).get("sql", "")
+    sql = (
+        result.get("final_sql", "")
+        or (result.get("generated_sql", "") if error else "")
+        or (fallback_message or {}).get("sql", "")
+    )
+    failure_details = (
+        _sql_failure_details(result)
+        if error and result
+        else (fallback_message or {}).get("failure_details")
+    )
 
     data = {
         "answer": answer,
@@ -1414,6 +1611,8 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "status": "complete",
         "result_id": result_id,
         "question": result.get("question", ""),
+        "original_question": result.get("original_question", result.get("question", ""))
+        or (fallback_message or {}).get("original_question", ""),
         "followup_question": result.get("followup_question", ""),
         "question_type": result.get("question_type", ""),
         "source": _source_label(result) if result else (fallback_message or {}).get("source", ""),
@@ -1423,13 +1622,17 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
         "sql": sql,
         "columns": columns,
         "rows": rows,
+        "query_frame": result.get("query_frame", {}),
+        "result_scope": result.get("result_scope", {}),
         "result_meta": _result_meta(result) if result else (fallback_message or {}).get("result_meta", {}),
         "error": error,
+        "failure_details": failure_details,
         "excel_file": _register_file(result.get("bad_debt_excel_path", ""), session=session),
         "suggestions": result.get("suggestions") or _suggest_followups(result),
         "original_answer": result.get("original_answer", result.get("answer", "")),
         "analysis_history": result.get("analysis_history", []),
         "followup_mode": result.get("followup_mode", ""),
+        "followup_route": result.get("followup_route", {}),
         "followup_operations": result.get("followup_operations", []),
         "chart": result.get("chart") or (fallback_message or {}).get("chart"),
         "parent_result_id": result.get("parent_result_id", ""),
@@ -1451,6 +1654,7 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
             "query": req.query,
             "question_type": result.get("question_type", ""),
             "selected_domain": result.get("selected_domain", ""),
+            "domain_candidates": result.get("domain_candidates", []),
             "selected_tool": result.get("selected_tool", ""),
             "matched_query_name": result.get("matched_query_name", ""),
             "selected_capability_type": result.get("selected_capability_type", ""),
@@ -1459,6 +1663,7 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
             "param_stage": result.get("param_stage", ""),
             "missing_params": result.get("missing_params", []),
             "sql": result.get("final_sql", ""),
+            "validation_result": result.get("validation_result", ""),
             "columns": result.get("query_columns", []),
             "row_count": len(result.get("query_rows", []) or []),
             "source": _source_label(result),
@@ -1468,7 +1673,9 @@ def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[
 
 _NEXT_PROGRESS_STEP = {
     "": "classify_question",
-    "classify_question": "route_domain",
+    "classify_question": "refine_search_query",
+    "refine_search_query": "route_domain",
+    "prepare_direct_sql": "validate_sql",
     "route_domain": "select_tool",
     "select_tool": "match_verified_query",
     "check_tool_params": "execute_tool",
@@ -1777,6 +1984,205 @@ def _classify_followup_intent(question: str, columns: list[Any] | None = None, r
     return str(plan_followup(question, columns or [], rows or [])["mode"])
 
 
+_ENTITY_ONLY_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:(?:그럼|그러면|그렇다면|이번에는|이번엔)\s+)?"
+    r"(?P<entity>.+?)(?:"
+    r"(?:은|는|이|가)\s*[?!.]*"
+    r"|(?:은|는|이|가)?\s*(?:어때(?:요)?|어떻게\s*돼(?:요)?|어떤가요?)\s*[?!.]*"
+    r")\s*$"
+)
+_NON_ENTITY_FOLLOWUP_SUBJECTS = {
+    "전체",
+    "결측값",
+    "표",
+    "중앙값",
+    "표준편차",
+    "분산",
+    "3줄정리",
+    "점유율",
+    "성장률",
+    "전년대비",
+    "상세",
+    "원본",
+    "데이터",
+    "통계",
+    "분포",
+    "백분위",
+    "평균값",
+    "총합",
+    "소계",
+    "목록",
+    "테이블",
+    "컬럼",
+    "파이",
+}
+
+
+def _entity_only_followup_change(base_result: dict[str, Any], question: str) -> dict[str, str]:
+    """Return one high-confidence entity replacement from an elliptical follow-up."""
+
+    entities = [
+        item
+        for item in ensure_query_frame(base_result).get("entities", []) or []
+        if item.get("column") and item.get("value")
+    ]
+    match = _ENTITY_ONLY_FOLLOWUP_RE.fullmatch(question or "")
+    if len(entities) != 1 or not match:
+        return {}
+    candidate = " ".join(match.group("entity").strip(" \"'").split())
+    compact_candidate = re.sub(r"\s+", "", candidate).lower()
+    if (
+        not re.search(r"[A-Za-z가-힣]", candidate)
+        or compact_candidate in _NON_ENTITY_FOLLOWUP_SUBJECTS
+        or re.search(r"(?:^|\s)(?:전월|지난달|이번달|최근|\d{1,2}\s*월|20\d{2}\s*년)(?:$|\s)", candidate)
+        or re.search(
+            r"대손|매출|연체|한도|분석|조회|차트|그래프|카드|가맹점|기업|회사|업종|"
+            r"회원|고객|월별|연도별|상위|하위|합계|평균|요약|단위|억원|이상치|최대|"
+            r"최소|가장|높은|낮은|결과|정렬|필터|추이|변동|비율|증감|건수|금액|"
+            r"비교|인구|주가|환율|날씨|뉴스|보여|알려|해줘|다른",
+            candidate,
+        )
+    ):
+        return {}
+    current = entities[0]
+    if compact_candidate == re.sub(r"\s+", "", str(current["value"])).lower():
+        return {}
+    return {
+        "column": str(current["column"]),
+        "old_value": str(current["value"]),
+        "new_value": candidate,
+    }
+
+
+def _resolved_entity_followup_question(
+    base_result: dict[str, Any],
+    question: str,
+    change: dict[str, str],
+) -> str:
+    base_question = str(
+        base_result.get("question")
+        or ensure_query_frame(base_result).get("source_question")
+        or ""
+    )
+    old_value = change.get("old_value", "")
+    if base_question and old_value and old_value in base_question:
+        return base_question.replace(old_value, change["new_value"], 1)
+    return question
+
+
+def _fallback_followup_context(
+    base_result: dict[str, Any],
+    question: str,
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    entity_change = _entity_only_followup_change(base_result, question)
+    if entity_change:
+        return {
+            "relation": "refine_query",
+            "source_strategy": "same_source",
+            "resolved_question": _resolved_entity_followup_question(base_result, question, entity_change),
+            "reason": "deterministic_entity_replacement",
+            "used_llm": False,
+        }
+    mode = str(plan.get("mode") or "")
+    return {
+        "relation": "refine_query" if plan.get("requires_sql") else "existing_result",
+        "source_strategy": (
+            "rediscover"
+            if mode.startswith("new_sql")
+            else "same_source"
+            if mode.startswith("rewrite_sql")
+            else "current_result"
+        ),
+        "resolved_question": question,
+        "reason": "deterministic_fallback",
+        "used_llm": False,
+    }
+
+
+def _resolve_followup_context(
+    base_result: dict[str, Any],
+    question: str,
+    preliminary_plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve an elliptical follow-up before deciding how to execute it."""
+
+    frame = ensure_query_frame(base_result)
+    history = list(base_result.get("analysis_history") or [])
+    recent_history = "\n".join(
+        (
+            f"- 사용자: {str(item.get('question') or '')[:400]}\n"
+            f"  처리: {str(item.get('mode') or '')}\n"
+            f"  답변: {str(item.get('answer') or '')[:700]}"
+        )
+        for item in history[-5:]
+    )
+    prompt = f"""당신은 기업영업 데이터 에이전트의 대화 문맥 라우터입니다.
+현재 사용자의 말을 최근 대화와 실제 조회 상태에 연결해 해석하고 JSON object 하나만 반환하세요.
+
+## 현재 조회를 만든 질문
+{str(base_result.get("question") or "")[:1000]}
+
+## 현재 구조화된 조회 상태
+{query_frame_prompt(frame)}
+
+## 현재 조회 컬럼
+{", ".join(str(value) for value in base_result.get("query_columns", []) or []) or "(없음)"}
+
+## 직전 답변
+{str(base_result.get("answer") or "")[:1400] or "(없음)"}
+
+## 최근 대화
+{recent_history or "(없음)"}
+
+## 새 사용자 입력
+{question}
+
+판단 기준:
+- relation="existing_result": 현재 저장된 행의 설명·요약·정렬·필터·계산·시각화만 요청합니다.
+- relation="refine_query": 이전 대상·기간·지표·조건 일부를 유지하면서 변경하거나, 현재 행에 없는 데이터를 추가 조회해야 합니다.
+- relation="new_query": 이전 업무 대상·조건을 이어받지 않는 독립된 새 데이터 질문입니다.
+- source_strategy="current_result": 현재 행만 사용합니다.
+- source_strategy="same_source": 같은 도메인·테이블에서 SQL 조건을 바꾸면 됩니다.
+- source_strategy="rediscover": 새 도메인·지표·테이블 또는 현재 소스에 없는 시계열이 필요합니다.
+- 대명사와 생략된 대상·기간·지표는 조회 상태와 최근 대화에서만 복원하세요.
+- 사용자가 명시적으로 바꾼 조건은 교체하고, 말하지 않은 조건은 refine_query일 때 유지하세요.
+- 새 질문에 없는 조건이나 사실을 만들지 마세요.
+- resolved_question은 SQL 담당자가 과거 대화를 보지 않아도 이해할 수 있는 완전한 한국어 질문으로 작성하세요.
+
+반환 형식:
+{{"relation":"existing_result|refine_query|new_query","source_strategy":"current_result|same_source|rediscover","resolved_question":"완전한 질문","reason":"짧은 판단 근거"}}
+"""
+    fallback = _fallback_followup_context(base_result, question, preliminary_plan)
+    if fallback.get("reason") == "deterministic_entity_replacement":
+        return fallback
+    try:
+        parsed = _parse_llm_json(agent._call_llm(prompt, max_tokens=700))
+    except Exception:
+        return fallback
+
+    relation = str(parsed.get("relation") or "")
+    source_strategy = str(parsed.get("source_strategy") or "")
+    resolved_question = str(parsed.get("resolved_question") or "").strip()
+    if (
+        relation not in {"existing_result", "refine_query", "new_query"}
+        or source_strategy not in {"current_result", "same_source", "rediscover"}
+        or not resolved_question
+    ):
+        return fallback
+    if relation == "existing_result":
+        source_strategy = "current_result"
+    elif relation == "new_query":
+        source_strategy = "rediscover"
+    return {
+        "relation": relation,
+        "source_strategy": source_strategy,
+        "resolved_question": resolved_question[:2000],
+        "reason": str(parsed.get("reason") or "")[:500],
+        "used_llm": True,
+    }
+
+
 def _table_names_from_sql(sql: str) -> list[str]:
     used_tables = _extract_schema_tables(sql or "")
     if not used_tables:
@@ -1799,34 +2205,97 @@ def _table_details_for_names(table_names: list[str]) -> str:
     return _bounded_table_details(table_names)
 
 
-def _followup_query_state(base_result: dict[str, Any], question: str) -> dict[str, Any]:
-    # Keep the actual follow-up as the main question.  Passing a synthetic,
-    # multi-page question made compact models repeat instructions or miss the
-    # changed period.  The workflow now has explicit bounded context fields.
-    state = agent._new_initial_state(question)
-    state["question_type"] = "need_sql"
-    state["skip_tool_selection"] = True
-    state["skip_verified_query_matching"] = True
-    history = list(base_result.get("analysis_history") or [])
-    previous_turn = history[-1] if history else {}
-    state["previous_question"] = str(
-        previous_turn.get("question")
-        or base_result.get("followup_question")
-        or base_result.get("question")
-        or ""
-    )
-    state["previous_sql"] = str(base_result.get("final_sql") or "")
-    state["previous_answer"] = str(base_result.get("answer") or "")
-    state["followup_question"] = question
-    state["selected_domain"] = base_result.get("selected_domain", "")
-    state["domain_candidates"] = base_result.get("domain_candidates", [])
-    state["domain_routing_trace"] = base_result.get("domain_routing_trace", "")
-    state["domain_context"] = base_result.get("domain_context", "")
+def _replace_query_frame_entity(
+    frame: dict[str, Any],
+    change: dict[str, str],
+) -> dict[str, Any]:
+    if not change:
+        return frame
+    next_frame = dict(frame)
+    entities = [dict(item) for item in frame.get("entities", []) or []]
+    for item in entities:
+        if item.get("column") == change["column"] and str(item.get("value")) == change["old_value"]:
+            item["value"] = change["new_value"]
+            break
+    next_frame["entities"] = entities
+    return next_frame
 
-    selected_tables = base_result.get("selected_tables") or _table_names_from_sql(base_result.get("final_sql", ""))
-    if selected_tables:
-        state["selected_tables"] = selected_tables
-        state["table_details"] = base_result.get("table_details", "") or _table_details_for_names(selected_tables)
+
+def _inherited_tool_params(
+    base_result: dict[str, Any],
+    entity_change: dict[str, str],
+) -> dict[str, Any]:
+    inherited = dict(base_result.get("tool_params") or {})
+    inherited[entity_change["column"]] = entity_change["new_value"]
+    return inherited
+
+
+def _followup_query_state(
+    base_result: dict[str, Any],
+    question: str,
+    followup_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    frame = ensure_query_frame(base_result)
+    plan = followup_plan or plan_followup(
+        question,
+        base_result.get("query_columns", []),
+        base_result.get("query_rows", []),
+        query_frame=frame,
+        result_scope=frame.get("result_scope"),
+    )
+    mode = str(plan.get("mode") or "")
+    reroute_sources = mode.startswith("new_sql")
+    relation = str(plan.get("context_relation") or "")
+    resolved_question = str(plan.get("resolved_question") or question)
+    entity_change = (
+        _entity_only_followup_change(base_result, question)
+        if plan.get("context_reason") == "deterministic_entity_replacement"
+        else {}
+    )
+    reuse_tool = bool(
+        relation == "refine_query"
+        and not reroute_sources
+        and plan.get("source_strategy") != "rediscover"
+        and base_result.get("selected_tool") == "대손비용률_분석"
+        and entity_change.get("column") == "가맹점명"
+    )
+    state = agent._new_initial_state(resolved_question)
+    state["question_type"] = "need_sql"
+    state["skip_tool_selection"] = relation != "new_query" and not reuse_tool
+    state["skip_verified_query_matching"] = relation != "new_query"
+    state["query_frame"] = _replace_query_frame_entity(
+        plan.get("next_query_frame") or frame,
+        entity_change,
+    )
+    if reuse_tool:
+        state["selected_tool"] = str(base_result["selected_tool"])
+        state["tool_params"] = _inherited_tool_params(base_result, entity_change)
+        state["selected_capability_type"] = "tool"
+        state["selected_capability_name"] = str(
+            base_result.get("selected_capability_name") or base_result["selected_tool"]
+        )
+    if relation != "new_query":
+        history = list(base_result.get("analysis_history") or [])
+        previous_turn = history[-1] if history else {}
+        state["previous_question"] = str(
+            previous_turn.get("question")
+            or base_result.get("followup_question")
+            or base_result.get("question")
+            or ""
+        )
+        state["previous_sql"] = str(base_result.get("final_sql") or "")
+        state["previous_answer"] = str(base_result.get("answer") or "")
+    state["followup_question"] = question
+    if not reroute_sources:
+        state["selected_domain"] = base_result.get("selected_domain", "")
+        state["domain_candidates"] = base_result.get("domain_candidates", [])
+        state["domain_routing_trace"] = base_result.get("domain_routing_trace", "")
+        state["domain_context"] = base_result.get("domain_context", "")
+
+        selected_tables = base_result.get("selected_tables") or _table_names_from_sql(base_result.get("final_sql", ""))
+        if selected_tables:
+            state["selected_tables"] = selected_tables
+            state["table_details"] = base_result.get("table_details", "") or _table_details_for_names(selected_tables)
     return state
 
 
@@ -1938,12 +2407,26 @@ def _chart_followup_answer(chart: dict[str, Any] | None) -> str:
     )
 
 
-def _finalize_followup_result(base_result: dict[str, Any], question: str, followup_result: dict[str, Any], answer: str, mode: str, source: str) -> dict[str, Any]:
+def _finalize_followup_result(
+    base_result: dict[str, Any],
+    question: str,
+    followup_result: dict[str, Any],
+    answer: str,
+    mode: str,
+    source: str,
+    followup_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan = followup_plan or {}
     history = list(base_result.get("analysis_history", []))
     uses_sql = mode.startswith("rewrite_sql") or mode.startswith("new_sql") or mode == "query"
+    resolved_question = str(plan.get("resolved_question") or question)
+    context_relation = str(plan.get("context_relation") or "")
     history.append(
         {
             "question": question,
+            "resolved_question": resolved_question,
+            "context_relation": context_relation,
+            "context_reason": str(plan.get("context_reason") or ""),
             "answer": answer,
             "mode": mode,
             "sql": followup_result.get("final_sql", "") if uses_sql else "",
@@ -1953,18 +2436,40 @@ def _finalize_followup_result(base_result: dict[str, Any], question: str, follow
             "source": source,
             "operations": _jsonable(followup_result.get("followup_operations", [])),
             "has_chart": bool(followup_result.get("chart")),
+            "route_reason": str(plan.get("route_reason") or ""),
+            "result_complete": bool(infer_result_scope(followup_result).get("is_complete", True)),
         }
     )
     followup_result.update(
         {
-            "question": base_result.get("question", ""),
+            "question": resolved_question if uses_sql else base_result.get("question", ""),
+            "original_question": base_result.get("original_question") or base_result.get("question", ""),
             "original_answer": base_result.get("original_answer", base_result.get("answer", "")),
             "answer": answer,
             "followup_question": question,
             "analysis_history": history,
             "followup_mode": mode,
+            "followup_route": {
+                "mode": mode,
+                "reason": str(plan.get("route_reason") or ""),
+                "confidence": str(plan.get("route_confidence") or ""),
+                "requested_metrics": list(plan.get("requested_metrics") or []),
+                "new_metrics": list(plan.get("new_metrics") or []),
+                "context_relation": context_relation,
+                "source_strategy": str(plan.get("source_strategy") or ""),
+                "resolved_question": resolved_question,
+                "context_reason": str(plan.get("context_reason") or ""),
+                "context_resolved_by_llm": bool(plan.get("context_resolved_by_llm")),
+            },
             "error_message": "",
         }
+    )
+    previous_frame = plan.get("next_query_frame") or ensure_query_frame(base_result)
+    followup_result["result_scope"] = infer_result_scope(followup_result)
+    followup_result["query_frame"] = build_query_frame(
+        followup_result,
+        previous_frame=previous_frame,
+        last_question=question,
     )
     return followup_result
 
@@ -1983,28 +2488,70 @@ def _stream_followup(
     if not base_result:
         yield _sse("error", {"detail": "이전 결과를 찾을 수 없습니다."})
         return
-    if not base_result.get("query_columns") or not base_result.get("query_rows"):
-        yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
-        return
 
     yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다.", "query": req.question})
     try:
+        base_frame = ensure_query_frame(base_result)
+        yield _sse(
+            "progress",
+            {
+                "step": "followup_context",
+                "title": "대화 맥락 해석",
+                "message": "이전 질의의 대상·기간·지표와 새 질문의 변경점을 함께 확인합니다.",
+                "query": req.question,
+            },
+        )
         with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
+            preliminary_plan = plan_followup(
+                req.question,
+                base_result.get("query_columns", []),
+                base_result.get("query_rows", []),
+                query_frame=base_frame,
+                result_scope=base_frame.get("result_scope"),
+            )
+            context_resolution = _resolve_followup_context(
+                base_result,
+                req.question,
+                preliminary_plan,
+            )
             followup_plan = plan_followup(
                 req.question,
                 base_result.get("query_columns", []),
                 base_result.get("query_rows", []),
+                query_frame=base_frame,
+                result_scope=base_frame.get("result_scope"),
+                context_resolution=context_resolution,
             )
             intent = str(followup_plan["mode"])
+            resolved_question = str(followup_plan.get("resolved_question") or req.question)
+            route_progress = {
+                "step": "followup_route",
+                "title": "후속 의도 판단",
+                "query": req.question,
+                "followup_mode": intent,
+                "requires_sql": bool(followup_plan["requires_sql"]),
+                "context_relation": followup_plan.get("context_relation", ""),
+            }
+
+        if (
+            not base_result.get("query_columns") or not base_result.get("query_rows")
+        ) and not followup_plan["requires_sql"]:
+            yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
+            return
 
         if followup_plan["requires_sql"]:
             sql_intent = "new_sql" if intent.startswith("new_sql") else "rewrite_sql"
             wants_chart = bool(followup_plan["visualize"])
-            route_message = "후속 요청에 새 데이터가 필요해 SQL을 새로 실행합니다." if sql_intent == "new_sql" else "기간·대상·조회 조건이 달라져 기존 SQL을 재작성합니다."
+            if followup_plan.get("route_reason") == "incomplete_result_requires_sql":
+                route_message = "직전 결과가 일부 범위이므로 정확한 상위 N·집계를 위해 SQL을 다시 실행합니다."
+            else:
+                route_message = "후속 요청에 새 데이터가 필요해 도메인과 테이블을 다시 선택합니다." if sql_intent == "new_sql" else "기간·대상·조회 조건이 달라져 기존 SQL을 재작성합니다."
+            if followup_plan.get("context_relation") == "new_query":
+                route_message = "이전 조건을 이어받지 않는 새 질문으로 판단해 도메인과 테이블을 새로 선택합니다."
             if wants_chart:
                 route_message += " 조회가 끝나면 새 결과로 차트도 생성합니다."
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message, "query": req.question})
-            state = _followup_query_state(base_result, req.question)
+            yield _sse("progress", {**route_progress, "message": route_message})
+            state = _followup_query_state(base_result, req.question, followup_plan)
             compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
             followup_result = dict(state)
             for node_name, result in _stream_graph(
@@ -2019,9 +2566,18 @@ def _stream_followup(
                     yield _sse("heartbeat", followup_result)
                     continue
                 payload = _progress_payload(node_name, compatible, followup_result)
-                yield _sse("progress", {"step": node_name, "title": payload["data"]["title"], "message": payload["message"], "query": req.question})
+                yield _sse(
+                    "progress",
+                    {
+                        **payload["data"],
+                        "step": node_name,
+                        "title": payload["data"]["title"],
+                        "message": payload["message"],
+                        "query": req.question,
+                    },
+                )
             answer = followup_result.get("answer", "")
-            chart = build_chart_spec(req.question, followup_result.get("query_columns", []), followup_result.get("query_rows", [])) if wants_chart else None
+            chart = build_chart_spec(resolved_question, followup_result.get("query_columns", []), followup_result.get("query_rows", [])) if wants_chart else None
             if chart:
                 followup_result["chart"] = chart
                 answer = (
@@ -2032,14 +2588,14 @@ def _stream_followup(
                 followup_result.pop("chart", None)
             followup_result["followup_operations"] = ["SQL 재조회"] + (["차트 생성"] if chart else [])
             source = "후속 SQL + 시각화" if chart else "후속 SQL"
-            final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, followup_result, answer, intent, source, followup_plan)
         elif intent in {"transform", "transform_visualization"}:
             transform = followup_plan["transform"]
             wants_chart = bool(followup_plan["visualize"])
             route_message = "후속 요청을 직전 결과의 로컬 재가공으로 분류했습니다. SQL은 다시 실행하지 않습니다."
             if wants_chart:
                 route_message += " 재가공한 결과로 차트를 생성합니다."
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": route_message, "query": req.question})
+            yield _sse("progress", {**route_progress, "message": route_message})
             yield _sse("progress", {"step": "generate_answer", "title": "결과 재가공", "message": "저장된 결과에 정렬·필터·집계·표현 변경을 안전하게 적용합니다.", "query": req.question})
             local_result = dict(base_result)
             local_result.update(
@@ -2053,19 +2609,19 @@ def _stream_followup(
                     },
                 }
             )
-            chart = build_chart_spec(req.question, transform["columns"], transform["rows"]) if wants_chart else None
+            chart = build_chart_spec(resolved_question, transform["columns"], transform["rows"]) if wants_chart else None
             if chart:
                 local_result["chart"] = chart
             else:
                 local_result.pop("chart", None)
             answer = _local_followup_answer(transform, chart)
             source = "기존 결과 재가공 + 시각화" if chart else "기존 결과 재가공"
-            final_result = _finalize_followup_result(base_result, req.question, local_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, local_result, answer, intent, source, followup_plan)
         elif intent == "visualization":
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "직전 결과만 사용해 차트를 생성합니다. SQL은 다시 실행하지 않습니다.", "query": req.question})
+            yield _sse("progress", {**route_progress, "message": "직전 결과만 사용해 차트를 생성합니다. SQL은 다시 실행하지 않습니다."})
             yield _sse("progress", {"step": "generate_answer", "title": "차트 생성", "message": "숫자·범주·시간 컬럼을 판별해 차트 데이터를 구성합니다.", "query": req.question})
             visual_result = dict(base_result)
-            chart = build_chart_spec(req.question, base_result.get("query_columns", []), base_result.get("query_rows", []))
+            chart = build_chart_spec(resolved_question, base_result.get("query_columns", []), base_result.get("query_rows", []))
             if chart:
                 visual_result["chart"] = chart
                 visual_result["followup_operations"] = ["차트 생성"]
@@ -2074,17 +2630,17 @@ def _stream_followup(
                 visual_result["followup_operations"] = []
             answer = _chart_followup_answer(chart)
             source = "기존 결과 시각화"
-            final_result = _finalize_followup_result(base_result, req.question, visual_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, visual_result, answer, intent, source, followup_plan)
         else:
             source = "기존 결과 분석"
-            yield _sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 직전 결과 설명·분석으로 분류했습니다. SQL은 다시 실행하지 않습니다.", "query": req.question})
+            yield _sse("progress", {**route_progress, "message": "후속 요청을 직전 결과 설명·분석으로 분류했습니다. SQL은 다시 실행하지 않습니다."})
             yield _sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 SQL 결과와 대화 이력을 기반으로 답변을 생성합니다.", "query": req.question})
             with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
                 answer = _followup_analysis(base_result, req.question)
             analysis_result = dict(base_result)
             analysis_result.pop("chart", None)
             analysis_result["followup_operations"] = []
-            final_result = _finalize_followup_result(base_result, req.question, analysis_result, answer, intent, source)
+            final_result = _finalize_followup_result(base_result, req.question, analysis_result, answer, intent, source, followup_plan)
         final_result["parent_result_id"] = req.result_id
         data = _result_payload(final_result, session, message_id, 10, source_override=source)
         data = _finalize_assistant_message(session, data, message_id)
@@ -2263,6 +2819,52 @@ def examples():
     }
 
 
+@app.get("/api/tables")
+def table_catalog():
+    tables = []
+    for table in SCHEMA.get("tables", []):
+        if not _is_semantic_table_visible(table):
+            continue
+        name = str(table.get("name") or "").strip()
+        if not name:
+            continue
+        raw_policy = table.get("accumulation_policy")
+        accumulation_policy = None
+        if isinstance(raw_policy, dict) and raw_policy:
+            allowed_keys = (
+                "cadence",
+                "query_time_dimension",
+                "format",
+                "lag_days",
+                "available_days",
+                "has_reference_month",
+                "description",
+                "provenance",
+            )
+            accumulation_policy = {
+                key: raw_policy[key]
+                for key in allowed_keys
+                if key in raw_policy
+            }
+            accumulation_policy["summary"] = format_accumulation_policy(raw_policy)
+        tables.append(
+            {
+                "name": name,
+                "physical_table": str(table.get("physical_table") or name).strip(),
+                "korean_name": str(table.get("korean_name") or name).strip(),
+                "description": " ".join(str(table.get("description") or "").split()),
+                "grain": " ".join(str(table.get("grain") or "").split()),
+                "accumulation_policy": accumulation_policy,
+            }
+        )
+    metadata = SCHEMA.get("semantic_layer_metadata") or {}
+    return {
+        "count": len(tables),
+        "semantic_layer_version": str(metadata.get("version") or ""),
+        "tables": tables,
+    }
+
+
 @app.post("/api/managed-company-scope/parse")
 async def parse_managed_company_scope_upload(
     request: Request,
@@ -2329,7 +2931,11 @@ def list_sessions(
     agent_name = _request_agent_name(x_agent_name)
     pruned = _SESSION_STORE.prune_empty_sessions(user_id, agent_name)
     sessions = _SESSION_STORE.list_sessions(user_id, agent_name)
-    return {"sessions": [_session_summary(session) for session in sessions], "pruned_empty_sessions": pruned}
+    return {
+        "sessions": [_session_summary(session) for session in sessions],
+        "pruned_empty_sessions": pruned,
+        "session_delete_enabled": bool(getattr(_SESSION_STORE, "delete_enabled", True)),
+    }
 
 
 @app.get("/api/sessions/{session_id}")
@@ -2352,6 +2958,8 @@ def delete_session(
     session_id: str,
     x_user_id: str | None = Header(None, alias="X-User-ID"),
 ):
+    if not getattr(_SESSION_STORE, "delete_enabled", True):
+        return {"deleted": False, "hidden": True, "session_id": session_id}
     deleted = _SESSION_STORE.delete_session(session_id, _request_user_id(x_user_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
@@ -2402,6 +3010,8 @@ def delete_saved_query(
     query_id: str,
     x_user_id: str | None = Header(None, alias="X-User-ID"),
 ):
+    if not getattr(_SESSION_STORE, "delete_enabled", True):
+        raise HTTPException(status_code=403, detail="PostgreSQL DELETE 권한이 비활성화되어 있습니다.")
     deleted = _SESSION_STORE.delete_saved_query(query_id, _request_user_id(x_user_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="저장 쿼리를 찾을 수 없습니다.")
@@ -2487,6 +3097,11 @@ def export_result(
     if not result:
         raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
     fmt = req.format.lower().strip()
+    if fmt in {"all", "excel", "xlsx", "csv", "text", "txt"}:
+        try:
+            result = agent.prepare_export_result(result)
+        except RuntimeError:
+            raise HTTPException(status_code=500, detail="다운로드용 전체 데이터를 조회하지 못했습니다.") from None
     files: list[dict[str, str]] = []
     if fmt == "all":
         paths = agent.export_all(result)
@@ -2549,8 +3164,11 @@ def index_head():
 
 @app.get("/{full_path:path}")
 def static_fallback(full_path: str):
-    file_path = STATIC_DIR / full_path
-    if file_path.is_file():
-        headers = {"Cache-Control": "no-store"} if file_path.suffix == ".html" else None
-        return FileResponse(str(file_path), headers=headers)
+    static_root = STATIC_DIR.resolve()
+    path_parts = Path(full_path).parts
+    for offset in range(len(path_parts)):
+        file_path = STATIC_DIR.joinpath(*path_parts[offset:]).resolve()
+        if file_path.is_relative_to(static_root) and file_path.is_file():
+            headers = {"Cache-Control": "no-store"} if file_path.suffix == ".html" else None
+            return FileResponse(str(file_path), headers=headers)
     return FileResponse(str(STATIC_DIR / "index.html"), headers={"Cache-Control": "no-store"})

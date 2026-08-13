@@ -25,6 +25,40 @@ def test_explicit_year_is_not_replaced_by_previous_month_comparison() -> None:
     assert params == {"기간_시작": "202501", "기간_종료": "202512"}
 
 
+def test_explicit_month_growth_skips_current_previous_month_validation() -> None:
+    question = "2026년 3월 매출액이 전월 대비 가장 많이 증가한 업종 상위 10개를 보여줘"
+    sql = "WHERE 기준년월 IN ('202602', '202603')"
+
+    assert workflow._relative_month_target(question) == ("", "")
+    assert workflow._validate_recent_month_semantics(question, sql) == []
+
+
+def test_quantified_recent_period_skips_single_current_month_validation() -> None:
+    questions_and_sql = [
+        (
+            "최근 6개월 이내 문닫은 교촌 치킨 가맹점 개수",
+            "WHERE 기준년월일 BETWEEN DATE_ADD('month', -6, CURRENT_DATE) AND CURRENT_DATE",
+        ),
+        (
+            "노랑통닭 점포별의 2026년 6월 기준 최근 3개월 가맹점 매출액 알려줘",
+            "WHERE 기준년월 = '202606'",
+        ),
+        (
+            "최근 반년 내 기업카드 이용하였는데 2026년 4월 현재 유효 카드가 없는 법인",
+            "WHERE 기준년월 = '202604'",
+        ),
+    ]
+
+    for question, sql in questions_and_sql:
+        assert workflow._relative_month_target(question) == ("", "")
+        assert workflow._validate_recent_month_semantics(question, sql) == []
+
+    assert workflow._relative_month_target("최근 기준 가맹점 현황") == (
+        workflow._current_ym(),
+        "최근/이번달/최근 기준",
+    )
+
+
 def test_standalone_previous_month_still_resolves_as_relative_period() -> None:
     previous = workflow._previous_ym()
 

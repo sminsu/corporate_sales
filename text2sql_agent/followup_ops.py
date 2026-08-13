@@ -12,10 +12,17 @@ from collections import OrderedDict
 from decimal import Decimal
 from typing import Any
 
+from .query_frame import evolve_query_frame
+from .row_constraints import parse_row_request
+
 
 VISUAL_KEYWORDS = (
     "그래프", "차트", "chart", "plot", "시각화", "막대", "bar", "라인", "line",
-    "선그래프", "원형", "파이", "pie", "분포",
+    "선그래프", "원형", "분포",
+)
+PIE_VISUAL_RE = re.compile(
+    r"(?:^|\s)파이(?=\s|[?!.,]|$|로(?:\s|[?!.,]|$))|\bpie\b",
+    re.IGNORECASE,
 )
 CURRENT_RESULT_KEYWORDS = (
     "이 결과", "위 결과", "방금 결과", "직전 결과", "현재 결과", "조회 결과",
@@ -23,7 +30,21 @@ CURRENT_RESULT_KEYWORDS = (
 )
 TIME_VALUE_RE = re.compile(
     r"(?:전월|지난\s*달|저번\s*달|이번\s*(?:달|월)|금월|작년|지난해|올해|금년|"
-    r"최근\s*\d*\s*(?:개월|년)|20\d{2}\s*년(?:\s*\d{1,2}\s*월)?|20\d{2}(?:0[1-9]|1[0-2]))"
+    r"(?:최근|지난)\s*(?:\d{1,3}\s*(?:개월|달)|(?:\d{1,2}|일|반)\s*년)"
+    r"(?:\s*(?:이내|내|간|동안))?|20\d{2}\s*년(?:\s*\d{1,2}\s*월)?|20\d{2}(?:0[1-9]|1[0-2]))"
+)
+METRIC_ALIASES = (
+    ("매출", ("매출", "매출금액", "매출액")),
+    ("이용금액", ("이용금액", "사용금액")),
+    ("연체", ("연체", "연체금액", "연체율")),
+    ("한도", ("한도", "여신한도")),
+    ("대손", ("대손", "대손비용", "대손비용률")),
+    ("건수", ("건수", "거래건수", "승인건수")),
+    ("가맹점수", ("가맹점수", "가맹점개수")),
+    ("회원수", ("회원수", "고객수", "명수")),
+    ("승인율", ("승인율",)),
+    ("잔액", ("잔액",)),
+    ("수수료", ("수수료",)),
 )
 
 
@@ -213,6 +234,7 @@ def apply_local_transform(question: str, raw_columns: list[Any], raw_rows: list[
     original_count = len(rows)
     operations: list[str] = []
     normalized_question = _normalized(question)
+    row_request = parse_row_request(question)
 
     grouped = _apply_grouping(question, columns, rows)
     if grouped:
@@ -347,26 +369,47 @@ def apply_local_transform(question: str, raw_columns: list[Any], raw_rows: list[
             handled_extremes = True
 
     mentions_both_extremes = any(token in normalized_question for token in ("상위", "top")) and any(token in normalized_question for token in ("하위", "bottom"))
-    sort_requested = not handled_extremes and not mentions_both_extremes and any(token in normalized_question for token in ("정렬", "오름차순", "내림차순", "순으로", "상위", "하위", "top", "bottom"))
+    sort_requested = not handled_extremes and not mentions_both_extremes and (
+        row_request.mode == "latest"
+        or any(token in normalized_question for token in ("정렬", "오름차순", "내림차순", "순으로", "상위", "하위", "top", "bottom"))
+    )
     if sort_requested and rows:
-        sort_index = _metric_index(question, columns, rows)
-        if mentioned:
-            sort_index = mentioned[0]
+        if row_request.mode == "latest":
+            sort_index = next(
+                (
+                    index
+                    for index, column in enumerate(columns)
+                    if any(token in _normalized(column) for token in ("기준년월", "년월", "일자", "날짜", "date", "month"))
+                ),
+                _dimension_index(question, columns, rows),
+            )
+        else:
+            sort_index = _metric_index(question, columns, rows)
+        if mentioned and row_request.mode != "latest":
+            numeric_mentions = [index for index in mentioned if index in _numeric_indices(columns, rows)]
+            if numeric_mentions:
+                sort_index = numeric_mentions[0]
         if sort_index is not None:
-            descending = not any(token in normalized_question for token in ("오름차순", "낮은순", "낮은", "작은순", "작은", "하위", "bottom", "asc"))
+            descending = row_request.mode == "latest" or not any(token in normalized_question for token in ("오름차순", "낮은순", "낮은", "작은순", "작은", "하위", "bottom", "asc"))
             present_rows = [row for row in rows if not _is_missing(row[sort_index])]
             missing_rows = [row for row in rows if _is_missing(row[sort_index])]
             present_rows.sort(key=lambda row: _sortable(row[sort_index]), reverse=descending)
             rows = present_rows + missing_rows
             operations.append(f"{columns[sort_index]} {'내림차순' if descending else '오름차순'} 정렬")
 
-    limit_match = None if handled_extremes else re.search(r"(?:상위|하위|top|bottom)\s*(\d+)", normalized_question)
-    if not limit_match and sort_requested:
-        limit_match = re.search(r"(\d+)\s*(?:개|건|명)만", normalized_question)
-    if limit_match:
-        limit = max(1, min(1_000, int(limit_match.group(1))))
-        rows = rows[:limit]
-        range_name = "하위" if any(token in normalized_question for token in ("하위", "bottom")) else "상위" if any(token in normalized_question for token in ("상위", "top")) else "표시 범위"
+    if not handled_extremes and row_request.limit is not None:
+        limit = max(1, min(1_000, row_request.limit))
+        if row_request.mode == "tail":
+            rows = rows[-limit:]
+            range_name = "마지막"
+        else:
+            rows = rows[:limit]
+            range_name = (
+                "하위" if row_request.mode == "bottom"
+                else "상위" if row_request.mode == "top"
+                else "최근" if row_request.mode == "latest"
+                else "앞"
+            )
         operations.append(f"{range_name} {limit}건만 표시")
 
     if not sort_requested and any(token in normalized_question for token in ("역순", "반대로", "순서뒤집", "뒤집어")):
@@ -395,48 +438,174 @@ def apply_local_transform(question: str, raw_columns: list[Any], raw_rows: list[
     }
 
 
-def plan_followup(question: str, columns: list[Any], rows: list[Any]) -> dict[str, Any]:
+def _requested_metrics(question: str) -> list[str]:
+    normalized = _normalized(question)
+    return [
+        canonical
+        for canonical, aliases in METRIC_ALIASES
+        if any(_normalized(alias) in normalized for alias in aliases)
+    ]
+
+
+def _metric_is_available(metric: str, columns: list[Any], query_frame: dict[str, Any]) -> bool:
+    known = _normalized(
+        " ".join(
+            [str(column) for column in columns or []]
+            + [str(value) for value in query_frame.get("metrics", []) or []]
+        )
+    )
+    aliases = next((aliases for canonical, aliases in METRIC_ALIASES if canonical == metric), (metric,))
+    return any(_normalized(alias) in known for alias in aliases)
+
+
+def _transform_requires_complete_result(operations: list[str]) -> bool:
+    """Return True when applying the transform to a partial result could lie."""
+
+    safe_display_operations = (
+        "단위 변환",
+        "반올림",
+        "표시 컬럼 선택",
+        "컬럼 순서 변경",
+        "결측값을 0으로 대체",
+    )
+    return any(
+        operation and not any(safe in operation for safe in safe_display_operations)
+        for operation in operations
+    )
+
+
+def plan_followup(
+    question: str,
+    columns: list[Any],
+    rows: list[Any],
+    *,
+    query_frame: dict[str, Any] | None = None,
+    result_scope: dict[str, Any] | None = None,
+    context_resolution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Route a follow-up to SQL, local transform, visualization, or analysis."""
 
+    frame = query_frame or {}
+    scope = result_scope or frame.get("result_scope") or {}
+    resolution = context_resolution or {}
+    context_relation = str(resolution.get("relation") or "")
+    source_strategy = str(resolution.get("source_strategy") or "")
     lowered = " ".join(str(question or "").lower().split())
     normalized_question = _normalized(lowered)
-    columns_text = " ".join(str(column).lower() for column in columns or [])
-    asks_visual = any(keyword in lowered for keyword in VISUAL_KEYWORDS)
+    asks_visual = any(keyword in lowered for keyword in VISUAL_KEYWORDS) or bool(
+        PIE_VISUAL_RE.search(lowered)
+    )
     transform = apply_local_transform(question, columns, rows)
+    refers_to_current_result = any(keyword in lowered for keyword in CURRENT_RESULT_KEYWORDS) or bool(
+        re.search(r"(?:그|거기|같은|동일한|이전|방금|이번에는|그럼)", lowered)
+    )
 
     explicit_sql = any(keyword in lowered for keyword in ("sql", "쿼리", "query", "where", "order by", "group by", "join"))
     new_data_phrases = any(keyword in lowered for keyword in ("새로 조회", "다른 테이블", "조인", "join", "합쳐", "붙여", "merge"))
-    domain_metrics = ("연체", "한도", "심사", "대표자", "계좌", "기업카드", "폐업", "매출", "이용금액", "대손")
-    unavailable_metric = any(metric in lowered and metric not in columns_text for metric in domain_metrics)
-    asks_to_add = any(keyword in lowered for keyword in ("도 같이", "추가", "붙여", "합쳐", "포함해서"))
+    requested_metrics = _requested_metrics(question)
     derived_growth = any(keyword in normalized_question for keyword in ("증감률", "증가율", "전월대비", "전년대비")) and transform["applied"]
+    new_metrics = [
+        metric
+        for metric in requested_metrics
+        if not _metric_is_available(metric, columns, frame)
+    ]
+    if derived_growth:
+        new_metrics = [metric for metric in new_metrics if metric not in {"건수"}]
     changes_time = bool(TIME_VALUE_RE.search(lowered)) and not derived_growth
+    asks_time_series = changes_time and any(
+        keyword in normalized_question for keyword in ("추이", "변동", "변화", "시계열")
+    )
+    frame_dimensions = _normalized(" ".join(str(value) for value in frame.get("dimensions", []) or []))
+    has_time_dimension = any(
+        keyword in frame_dimensions for keyword in ("년월", "월", "일자", "날짜", "date", "month", "year", "ym")
+    )
+    needs_time_series_source = asks_time_series and not has_time_dimension
+    result_complete = bool(scope.get("is_complete", True))
+    unsafe_partial_transform = (
+        transform["applied"]
+        and not result_complete
+        and _transform_requires_complete_result(transform["operations"])
+    )
 
-    if new_data_phrases or (unavailable_metric and asks_to_add):
+    if new_data_phrases:
         base_mode = "new_sql"
+        route_reason = "new_data_requested"
+    elif new_metrics:
+        base_mode = "new_sql"
+        route_reason = "new_metric_requires_reroute"
+    elif needs_time_series_source:
+        base_mode = "new_sql"
+        route_reason = "new_time_series_requires_reroute"
     elif explicit_sql or changes_time:
         base_mode = "rewrite_sql"
+        route_reason = "query_definition_changed"
+    elif unsafe_partial_transform:
+        base_mode = "rewrite_sql"
+        route_reason = "incomplete_result_requires_sql"
     elif transform["applied"]:
         base_mode = "transform_visualization" if asks_visual else "transform"
+        route_reason = "complete_result_local_transform"
     elif asks_visual:
         base_mode = "visualization"
+        route_reason = "existing_result_visualization"
     elif any(keyword in lowered for keyword in ("조회", "조건", "필터", "다시 뽑", "가져와", "불러와", "월별", "연도별", "업종별", "기업별", "만 보여", "만 남겨", "제외", "포함")):
         base_mode = "rewrite_sql"
-    elif unavailable_metric:
-        base_mode = "new_sql"
+        route_reason = "filter_or_grain_changed"
+    elif refers_to_current_result and re.search(r"(?:만|빼|제외|추가|바꿔|변경)", lowered):
+        base_mode = "rewrite_sql"
+        route_reason = "contextual_condition_changed"
     else:
         base_mode = "analysis"
+        route_reason = "existing_result_analysis"
+
+    # The context resolver only escalates work; deterministic safety rules
+    # above still win when they already require a fresh SQL result.
+    if context_relation == "new_query":
+        base_mode = "new_sql"
+        route_reason = "independent_question_requires_new_query"
+    elif context_relation == "refine_query" and base_mode not in {"new_sql", "rewrite_sql"}:
+        base_mode = "new_sql" if source_strategy == "rediscover" else "rewrite_sql"
+        route_reason = (
+            "context_change_requires_reroute"
+            if base_mode == "new_sql"
+            else "context_change_requires_sql"
+        )
+    elif (
+        context_relation == "refine_query"
+        and source_strategy == "rediscover"
+        and base_mode == "rewrite_sql"
+    ):
+        base_mode = "new_sql"
+        route_reason = "context_change_requires_reroute"
 
     if base_mode in {"rewrite_sql", "new_sql"} and asks_visual:
         mode = f"{base_mode}_visualization"
     else:
         mode = base_mode
+    frame_to_evolve = {} if context_relation == "new_query" else frame
+    next_query_frame = evolve_query_frame(
+        frame_to_evolve,
+        question,
+        mode=mode,
+        requested_metrics=requested_metrics,
+    )
     return {
         "mode": mode,
         "requires_sql": base_mode in {"rewrite_sql", "new_sql"},
         "visualize": asks_visual,
         "transform": transform,
-        "refers_to_current_result": any(keyword in lowered for keyword in CURRENT_RESULT_KEYWORDS),
+        "refers_to_current_result": refers_to_current_result,
+        "route_reason": route_reason,
+        "route_confidence": "high" if route_reason != "existing_result_analysis" else "medium",
+        "requested_metrics": requested_metrics,
+        "new_metrics": new_metrics,
+        "result_complete": result_complete,
+        "next_query_frame": next_query_frame,
+        "context_relation": context_relation,
+        "source_strategy": source_strategy,
+        "resolved_question": str(resolution.get("resolved_question") or question),
+        "context_reason": str(resolution.get("reason") or ""),
+        "context_resolved_by_llm": bool(resolution.get("used_llm")),
     }
 
 

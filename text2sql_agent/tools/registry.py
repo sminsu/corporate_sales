@@ -1,5 +1,7 @@
 """Tool metadata registry used by the graph's tool-selection path."""
 
+from ..config import DEFAULT_QUERY_ROW_LIMIT
+
 from .bad_debt import _tool_fn_대손비용률
 from .sql_builders import (
     _tool_sql_corporate_card_active_no_usage_members,
@@ -7,10 +9,6 @@ from .sql_builders import (
     _tool_sql_corporate_check_card_only_high_monthly_avg,
     _tool_sql_merchant_corporate_sales_target_no_corporate_card,
     _tool_sql_corporate_limit_low_utilization_members,
-    _tool_sql_new_sales_targets_usage_amount_detail,
-    _tool_sql_managed_corporate_usage_trend_monitoring,
-    _tool_sql_managed_corporate_delinquency_current,
-    _tool_sql_managed_corporate_limit_down_monitoring,
 )
 
 def _tool_fn_verified_query(sql_query_name: str, **kwargs):
@@ -30,8 +28,8 @@ def _make_verified_query_tool_fn(sql_query_name: str):
 EXCEL_CASE_SQL_TOOLS: list[dict] = [
         {
             'name': 'corporate_card_active_no_usage_members',
-            'description': '기준월 현재 유효 기업카드를 보유하고 있으나, 지정 기간 동안 신용/체크 이용금액이 없는 기업회원 명단을 조회합니다. Excel CASE 1번 SAS/Oracle 쿼리를 Athena SELECT-only 패턴으로 변환했습니다.',
-            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '현재 카드 보유 여부 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '기간_시작', 'type': 'string', 'description': '무실적 판단 시작 기준년월(YYYYMM). 기준월 포함 최근 6개월이면 기준월-5개월', 'required': True, 'default': '202511'}, {'name': '기간_종료', 'type': 'string', 'description': '무실적 판단 종료 기준년월(YYYYMM). 보통 기준년월과 동일', 'required': True, 'default': '202604'}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
+            'description': '입력 기준년월에 유효 기업카드를 보유하고 있으나 기준월 포함 최근 6개월 신용/체크 이용금액이 없는 기업회원 명단을 tmdaa1d12에서 조회합니다.',
+            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '현재 카드 보유 여부와 무실적 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '조회개월수', 'type': 'integer', 'description': '기준월을 포함한 무실적 판정 개월 수', 'required': False, 'default': 6}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'corporate_card_active_no_usage_members',
             'execution_mode': 'athena_select_only',
             'tags': ['신규영업', '6무', '무실적', '기업회원', '기업카드', '보유', '명단', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
@@ -40,19 +38,19 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
         {
             'name': 'corporate_card_churned_after_usage_members',
             'description': '지정 기간 중 이용 이력이 있으나 기준월 현재 유효 기업 신용/체크카드 수가 0인 기업회원과 탈회를 하거나 해지한 기업 회원 명단을 검색할 때 사용',
-            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '현재 탈회/해지 여부 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '기간_시작', 'type': 'string', 'description': '과거 이용 이력 집계 시작 기준년월(YYYYMM)', 'required': True, 'default': '202511'}, {'name': '기간_종료', 'type': 'string', 'description': '과거 이용 이력 집계 종료 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
+            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '현재 탈회/해지 여부 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '조회개월수', 'type': 'integer', 'description': '기준월을 포함한 과거 이용 이력 조회 개월 수', 'required': False, 'default': 6}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'corporate_card_churned_after_usage_members',
             'execution_mode': 'athena_select_only',
-            'tags': ['신규영업', '이탈회원', '탈회', '해지', '기업회원', '기업카드', '이용이력', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['신규영업', '이탈회원', '탈회', '해지', '기업회원', '기업카드', '이용이력', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _tool_sql_corporate_card_churned_after_usage_members,
         },
         {
             'name': 'corporate_check_card_only_high_monthly_avg',
             'description': '지정 기간 동안 기업 체크카드만 보유하고 신용카드 이용금액이 없는 기업회원의 체크 이용금액 월평균을 계산해 기준 금액 이상인 기업회원 명단을 조회합니다. Excel CASE 3번을 Athena SELECT-only로 변환했습니다.',
-            'parameters': [{'name': '기간_시작', 'type': 'string', 'description': '체크카드 이용 집계 시작 기준년월(YYYYMM)', 'required': True, 'default': '202601'}, {'name': '기간_종료', 'type': 'string', 'description': '체크카드 이용 집계 종료 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '월평균금액', 'type': 'integer', 'description': '월평균 체크카드 이용금액 기준', 'required': False, 'default': 50000000}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
+            'parameters': [{'name': '기준년월', 'type': 'string', 'description': '보유·이용과 월평균을 판단할 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '월평균금액', 'type': 'integer', 'description': '월평균 체크카드 이용금액 기준', 'required': False, 'default': 50000000}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'corporate_check_card_only_high_monthly_avg',
             'execution_mode': 'athena_select_only',
-            'tags': ['신규영업', '교차회원', '체크카드만', '신용카드미보유', '월평균', '5천만원', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['신규영업', '교차회원', '체크카드만', '신용카드미보유', '월평균', '5천만원', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _tool_sql_corporate_check_card_only_high_monthly_avg,
         },
         {
@@ -70,7 +68,7 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
             'parameters': [{'name': '기준년월', 'type': 'string', 'description': '한도와 카드 보유 여부 판단 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '한도금액', 'type': 'integer', 'description': '기업 총한도 하한 기준', 'required': False, 'default': 20000000}, {'name': '한도소진율', 'type': 'number', 'description': '한도소진율 상한 기준. 50%는 0.5', 'required': False, 'default': 0.5}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'corporate_limit_low_utilization_members',
             'execution_mode': 'athena_select_only',
-            'tags': ['신규영업', '한도', '한도소진율', '잔여한도', '2천만원', '50%미만', '기업회원', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['신규영업', '한도', '한도소진율', '잔여한도', '2천만원', '50%미만', '기업회원', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _tool_sql_corporate_limit_low_utilization_members,
         },
         {
@@ -79,7 +77,7 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
             'parameters': [{'name': '기준년월', 'type': 'string', 'description': '이용금액 상세 집계 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '최근6개월_시작', 'type': 'string', 'description': '6무/이탈 산정 시작 기준년월(YYYYMM)', 'required': True, 'default': '202511'}, {'name': '교차기간_시작', 'type': 'string', 'description': '교차회원 산정 시작 기준년월(YYYYMM)', 'required': True, 'default': '202601'}, {'name': '월매출금액', 'type': 'integer', 'description': '가맹점 대상군 월 매출액 하한 기준', 'required': False, 'default': 100000000}],
             'sql_query_name': 'new_sales_targets_usage_amount_detail',
             'execution_mode': 'athena_select_only',
-            'tags': ['신규영업', '이용금액상세', '대상군', '6무', '이탈', '교차', '가맹점', 'tmdaa1d12', 'tbdaaus01', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['신규영업', '이용금액상세', '대상군', '6무', '이탈', '교차', '가맹점', 'tbdaa1d12', 'tbdaaus01', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _make_verified_query_tool_fn('new_sales_targets_usage_amount_detail'),
         },
         {
@@ -88,7 +86,7 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
             'parameters': [{'name': '관리기업목록', 'type': 'business_number_list', 'description': '요청별 10자리 사업자등록번호 목록', 'required': True}, {'name': '기준년월', 'type': 'string', 'description': '모니터링 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '기간_시작', 'type': 'string', 'description': '최근 6개월 시작 기준년월(YYYYMM)', 'required': True, 'default': '202511'}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'managed_corporate_usage_trend_monitoring',
             'execution_mode': 'athena_select_only',
-            'tags': ['관리영업', '이용금액추이', '모니터링', '특이사항', '급감', '급증', '무실적', '관리기업', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['관리영업', '이용금액추이', '모니터링', '특이사항', '급감', '급증', '무실적', '관리기업', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _make_verified_query_tool_fn('managed_corporate_usage_trend_monitoring'),
         },
         {
@@ -97,7 +95,7 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
             'parameters': [{'name': '관리기업목록', 'type': 'business_number_list', 'description': '요청별 10자리 사업자등록번호 목록', 'required': True}, {'name': '기준년월', 'type': 'string', 'description': '연체 여부 확인 기준년월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'managed_corporate_delinquency_current',
             'execution_mode': 'athena_select_only',
-            'tags': ['관리영업', '연체', '연체여부', '연체일수', '연체금액', '관리기업', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['관리영업', '연체', '연체여부', '연체일수', '연체금액', '관리기업', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _make_verified_query_tool_fn('managed_corporate_delinquency_current'),
         },
         {
@@ -106,10 +104,14 @@ EXCEL_CASE_SQL_TOOLS: list[dict] = [
             'parameters': [{'name': '관리기업목록', 'type': 'business_number_list', 'description': '요청별 10자리 사업자등록번호 목록', 'required': True}, {'name': '기준년월', 'type': 'string', 'description': '한도 감액 확인 기준월(YYYYMM)', 'required': True, 'default': '202604'}, {'name': '전월기준년월', 'type': 'string', 'description': '비교 대상 전월 기준년월(YYYYMM)', 'required': True, 'default': '202603'}, {'name': 'limit', 'type': 'integer', 'description': '상세 목록 제한 건수', 'required': False, 'default': 100}],
             'sql_query_name': 'managed_corporate_limit_down_monitoring',
             'execution_mode': 'athena_select_only',
-            'tags': ['관리영업', '한도감액', '한도', '감액금액', '전월대비', '관리기업', 'tmdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
+            'tags': ['관리영업', '한도감액', '한도', '감액금액', '전월대비', '관리기업', 'tbdaa1d12', 'Athena', 'SELECT_ONLY', 'AI영업비서_CASE'],
             'fn': _make_verified_query_tool_fn('managed_corporate_limit_down_monitoring'),
         }
 ]
+for _tool in EXCEL_CASE_SQL_TOOLS:
+    for _parameter in _tool.get("parameters", []):
+        if _parameter.get("name") == "limit" and _parameter.get("default") == 100:
+            _parameter["default"] = DEFAULT_QUERY_ROW_LIMIT
 # ---------------------------------------------------------------------------
 # 6. Tool 등록 (required 플래그 포함)
 # ---------------------------------------------------------------------------

@@ -153,6 +153,15 @@ def _normalize_llm_text(text: Any) -> str:
     final_blocks = re.findall(r"<final>(.*?)</final>", value, flags=re.IGNORECASE | re.DOTALL)
     if final_blocks:
         value = final_blocks[-1]
+    # gpt-oss(harmony) serving 템플릿이 채널 구조를 텍스트로 흘리는 두 형태를 처리한다.
+    # 1) raw 채널 토큰: <|channel|>final<|message|> 뒤가 최종 답변이다.
+    channel_parts = re.split(r"<\|channel\|>\s*final\s*<\|message\|>", value, flags=re.IGNORECASE)
+    if len(channel_parts) > 1:
+        value = channel_parts[-1]
+    value = re.sub(r"<\|(?:start|end|message|channel|return|call)\|>[a-z]*", "", value)
+    # 2) 토큰이 이어붙은 형태: "analysis...assistantfinal<최종 답변>".
+    if value.lstrip().lower().startswith("analysis") and "assistantfinal" in value:
+        value = value.split("assistantfinal")[-1]
     value = re.sub(
         r"<(?:reasoning|think|analysis)>.*?</(?:reasoning|think|analysis)>\s*",
         "",
@@ -170,13 +179,16 @@ def _normalize_llm_text(text: Any) -> str:
 
 
 def probe_llm() -> dict[str, Any]:
-    """Readiness probe: attempt a 1-token chat completion via the common client."""
+    """Readiness probe: attempt a minimal chat completion via the common client."""
     try:
+        # gpt-oss 같은 reasoning 모델은 첫 토큰들을 reasoning에 소비하므로
+        # max_tokens=1이면 일부 런타임이 오류를 반환한다. 프로브는 성공 여부만
+        # 보므로 작은 여유분이면 충분하다.
         _get_llm_client().chat.completions.create(
             model=LLM_MODEL,
             messages=[{"role": "user", "content": "ping"}],
             temperature=0,
-            max_tokens=1,
+            max_tokens=16,
             timeout=10.0,
             extra_body=LLM_EXTRA_BODY,
             extra_headers=LLM_EXTRA_HEADERS,

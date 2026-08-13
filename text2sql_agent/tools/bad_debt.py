@@ -10,24 +10,29 @@ from openpyxl.utils import get_column_letter
 from ..config import BAD_DEBT_OUTPUT_DIR, DB_SCHEMA, DB_SCHEMA_PREFIX
 from ..db import execute_sql
 from ..llm import _call_llm, _normalize_llm_text
-from .sql_builders import _athena_partition_conds, _calc_months_back, _escape_like, _sanitize_param
+from .sql_builders import _athena_partition_conds, _calc_months_back, _escape_name_like, _sanitize_param
 
 # ---------------------------------------------------------------------------
 # 5. 대손비용률 Tool 구현
 # ---------------------------------------------------------------------------
+
+BAD_DEBT_BORROWER_CODE = "02"
 
 
 BAD_DEBT_QUERIES = {
     "월초충당금": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%'){partition_tmdaa5d01_기준년월}
+    WHERE 기준년월 = '{기준년월}'
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 cm AS (
     SELECT 기준년월, 고객식별자,
-        SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
+        SUM(COALESCE(기대대손충당금, 0)) AS 기대대손충당금,
+        SUM(COALESCE(원화대출잔액, 0)) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_월초년월}
+    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '{충당금차주구분코드}'{partition_tbmewcm94_월초년월}
     GROUP BY 기준년월, 고객식별자
 ),
 join_s AS (
@@ -43,13 +48,16 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     "월말충당금": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%'){partition_tmdaa5d01_기준년월}
+    WHERE 기준년월 = '{기준년월}'
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 cm AS (
     SELECT 기준년월, 고객식별자,
-        SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
+        SUM(COALESCE(기대대손충당금, 0)) AS 기대대손충당금,
+        SUM(COALESCE(원화대출잔액, 0)) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_기준년월}
+    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '{충당금차주구분코드}'{partition_tbmewcm94_기준년월}
     GROUP BY 기준년월, 고객식별자
 ),
 join_s AS (
@@ -63,18 +71,22 @@ SELECT 기준년월, 구분,
 FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
 
     "상각내역": """WITH cor_table AS (
-    SELECT DISTINCT a.기업고객식별자
-    FROM card_system.tbdaadt01 a
-    WHERE a.가맹점상태구분코드 IN ('1', '01') AND LOWER(a.가맹점명) LIKE LOWER('%{가맹점명}%'){partition_tbdaadt01_기준년월}
+    SELECT DISTINCT "기업고객식별자"
+    FROM card_system.tmdaa5d01
+    WHERE 기준년월 = '{기준년월}'
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 sd06 AS (
-    SELECT 고객식별자,
-        SUM(특수채권편입원금) AS 특수채권편입원금, SUM(특수채권편입가지급금) AS 특수채권편입가지급금,
-        SUM(특수채권편입원금 + 특수채권편입가지급금) AS 상각금액
-    FROM card_system.tbmaisd06
-    WHERE CAST(SUBSTR(특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
-      AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'{partition_tbmaisd06_기간}
-    GROUP BY 고객식별자
+    SELECT d.고객식별자,
+        SUM(COALESCE(d.특수채권편입원금, 0)) AS 특수채권편입원금,
+        SUM(COALESCE(d.특수채권편입가지급금, 0)) AS 특수채권편입가지급금,
+        SUM(COALESCE(d.특수채권편입원금, 0) + COALESCE(d.특수채권편입가지급금, 0)) AS 상각금액
+    FROM card_system.tbmaisd06 AS d
+    WHERE d.기준년 = '{기준년}'
+      AND CAST(SUBSTR(d.특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
+      AND d.회계계정과목코드 = 'A040101010000' AND d.개인기업구분코드 = '2'{partition_tbmaisd06_기간}
+    GROUP BY d.고객식별자
 ),
 sd06_a AS (
     SELECT A.*,
@@ -82,19 +94,24 @@ sd06_a AS (
     FROM sd06 A LEFT JOIN cor_table B ON A.고객식별자 = B.기업고객식별자
 )
 SELECT 구분,
-    SUM(특수채권편입원금) AS 특수채권편입원금, SUM(특수채권편입가지급금) AS 특수채권편입가지급금,
-    SUM(상각금액) AS 상각금액
+    SUM(COALESCE(특수채권편입원금, 0)) AS 특수채권편입원금,
+    SUM(COALESCE(특수채권편입가지급금, 0)) AS 특수채권편입가지급금,
+    SUM(COALESCE(상각금액, 0)) AS 상각금액
 FROM sd06_a GROUP BY 구분 ORDER BY 구분""",
 
     "대손비용률종합": """WITH cor_table AS (
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
-    WHERE LOWER("가맹점명") LIKE LOWER('%{가맹점명}%'){partition_tmdaa5d01_기준년월}
+    WHERE 기준년월 = '{기준년월}'
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 cm_start AS (
-    SELECT 고객식별자, SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
+    SELECT 고객식별자,
+        SUM(COALESCE(기대대손충당금, 0)) AS 기대대손충당금,
+        SUM(COALESCE(원화대출잔액, 0)) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_월초년월}
+    WHERE 기준년월 = '{월초년월}' AND 충당금차주구분코드 = '{충당금차주구분코드}'{partition_tbmewcm94_월초년월}
     GROUP BY 고객식별자
 ),
 cm_start_flagged AS (
@@ -103,9 +120,11 @@ cm_start_flagged AS (
     FROM cm_start A LEFT JOIN cor_table B ON A.고객식별자 = B."기업고객식별자"
 ),
 cm_end AS (
-    SELECT 고객식별자, SUM(기대대손충당금) AS 기대대손충당금, SUM(원화대출잔액) AS 원화대출잔액
+    SELECT 고객식별자,
+        SUM(COALESCE(기대대손충당금, 0)) AS 기대대손충당금,
+        SUM(COALESCE(원화대출잔액, 0)) AS 원화대출잔액
     FROM card_system.tbmewcm94
-    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '2'{partition_tbmewcm94_기준년월}
+    WHERE 기준년월 = '{기준년월}' AND 충당금차주구분코드 = '{충당금차주구분코드}'{partition_tbmewcm94_기준년월}
     GROUP BY 고객식별자
 ),
 cm_end_flagged AS (
@@ -113,21 +132,19 @@ cm_end_flagged AS (
         CASE WHEN B."기업고객식별자" IS NOT NULL THEN '1' ELSE '0' END AS 구분
     FROM cm_end A LEFT JOIN cor_table B ON A.고객식별자 = B."기업고객식별자"
 ),
-cor_table_full AS (
-    SELECT DISTINCT a.기업고객식별자 FROM card_system.tbdaadt01 a
-    WHERE a.가맹점상태구분코드 IN ('1', '01') AND LOWER(a.가맹점명) LIKE LOWER('%{가맹점명}%'){partition_tbdaadt01_기준년월}
-),
 sd06 AS (
-    SELECT 고객식별자, SUM(특수채권편입원금 + 특수채권편입가지급금) AS 상각금액
-    FROM card_system.tbmaisd06
-    WHERE CAST(SUBSTR(특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
-      AND 회계계정과목코드 = 'A040101010000' AND 개인기업구분코드 = '2'{partition_tbmaisd06_기간}
-    GROUP BY 고객식별자
+    SELECT d.고객식별자,
+        SUM(COALESCE(d.특수채권편입원금, 0) + COALESCE(d.특수채권편입가지급금, 0)) AS 상각금액
+    FROM card_system.tbmaisd06 AS d
+    WHERE d.기준년 = '{기준년}'
+      AND CAST(SUBSTR(d.특수채권편입기준년월일, 1, 6) AS INTEGER) BETWEEN CAST('{시작년월}' AS INTEGER) AND CAST('{기준년월}' AS INTEGER)
+      AND d.회계계정과목코드 = 'A040101010000' AND d.개인기업구분코드 = '2'{partition_tbmaisd06_기간}
+    GROUP BY d.고객식별자
 ),
 sd06_flagged AS (
     SELECT A.고객식별자, A.상각금액,
         CASE WHEN B.기업고객식별자 IS NOT NULL THEN '1' ELSE '0' END AS 구분
-    FROM sd06 A LEFT JOIN cor_table_full B ON A.고객식별자 = B.기업고객식별자
+    FROM sd06 A LEFT JOIN cor_table B ON A.고객식별자 = B.기업고객식별자
 ),
 by_group AS (
     SELECT COALESCE(s.구분, e.구분, w.구분) AS 구분,
@@ -187,7 +204,7 @@ def _partition_and(table_name: str, start: str, end: str = "", alias: str = "") 
 
 
 def _build_bad_debt_sql(query_template: str, params: dict) -> str:
-    merchant = _escape_like(params.get("가맹점명", ""))
+    merchant = _escape_name_like(params.get("가맹점명", ""), params)
     yyyymm = _sanitize_param(params.get("기준년월", ""))
     prev_month = _calc_months_back(yyyymm, 1) if yyyymm else ""
     start_month = _calc_months_back(yyyymm, 0) if yyyymm else ""
@@ -196,14 +213,15 @@ def _build_bad_debt_sql(query_template: str, params: dict) -> str:
         sql = sql.replace("'%{가맹점명}%'", "'{가맹점명}'")
     sql = sql.replace("{가맹점명}", merchant)
     sql = sql.replace("{기준년월}", yyyymm)
+    sql = sql.replace("{기준년}", yyyymm[:4])
     sql = sql.replace("{월초년월}", prev_month)
     sql = sql.replace("{시작년월}", start_month)
+    sql = sql.replace("{충당금차주구분코드}", BAD_DEBT_BORROWER_CODE)
     partition_replacements = {
         "{partition_tmdaa5d01_기준년월}": _partition_and("tmdaa5d01", yyyymm),
         "{partition_tbmewcm94_월초년월}": _partition_and("tbmewcm94", prev_month),
         "{partition_tbmewcm94_기준년월}": _partition_and("tbmewcm94", yyyymm),
-        "{partition_tbdaadt01_기준년월}": _partition_and("tbdaadt01", yyyymm, alias="a"),
-        "{partition_tbmaisd06_기간}": _partition_and("tbmaisd06", start_month, yyyymm),
+        "{partition_tbmaisd06_기간}": _partition_and("tbmaisd06", start_month, yyyymm, alias="d"),
     }
     for placeholder, condition in partition_replacements.items():
         sql = sql.replace(placeholder, condition)
@@ -211,6 +229,9 @@ def _build_bad_debt_sql(query_template: str, params: dict) -> str:
     # 기본 설정(card_system)이면 변화 없음, 다른 스키마면 교체, 빈 스키마면 prefix 제거.
     if DB_SCHEMA != "card_system":
         sql = sql.replace("card_system.", DB_SCHEMA_PREFIX)
+    expected_filter = f"충당금차주구분코드 = '{BAD_DEBT_BORROWER_CODE}'"
+    if "tbmewcm94" in sql and expected_filter not in sql:
+        raise ValueError(f"대손충당금 차주구분 필터는 {expected_filter}로 고정되어야 합니다.")
     return sql
 
 
@@ -376,6 +397,20 @@ def _tool_fn_대손비용률(params: dict) -> dict:
 
     combined_sql = "\n\n".join(all_sqls)
 
+    if all_errors:
+        return {
+            "is_complete": True,
+            "sql": combined_sql,
+            "columns": [],
+            "rows": [],
+            "answer": (
+                f"'{merchant}' 기업의 {yyyymm} 기준 대손비용률 분석을 중단했습니다.\n"
+                "일부 조회가 실패하여 불완전한 결과와 엑셀 파일은 생성하지 않았습니다.\n\n"
+                "오류 정보:\n" + "\n".join(all_errors)
+            ),
+            "excel_path": "",
+        }
+
     if all(len(r[1]) == 0 for r in query_results.values()):
         return {
             "is_complete": True,
@@ -385,7 +420,6 @@ def _tool_fn_대손비용률(params: dict) -> dict:
             "answer": (
                 f"'{merchant}' 기업의 {yyyymm} 기준 대손비용률 데이터가 조회되지 않았습니다.\n"
                 f"기업(가맹점)명이나 기간을 확인해주세요."
-                + (f"\n\n오류 정보:\n" + "\n".join(all_errors) if all_errors else "")
             ),
             "excel_path": "",
         }

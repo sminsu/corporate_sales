@@ -85,7 +85,7 @@ corporate-sales/
 
 - Python Tool은 `대손비용률_분석`만 유지합니다. 대손비용률과 보정계수 반영 대손율을 계산하고 Excel 결과를 생성합니다.
 - schema에 있던 verified query와 SQL 생성 템플릿은 `text2sql_agent/tools/sql_verified_queries.yaml`에서 한 곳에 관리합니다.
-- 런타임은 semantic schema의 물리 테이블 30개(정의서 28개, 호환 리스크 2개)에 맞는 쿼리만 활성화합니다. 관리기업 범위는 semantic table로 등록하지 않고 `관리기업목록` 요청 파라미터에서 실행 시 VALUES CTE로 생성합니다. 현재 스키마에 없는 물리 테이블을 참조하는 항목은 `disabled_verified_queries`로 분리되어 모델 매칭·실행 대상에서 제외됩니다.
+- 런타임은 semantic schema의 물리 테이블 31개(기존 정의서 30개 + 월 기업고객 스냅샷 1개)에 맞는 쿼리만 활성화합니다. 관리기업 범위는 semantic table로 등록하지 않고 `관리기업목록` 요청 파라미터에서 실행 시 VALUES CTE로 생성합니다. 현재 스키마에 없는 물리 테이블을 참조하는 항목은 `disabled_verified_queries`로 분리되어 모델 매칭·실행 대상에서 제외됩니다.
 - 다른 verified query 파일을 쓰려면 `VERIFIED_QUERY_FILE_PATH`를 지정하고, 배포 전에 `python scripts/run_quality_eval.py`로 테이블 정합성을 확인합니다.
 
 ### 관리기업 목록 파라미터 입력
@@ -95,7 +95,7 @@ corporate-sales/
 
 - 사업자등록번호를 쉼표 또는 줄바꿈으로 직접 입력합니다.
 - 하이픈이 포함된 10자리 번호도 입력할 수 있습니다.
-- 질문창에 이어서 입력하거나 필수 파라미터 팝업의 `관리기업목록` 입력란을 사용합니다.
+- 작업 흐름 아래에 표시되는 기본값을 확인하거나 수정한 뒤 `계속`을 누릅니다.
 
 입력한 값은 하이픈 제거·10자리 형식 검증·중복 제거 후 최대 5,000개까지 요청 파라미터로 전달합니다.
 검증된 값은 아래처럼 현재 Athena SQL의 `VALUES` CTE로만 확장되고
@@ -188,11 +188,25 @@ KBCARD_CONFIG_PATH=config/agent.example.yaml
 AWS_BEARER_TOKEN_BEDROCK=...
 # 로컬 vLLM을 쓸 때만 필요 (Bedrock 경로에서는 사용 안 함).
 LLM_API_KEY=EMPTY
-KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
 
-# ECS/ALB 운영 시 웹 세션/메시지/후속질문 결과 저장
+# 업무 데이터 조회는 Athena
+DB_BACKEND=athena
+ATHENA_REGION=ap-northeast-2
+ATHENA_WORKGROUP=primary
+ATHENA_DATABASE=card_system
+ATHENA_CATALOG=AwsDataCatalog
+
+# ECS/ALB 운영 시 웹 세션/메시지/후속질문 결과는 PostgreSQL에 저장
 WEBAPP_SESSION_STORE=postgres
-WEBAPP_POSTGRES_DSN="host=session-db.xxxx.ap-northeast-2.rds.amazonaws.com port=5432 dbname=text2sql user=text2sql_app password=..."
+KBCARD_POSTGRES_SECRET_ID=keyscr-aihub-dev-ane2-agentifo
+AWS_REGION=ap-northeast-2
+WEBAPP_POSTGRES_SCHEMA=corporate_sales
+# 현재 PostgreSQL 계정에 DELETE 권한이 없으면 false. 권한 부여 후 true로 전환
+WEBAPP_POSTGRES_DELETE_ENABLED=false
+
+# 운영 로그는 DB에 저장하지 않고 stdout JSONL로 출력
+KBCARD_LOG_LEVEL=INFO
+KBCARD_LOG_FORMAT=jsonl
 # 선택: PostgreSQL이 원본이고 Redis는 result/file token 보조 캐시입니다.
 WEBAPP_REDIS_URL="redis://redis.xxxx.cache.amazonaws.com:6379/0"
 
@@ -210,31 +224,36 @@ WEBAPP_SESSION_RETENTION_DAYS=60
 ### 로깅
 
 `config/agent.example.yaml`의 `logger` 섹션은 `kbcard-agent-common`의 `KBCardLogger.from_config(...)`로 읽힙니다.
-기본값은 stdout pretty 출력이며, 파일 로그가 필요하면 YAML 또는 환경 변수로 바꿉니다.
+기본 출력 위치는 stdout입니다. ECS 운영에서는 stdout을 유지하고 JSONL 포맷만 지정하면
+컨테이너 로그 드라이버를 통해 CloudWatch로 전달할 수 있습니다.
 
 ```bash
 KBCARD_LOG_LEVEL=INFO
-KBCARD_LOG_FORMAT=pretty      # stdout 포맷: pretty | jsonl
-KBCARD_LOG_OUTPUT=both        # stdout | file | both
-KBCARD_LOG_FILE_PATH=logs/text2sql-agent.jsonl
-KBCARD_LOG_FILE_MAX_BYTES=10485760
-KBCARD_LOG_FILE_BACKUP_COUNT=5
+KBCARD_LOG_FORMAT=jsonl
 ```
 
-파일 출력은 항상 JSONL이며, `max_bytes`를 넘으면 `backup_count`만큼 롤링됩니다.
+PostgreSQL에는 운영 로그를 적재하지 않습니다.
 
 ### 웹 세션 저장소 (ECS/ALB 권장)
 
 브라우저 UI의 멀티턴 상태는 FastAPI worker 메모리가 아니라 저장소에 보관합니다. 운영에서는
-`WEBAPP_SESSION_STORE=postgres`와 `WEBAPP_POSTGRES_DSN`을 지정하세요. 앱이 시작 후 첫 요청에서
-다음 테이블을 `CREATE TABLE IF NOT EXISTS`로 자동 준비합니다.
+`WEBAPP_SESSION_STORE=postgres`와 `KBCARD_POSTGRES_SECRET_ID`를 지정하세요. Secret은
+`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`와 선택 항목인
+`POSTGRES_DB`를 JSON 키로 포함해야 합니다. `corporate_sales` 스키마와 다음 테이블은 배포 전에
+미리 준비해야 하며, 애플리케이션은 스키마나 테이블을 생성하지 않습니다.
+
+`WEBAPP_POSTGRES_DELETE_ENABLED=false`이면 PostgreSQL에는 `DELETE`를 실행하지 않습니다. 세션 삭제 버튼은
+해당 브라우저의 목록에서만 세션을 숨기며 DB 행은 유지합니다. 권한 부여 후 `true`로 바꾸면 숨긴 세션이
+다시 표시되고 실제 삭제를 사용할 수 있습니다.
 
 - `webapp_sessions`: 사용자별 대화방, 마지막 결과, 누락 파라미터 continuation
 - `webapp_messages`: user/assistant 메시지 본문과 응답 payload
 - `webapp_results`: 후속질문/export에 필요한 result payload
 - `webapp_files`: 다운로드 token과 실제 파일 경로
 
-`WEBAPP_POSTGRES_DSN`이 없으면 `KBCARD_POSTGRES_DSN`, `DATABASE_URL`, `DB_DSN` 등을 재사용합니다.
+명시적인 DSN을 사용해야 하는 환경에서는 `WEBAPP_POSTGRES_DSN`을 지정할 수 있습니다. 이 값이 없으면
+Secret의 개별 PostgreSQL 접속 항목을 사용하며, `KBCARD_POSTGRES_DSN`, `DATABASE_URL`, `DB_DSN`도
+호환성을 위해 우선순위가 높은 명시적 DSN으로 인식합니다.
 업무 조회 DB를 읽기 전용 계정으로 운영한다면 세션 저장용 RDS/스키마와 쓰기 가능한 계정을 별도로 두는 편이 안전합니다.
 Redis는 선택 사항이며 `WEBAPP_REDIS_URL`을 지정하면 result/file token을 TTL 캐시하지만, 원본은 계속 PostgreSQL입니다.
 저장소는 무한 누적하지 않고 다음 보존 정책을 적용합니다. `0`을 지정하면 해당 제한만 끕니다.
@@ -268,6 +287,17 @@ ATHENA_DATABASE=card_system
 ATHENA_CATALOG=AwsDataCatalog
 # ATHENA_PROFILE=your-aws-profile     # 선택: 특정 AWS 프로필 사용 시
 # ATHENA_ENDPOINT_URL=https://vpce-xxxx.athena.ap-northeast-2.vpce.amazonaws.com  # 선택: VPC 엔드포인트
+
+# 웹 세션/대화 이력은 Secrets Manager의 PostgreSQL 접속 정보로 별도 저장
+WEBAPP_SESSION_STORE=postgres
+KBCARD_POSTGRES_SECRET_ID=keyscr-aihub-dev-ane2-agentifo
+AWS_REGION=ap-northeast-2
+WEBAPP_POSTGRES_SCHEMA=corporate_sales
+WEBAPP_POSTGRES_DELETE_ENABLED=false
+
+# 운영 로그는 stdout JSONL
+KBCARD_LOG_LEVEL=INFO
+KBCARD_LOG_FORMAT=jsonl
 ```
 
 Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명 체인**(환경변수 `AWS_ACCESS_KEY_ID`/
@@ -366,7 +396,8 @@ athena_partition:
 
 회사 Athena DDL에서 파티션 키가 `daty`라면 `day` 대신 `name: daty`로 적으면 됩니다.
 
-기본 schema는 `semantic_layer.yaml`입니다. `테이블 내용 예시_001.xlsx`의 28개 테이블·2,009개 컬럼과
+기본 schema는 `semantic_layer.yaml`입니다. `테이블 내용 예시_001.xlsx`의 30개 테이블·2,061개 컬럼과
+`예시.xlsx`의 `tmdaa1d12` 월 스냅샷 79개 컬럼(`tbdaaat18`은 기존 정의 교차 검증)을 합쳐 총 31개 테이블·2,140개 원천 컬럼으로 구성합니다.
 `athena_text2sql_reference.xlsx`의 기본 9개·추가 3개 질의를 기준으로 기업영업 semantic contract를 구성하며,
 실행용 Athena VQ는 `text2sql_agent/tools/sql_verified_queries.yaml`에서 관리합니다.
 다른 schema를 쓰려면 다음 환경 변수를 지정하면 됩니다.
@@ -498,10 +529,11 @@ VERIFIED_QUERY_RULE_MATCH_MARGIN=2
 1. 사용자가 웹 UI에서 질문을 입력합니다.
 2. `web_service.py`가 요청을 받아 LangGraph 실행을 시작합니다.
 3. `workflow.py`가 질문을 `need_sql`, `direct`, `reject` 중 하나로 분류합니다.
-4. SQL이 필요한 질문은 도메인 라우팅 후 capability router에서 Tool, verified query, 자동 SQL 생성 경로 중 하나로 진행합니다.
-5. 생성된 SQL은 `schema.py`의 검증과 `db.py`의 안전 실행 로직을 거칩니다.
-6. 조회 결과는 LLM을 통해 표/요약 중심 답변으로 변환됩니다.
-7. 사용자가 export를 요청하면 `exports.py`가 Word/Excel/TXT 파일을 `reports/`에 생성합니다.
+4. SQL이 필요한 최초 질문은 원문을 보존한 채 내부 검색용 질의로 정제합니다. 정제 실패 시 원문으로 자동 폴백합니다.
+5. 원문과 정제문으로 도메인 라우팅 후 capability router에서 Tool, verified query, 자동 SQL 생성 경로 중 하나로 진행합니다.
+6. 생성된 SQL은 `schema.py`의 검증과 `db.py`의 안전 실행 로직을 거칩니다.
+7. 조회 결과는 LLM을 통해 표/요약 중심 답변으로 변환됩니다.
+8. 사용자가 export를 요청하면 `exports.py`가 Word/Excel/TXT 파일을 `reports/`에 생성합니다.
 
 ## 소형 모델 대응과 품질 검증
 
@@ -521,10 +553,22 @@ Gemma 계열이나 gpt-oss 20B처럼 지시 이행력이 낮은 모델에서도 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 pytest -q
 PYTHONDONTWRITEBYTECODE=1 python scripts/run_quality_eval.py
+PYTHONDONTWRITEBYTECODE=1 python scripts/run_semantic_golden_eval.py
 ```
 
 품질 계약은 noisy JSON/SQL 파싱, 후속 질문 라우팅, 자연어 파라미터, 다중 문장·변경 SQL 차단,
 재시도 경로, semantic join 및 verified-query 테이블 정합성을 검사합니다.
+시맨틱 골든셋 평가는 1,000건을 현재 SSOT와 대조하고 `reports/semantic-golden-eval.{json,md}`에 상세 결과를 생성합니다.
+
+실제 LLM·DB 에이전트 경로는 먼저 일부 케이스로 확인한 뒤 저장된 결과부터 이어서 실행합니다.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python scripts/run_semantic_golden_live.py --limit 10
+PYTHONDONTWRITEBYTECODE=1 python scripts/run_semantic_golden_live.py
+```
+
+케이스별 응답은 `reports/semantic-golden-live-results.jsonl`, 저장·오류 요약은 `reports/semantic-golden-live-summary.md`에 생성됩니다.
+추가 파라미터가 필요하면 골든 케이스의 기준일에 맞춘 테스트 기본값을 자동 주입해 같은 케이스를 이어서 실행하며, 적용값과 횟수도 결과에 저장합니다.
 
 ## 출력 파일
 

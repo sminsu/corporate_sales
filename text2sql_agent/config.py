@@ -1,11 +1,13 @@
 """Runtime configuration for the Text2SQL agent.
 
 LLM and embedding settings come from the kbcard-agent-common YAML (agent config +
-model registry) with optional environment-variable overrides. Secrets stay in the
-environment; endpoints and model defaults live in the YAML. The common SDK is the
-single source of truth for inference and embedding — there is no raw HTTP fallback.
+model registry) with optional environment-variable overrides. Secrets come from the
+environment or AWS Secrets Manager; endpoints and model defaults live in the YAML.
+The common SDK is the single source of truth for inference and embedding — there is
+no raw HTTP fallback.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -15,6 +17,12 @@ from kbcard_agent_common.config import KBCardConfig
 from kbcard_agent_common.llm import ModelRegistry
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+
+# Keep the browser payload small while allowing complete data exports.
+DISPLAY_ROW_LIMIT = 100
+DEFAULT_QUERY_ROW_LIMIT = 1_000_000
+MAX_QUERY_ROW_LIMIT = 1_000_000
+EXPORT_QUERY_TIMEOUT_MS = 300_000
 
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(BASE_DIR / ".env.local", override=True)
@@ -121,7 +129,9 @@ EMBED_API_KEY = _clean_api_key(
 EMBED_TIMEOUT = float(_env("EMBED_TIMEOUT", default=str(_or(_EMBED.timeout if _EMBED else None, 60))))
 EMBED_BATCH_SIZE = max(1, int(_env("EMBED_BATCH_SIZE", "EMBEDDING_BATCH_SIZE", default="10")))
 
-EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.75"))
+# README의 "라우팅 정밀도" 권장값과 동일한 정밀도 우선 기본값. 낮추면 verified query
+# 오탐(비슷하지만 다른 의도 매칭)이 늘어나므로 recall이 필요할 때만 명시적으로 낮춘다.
+EMBED_MATCH_THRESHOLD = float(os.getenv("EMBED_MATCH_THRESHOLD", "0.86"))
 ENABLE_EMBEDDING_PRECOMPUTE = _env_bool("ENABLE_EMBEDDING_PRECOMPUTE", False)
 ENABLE_VERIFIED_QUERY_MATCHING = _env_bool("ENABLE_VERIFIED_QUERY_MATCHING", True)
 ENABLE_VERIFIED_QUERY_LLM_FALLBACK = _env_bool("ENABLE_VERIFIED_QUERY_LLM_FALLBACK", False)
@@ -140,10 +150,10 @@ VERIFIED_QUERY_RULE_MATCH_MARGIN = int(os.getenv("VERIFIED_QUERY_RULE_MATCH_MARG
 FOLLOWUP_SUGGESTION_MODE = _env("WEBAPP_FOLLOWUP_SUGGESTION_MODE", "FOLLOWUP_SUGGESTION_MODE", default="static").strip().lower()
 if FOLLOWUP_SUGGESTION_MODE not in {"static", "llm", "auto"}:
     FOLLOWUP_SUGGESTION_MODE = "static"
-FOLLOWUP_SUGGESTION_MIN_COUNT = max(1, min(5, _env_int("WEBAPP_FOLLOWUP_SUGGESTION_MIN_COUNT", "FOLLOWUP_SUGGESTION_MIN_COUNT", default=4)))
+FOLLOWUP_SUGGESTION_MIN_COUNT = max(1, min(3, _env_int("WEBAPP_FOLLOWUP_SUGGESTION_MIN_COUNT", "FOLLOWUP_SUGGESTION_MIN_COUNT", default=3)))
 FOLLOWUP_SUGGESTION_MAX_COUNT = max(
     FOLLOWUP_SUGGESTION_MIN_COUNT,
-    min(5, _env_int("WEBAPP_FOLLOWUP_SUGGESTION_MAX_COUNT", "FOLLOWUP_SUGGESTION_MAX_COUNT", default=5)),
+    min(3, _env_int("WEBAPP_FOLLOWUP_SUGGESTION_MAX_COUNT", "FOLLOWUP_SUGGESTION_MAX_COUNT", default=3)),
 )
 FOLLOWUP_SUGGESTION_ROW_LIMIT = max(1, min(50, _env_int("WEBAPP_FOLLOWUP_SUGGESTION_ROW_LIMIT", "FOLLOWUP_SUGGESTION_ROW_LIMIT", default=20)))
 
@@ -159,17 +169,56 @@ AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=((_AGENT.service_name i
 # ---------------------------------------------------------------------------
 # "postgres" (기본) 또는 "athena". execute_sql이 이 값으로 실행 백엔드를 분기한다.
 DB_BACKEND = _env("DB_BACKEND", default="postgres").strip().lower()
+SESSION_STORE_BACKEND = _env("WEBAPP_SESSION_STORE", "SESSION_STORE", default="auto").strip().lower()
 
 # ---------------------------------------------------------------------------
 # PostgreSQL connection
 # ---------------------------------------------------------------------------
 DB_DSN_ENV = _env("KBCARD_POSTGRES_DSN_ENV", "DB_DSN_ENV", default="KBCARD_POSTGRES_DSN")
 DB_DSN = _env("DATABASE_URL", "DB_DSN", "POSTGRES_DSN", DB_DSN_ENV, default="")
-DB_HOST = _env("DB_HOST", default="localhost")
-DB_PORT = int(_env("DB_PORT", default="5432"))
-DB_NAME = _env("DB_NAME", default="postgres")
-DB_USER = _env("DB_USER", default=os.getenv("USER", "postgres"))
-DB_PASSWORD = _env("DB_PASSWORD", default="")
+DB_DSN_ERROR = ""
+DB_DSN_SOURCE = "environment" if DB_DSN else "components"
+_POSTGRES_SECRET: dict[str, str] = {}
+if not DB_DSN and (DB_BACKEND == "postgres" or SESSION_STORE_BACKEND == "postgres"):
+    secret_id = _env(
+        "KBCARD_POSTGRES_SECRET_ID",
+        default="keyscr-aihub-dev-ane2-agentifo",
+    )
+    if secret_id:
+        try:
+            import boto3
+
+            secret_region = _env("AWS_REGION", "AWS_DEFAULT_REGION", default="ap-northeast-2")
+            session = boto3.session.Session()
+            client = session.client(service_name="secretsmanager", region_name=secret_region)
+            secret_string = client.get_secret_value(SecretId=secret_id).get("SecretString")
+            secret = json.loads(secret_string or "")
+            required_keys = ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_PASSWORD")
+            if not isinstance(secret, dict) or any(not str(secret.get(key, "")).strip() for key in required_keys):
+                raise ValueError("missing required PostgreSQL connection value")
+            int(str(secret["POSTGRES_PORT"]))
+            _POSTGRES_SECRET = {key: str(value) for key, value in secret.items()}
+            DB_DSN_SOURCE = "secrets_manager"
+        except Exception as exc:
+            error = getattr(exc, "response", {}).get("Error", {})
+            DB_DSN_ERROR = str(error.get("Code") or type(exc).__name__)
+DB_HOST = _env(
+    "DB_HOST", "POSTGRES_HOST", default=_POSTGRES_SECRET.get("POSTGRES_HOST", "localhost")
+)
+DB_PORT = int(
+    _env("DB_PORT", "POSTGRES_PORT", default=_POSTGRES_SECRET.get("POSTGRES_PORT", "5432"))
+)
+DB_NAME = _env(
+    "DB_NAME", "POSTGRES_DB", default=_POSTGRES_SECRET.get("POSTGRES_DB", "postgres")
+)
+DB_USER = _env(
+    "DB_USER",
+    "POSTGRES_USER",
+    default=_POSTGRES_SECRET.get("POSTGRES_USER", os.getenv("USER", "postgres")),
+)
+DB_PASSWORD = _env(
+    "DB_PASSWORD", "POSTGRES_PASSWORD", default=_POSTGRES_SECRET.get("POSTGRES_PASSWORD", "")
+)
 DB_POOL_MAX = int(_env("DB_POOL_MAX", default="10"))
 
 # ---------------------------------------------------------------------------
