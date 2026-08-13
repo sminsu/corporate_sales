@@ -1,4 +1,6 @@
 from copy import deepcopy
+from datetime import date, timedelta
+from unittest.mock import patch
 
 from scripts.v2_build.build_semantic_layer_v2 import (
     apply_accumulation_policies,
@@ -182,18 +184,32 @@ def test_build_sql_contract_describes_current_and_archive_axes_separately() -> N
 
 
 def test_live_period_wording_keeps_current_snapshot_but_old_as_of_month_archives() -> None:
+    """현재월·D-1 은 라이브 스냅샷, 지난 월은 월별 아카이브로 간다.
+
+    날짜를 박아 두면 자정을 넘길 때 기대값이 어긋난다("2026-08-11 현재" 는 8/12
+    에만 D-1 이다). 기준일을 고정하고 거기서 상대적으로 계산한다.
+    """
     contract = next(
         item
         for item in schema.SCHEMA["semantic_query_contracts"]
         if item["name"] == "corporate_limit_status_at_month"
     )
 
-    assert source_tables_for_question(contract, "2026년 8월 현재 기업 한도") == [
-        "tbdaa1d12"
-    ]
-    assert source_tables_for_question(contract, "2026-08-11 현재 기업 한도") == [
-        "tbdaa1d12"
-    ]
-    assert source_tables_for_question(contract, "2026년 4월 현재 기업 한도") == [
-        "tmdaa1d12"
-    ]
+    today = date(2026, 8, 12)
+    previous_day = today - timedelta(days=1)
+    past_month = date(today.year, today.month, 1) - timedelta(days=120)
+
+    with patch.object(schema, "kst_today", return_value=today):
+        current_month = source_tables_for_question(
+            contract, f"{today.year}년 {today.month}월 현재 기업 한도"
+        )
+        d_minus_one = source_tables_for_question(
+            contract, f"{previous_day:%Y-%m-%d} 현재 기업 한도"
+        )
+        archived = source_tables_for_question(
+            contract, f"{past_month.year}년 {past_month.month}월 현재 기업 한도"
+        )
+
+    assert current_month == ["tbdaa1d12"]
+    assert d_minus_one == ["tbdaa1d12"]
+    assert archived == ["tmdaa1d12"]

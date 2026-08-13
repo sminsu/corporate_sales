@@ -5339,6 +5339,19 @@ def _monthly_archive_join_issues(sql: str) -> list[str]:
     return []
 
 
+_MASTER_TABLE_KINDS = frozenset(
+    {"master", "code_master", "effective_dated_master", "effective_dated_code_master"}
+)
+
+
+def _is_master_table(table_name: str) -> bool:
+    """Whether the table's grain carries no time axis."""
+    for table in SCHEMA.get("tables", []):
+        if str(table.get("name") or "").lower() == str(table_name or "").lower():
+            return str(table.get("table_kind") or "") in _MASTER_TABLE_KINDS
+    return False
+
+
 def _availability_policy_issues(
     question: str,
     sql: str,
@@ -5443,7 +5456,13 @@ def _availability_policy_issues(
                 )
             continue
 
+        # 마스터는 grain 에 시간 축이 없다(tbdaadt01 은 "가맹점번호 1건"). 적재가
+        # 일별로 돈다는 이유로 기간 조건을 요구하면 "도미노피자 가맹점 기본 정보"
+        # 같은 조회까지 막힌다. 적재 주기는 신선도이지 조회 조건이 아니다.
+        # 다만 질문이 특정 일자를 짚었다면 그 일자는 적재 축으로 걸러야 한다.
         if has_requested_period and cadence in {"daily", "monthly", "yearly"}:
+            if _is_master_table(table_name) and not _extract_period_by_rule(question)[2]:
+                continue
             if not _has_table_axis_filter(sql, table_name, column):
                 cadence_label = {
                     "daily": "일별",

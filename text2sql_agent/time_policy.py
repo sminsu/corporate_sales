@@ -80,11 +80,15 @@ TABLE_ACCUMULATION_POLICIES: dict[str, dict[str, object]] = {
         "query_time_dimension": "기준년월",
         "format": "YYYYMM",
     },
+    # available_days 를 두지 않는다. 적재가 최근 N일 단위로 돈다는 것과, 조회할 때
+    # 그 창을 조건으로 걸어야 한다는 것은 다른 이야기다. 이 값이 있으면
+    # _availability_policy_issues() 가 tbdaadt01 을 쓰는 모든 SQL에
+    # "실적기준년월일 기간 조건이 필요합니다" 를 붙여, 가맹점 마스터 조회
+    # ("도미노피자 가맹점 기본 정보")까지 기간 필터를 강요했다.
     "tbdaadt01": {
         "cadence": "daily",
         "query_time_dimension": "실적기준년월일",
         "format": "YYYYMMDD",
-        "available_days": 10,
         "historical_source": {
             "table": "tmdaa5d01",
             "query_time_dimension": "기준년월",

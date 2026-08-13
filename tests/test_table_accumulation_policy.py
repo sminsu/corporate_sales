@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from copy import deepcopy
 from datetime import date
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from scripts.v2_build.build_semantic_layer_v2 import (
     apply_accumulation_policies,
     apply_previous_day_semantic_overrides,
 )
-from text2sql_agent import schema, workflow
+from text2sql_agent import schema, time_policy, workflow
 from text2sql_agent.tools.sql_builders import _vq_sql_가맹점카드소지현황
 from text2sql_agent.time_policy import (
     TABLE_ACCUMULATION_POLICIES,
@@ -19,6 +20,37 @@ from text2sql_agent.time_policy import (
     recent_window_ymd,
 )
 import web_service
+
+
+# 전일(D-1) 계약을 검증하는 테스트는 오늘 날짜에 의존한다. 날짜를 고정하지 않으면
+# 자정을 넘길 때마다 기대값이 어긋난다(실제로 8/12 → 8/13 에 3건이 깨졌다).
+#
+# 시계가 한 곳이 아닌 게 함정이다. previous_day_ymd() 는 time_policy.kst_today 를
+# 부르고, workflow·schema 는 각자 import 한 이름을 부른다. 한쪽만 patch 하면 나머지가
+# 실제 날짜로 새어 들어와 테스트가 "왜 통과하는지 모르게" 통과하거나 깨진다.
+FROZEN_TODAY = date(2026, 8, 12)
+FROZEN_PREVIOUS_DAY = "20260811"      # FROZEN_TODAY 의 D-1
+FROZEN_TODAY_YMD = "20260812"
+
+
+@contextlib.contextmanager
+def frozen_clock(today: date = FROZEN_TODAY):
+    """모든 kst_today 바인딩을 한 날짜로 묶는다."""
+    with (
+        patch.object(time_policy, "kst_today", return_value=today),
+        patch.object(workflow, "kst_today", return_value=today),
+        patch.object(schema, "kst_today", return_value=today),
+    ):
+        yield today
+
+
+def test_frozen_clock_covers_every_kst_today_binding() -> None:
+    """헬퍼가 시계를 하나라도 놓치면 아래 테스트들이 조용히 날짜에 의존하게 된다."""
+    with frozen_clock():
+        assert time_policy.kst_today() == FROZEN_TODAY
+        assert workflow.kst_today() == FROZEN_TODAY
+        assert schema.kst_today() == FROZEN_TODAY
+        assert previous_day_ymd() == FROZEN_PREVIOUS_DAY
 
 
 def _assert_previous_day_semantics(document: dict) -> None:
@@ -176,11 +208,12 @@ def test_pure_historical_corporate_customer_sql_routes_to_monthly_source() -> No
 
 
 def test_mixed_current_and_history_routes_only_the_historical_occurrence() -> None:
-    sql = """
+    # '20260811' 이 "현재 스냅샷"으로 인식되려면 그 날이 D-1 이어야 한다.
+    sql = f"""
     WITH current_snapshot AS (
       SELECT c."고객식별자"
       FROM card_system.tbdaa1d12 c
-      WHERE c."기준년월일" = '20260811'
+      WHERE c."기준년월일" = '{FROZEN_PREVIOUS_DAY}'
     ),
     historical_usage AS (
       SELECT h."고객식별자", h."금월신용카드이용금액"
@@ -193,13 +226,14 @@ def test_mixed_current_and_history_routes_only_the_historical_occurrence() -> No
     GROUP BY c."고객식별자"
     """
 
-    routed = workflow._apply_accumulation_historical_sources(
-        "현재 기업고객의 2025년 상반기 이용금액",
-        sql,
-    )
+    with frozen_clock():
+        routed = workflow._apply_accumulation_historical_sources(
+            "현재 기업고객의 2025년 상반기 이용금액",
+            sql,
+        )
 
     assert "FROM card_system.tbdaa1d12 c" in routed
-    assert 'c."기준년월일" = \'20260811\'' in routed
+    assert f'c."기준년월일" = \'{FROZEN_PREVIOUS_DAY}\'' in routed
     assert "FROM card_system.tmdaa1d12 h" in routed
     assert 'h."기준년월" BETWEEN \'202501\' AND \'202506\'' in routed
     assert 'SUBSTR(h."기준년월일"' not in routed
@@ -212,19 +246,20 @@ def test_kst_previous_day_and_recent_ten_day_bounds_are_inclusive() -> None:
 
 
 def test_previous_day_tables_expose_d_minus_one_without_reference_month() -> None:
-    with patch.object(workflow, "kst_today", return_value=date(2026, 8, 12)):
+    with frozen_clock():
         instruction = workflow._accumulation_policy_instruction(["tbdaa1d12"])
 
-    assert "KST 전일 `20260811`" in instruction
+    assert f"KST 전일 `{FROZEN_PREVIOUS_DAY}`" in instruction
     assert "물리 `기준년월` 컬럼은 없습니다" in instruction
 
 
 def test_table_details_exposes_accumulation_policy_to_sql_generation() -> None:
     details = workflow._table_details(["tbdaadt01"], "최근 가맹점 현황")
     assert "accumulation_policy: 매일" in details
-    assert "최근 10일만 조회 가능" in details
     assert "실적기준년월일" in details
     assert "tmdaa5d01.기준년월(YYYYMM)" in details
+    # 적재 주기를 조회 가능 범위로 바꿔 말하지 않는다. 마스터에는 시간 grain 이 없다.
+    assert "최근 10일만 조회 가능" not in details
 
 
 def test_semantic_build_preserves_recent_daily_archive_metadata() -> None:
@@ -453,21 +488,38 @@ def test_multi_month_monthly_join_requires_matching_load_month(
         assert any("기준년월" in issue for issue in issues)
 
 
-def test_policy_validator_blocks_missing_recent_window_and_wrong_previous_day_column() -> None:
-    recent_sql = 'SELECT COUNT(*) FROM card_system.tbdaadt01 m WHERE m."가맹점상태구분코드" = \'1\''
+def test_policy_validator_blocks_a_previous_day_table_queried_by_month() -> None:
     bad_month_sql = 'SELECT a."기준년월" FROM card_system.tbdaa1d12 a'
 
-    recent_issues = workflow._availability_policy_issues("현재 가맹점 수", recent_sql)
     month_issues = workflow._availability_policy_issues("현재 기업 현황", bad_month_sql)
 
-    assert any("최근 10일" in issue for issue in recent_issues)
     assert any('물리 "기준년월" 컬럼이 없습니다' in issue for issue in month_issues)
 
 
+def test_merchant_master_does_not_require_a_load_window_filter() -> None:
+    """적재가 최근 N일 단위인 것과 조회에 그 창을 걸어야 하는 것은 다른 이야기다.
+
+    tbdaadt01 에 available_days 가 있던 동안에는 "도미노피자 가맹점 기본 정보"
+    같은 마스터 조회까지 실적기준년월일 기간 조건을 강요당했다.
+    """
+    master_sql = (
+        'SELECT COUNT(*) FROM card_system.tbdaadt01 m '
+        'WHERE m."가맹점상태구분코드" = \'1\''
+    )
+
+    assert workflow._availability_policy_issues("현재 가맹점 수", master_sql) == []
+    assert not TABLE_ACCUMULATION_POLICIES["tbdaadt01"].get("available_days")
+
+
 def test_verified_query_execution_checks_accumulation_policy_before_database() -> None:
+    """적재 축 위반은 DB 를 때리기 전에 잡는다.
+
+    예시는 팩트 테이블로 든다. 마스터(tbdaadt01)는 시간 grain 이 없어 기간 조건을
+    요구하지 않으므로 이 검사의 예시가 될 수 없다.
+    """
     state = {
-        "question": "현재 가맹점 수",
-        "final_sql": 'SELECT COUNT(*) FROM card_system.tbdaadt01',
+        "question": "2026년 7월 가맹점 매출",
+        "final_sql": 'SELECT SUM(a."가맹점일시불매출금액") FROM card_system.tmdaa5e11 a',
     }
     with patch.object(workflow, "execute_sql") as execute:
         result = workflow.run_matched_query(state)
@@ -487,12 +539,13 @@ def test_continuation_parser_understands_previous_day() -> None:
 def test_current_date_parameter_uses_previous_day_for_previous_day_sources() -> None:
     specs = [{"name": "기준년월일", "type": "string"}]
 
-    with patch.object(workflow, "kst_today", return_value=date(2026, 8, 12)):
+    with frozen_clock():
+        # 전일 적재 테이블은 D-1, 그 외는 당일.
         assert workflow._extract_params_by_rule("현재 현황", specs, ["tbdaaus01"]) == {
-            "기준년월일": "20260811"
+            "기준년월일": FROZEN_PREVIOUS_DAY
         }
         assert workflow._extract_params_by_rule("현재 현황", specs, ["tddaa3d01"]) == {
-            "기준년월일": "20260812"
+            "기준년월일": FROZEN_TODAY_YMD
         }
 
 

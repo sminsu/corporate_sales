@@ -6759,7 +6759,6 @@ tables:
     cadence: daily
     query_time_dimension: 실적기준년월일
     format: YYYYMMDD
-    available_days: 10
     historical_source:
       table: tmdaa5d01
       query_time_dimension: 기준년월
