@@ -224,3 +224,38 @@ def test_real_multi_statement_sql_is_still_blocked(sql: str) -> None:
 def test_write_sql_is_still_blocked() -> None:
     with pytest.raises(ValueError):
         assert_read_only("DELETE FROM t")
+
+
+# ---------------------------------------------------------------------------
+# 5. 선행 주석이 붙은 SQL을 되묻기로 오판하지 않는다 (v3 실행 실패 26건)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "sql",
+    [
+        '-- 근거 한 줄\nSELECT 1 FROM t',
+        '/* 무이자 구분 컬럼이 없어 전체 할부로 집계한다 */\nSELECT 1 FROM t',
+        '/*\n  여러 줄 근거\n*/ WITH a AS (SELECT 1) SELECT * FROM a',
+        '-- 첫 줄\n/* 둘째 */\nSELECT 1 FROM t',
+    ],
+)
+def test_leading_comments_are_not_treated_as_prose(sql: str) -> None:
+    """output_contract 가 "근거를 주석으로 남긴다" 라고 시키는데 블록 주석을 빠뜨려
+    멀쩡한 SQL이 되묻기로 분류되고 재시도를 한 번 버렸다."""
+    from text2sql_agent.v2.sql_dialect_guard import looks_like_prose, looks_like_sql
+
+    assert looks_like_sql(sql)
+    assert not looks_like_prose(sql)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "해당 컬럼이 스키마에 없습니다. 컬럼명을 알려주시면 SQL을 만들어 드리겠습니다.",
+        "죄송합니다. 요청하신 지표를 만들 수 없습니다.",
+        "",
+    ],
+)
+def test_real_prose_is_still_detected(text: str) -> None:
+    from text2sql_agent.v2.sql_dialect_guard import looks_like_prose
+
+    assert looks_like_prose(text)

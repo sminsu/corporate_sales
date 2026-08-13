@@ -265,7 +265,20 @@ def normalize_sql(sql: str) -> str:
 # 프로즈(자연어 되묻기) 가드
 # ---------------------------------------------------------------------------
 def looks_like_sql(text: str) -> bool:
-    return bool(re.match(r"^\s*(?:--[^\n]*\n\s*)*(SELECT|WITH)\b", str(text or ""), re.IGNORECASE))
+    """선행 주석을 건너뛰고 SELECT/WITH로 시작하는지 본다.
+
+    output_contract 가 "근거를 SQL 주석으로 남긴다" 라고 지시하므로 모델은 실제로
+    맨 앞에 주석을 붙인다. 줄 주석(--)만 허용하고 블록 주석(/* */)을 빠뜨리면
+    멀쩡한 SQL이 되묻기(prose)로 분류돼 재시도를 한 번 버린다. goldenset v3
+    실행 실패 26건 중 14건이 블록 주석으로 시작했다.
+    """
+    return bool(
+        re.match(
+            r"^\s*(?:(?:--[^\n]*|/\*.*?\*/)\s*)*(SELECT|WITH)\b",
+            str(text or ""),
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
 
 
 def looks_like_prose(text: str) -> bool:
