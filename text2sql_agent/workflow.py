@@ -5101,7 +5101,12 @@ def generate_sql(state: Text2SQLState) -> dict:
 10. 질문에 없는 테이블명은 절대 만들지 말고, 위 테이블 상세/Reference/도메인 컨텍스트에 있는 실테이블만 사용.
 11. "신규/가입/등록 고객"은 tbdaaat01.최초등록년월일 기준으로 해석.
 12. "여성 고객"은 성별구분코드 = '2'를 기본값으로 사용.
-13. 상세 목록 조회는 요청 개수가 없으면 LIMIT {DEFAULT_QUERY_ROW_LIMIT}을 적용합니다. 집계 결과는 의미있는 순서로 정렬하고, CTE와 서브쿼리를 포함해 SELECT * 대신 필요한 컬럼만 명시합니다.
+13. 상세 목록 조회는 요청 개수가 없으면 LIMIT {DEFAULT_QUERY_ROW_LIMIT}을 적용합니다. 집계 결과는 의미있는 순서로 정렬하고, CTE와 서브쿼리를 포함해 SELECT * 는 쓰지 않습니다.
+13-1. 요청 지표 하나만 덜렁 내지 말고, 그 값을 읽는 데 필요한 컬럼을 함께 SELECT 합니다. SELECT * 를 쓰라는 뜻이 아니라 아래 네 가지를 빠뜨리지 말라는 뜻입니다.
+    - 기업·가맹점·회원 목록이나 순위면 식별 컬럼을 같이 냅니다. 기업은 고객식별자·사업자등록번호·기업명, 가맹점은 가맹점번호·가맹점명입니다.
+    - "X별"로 집계하면 그 축 컬럼을 SELECT에 남깁니다. 필터로 값이 하나로 고정된 축도 남깁니다.
+    - 비율·평균·증감률은 분자와 분모(또는 비교 대상 두 시점의 값)를 함께 냅니다. 예: 월평균이용금액이면 기간총이용금액과 평균산정월수도 냅니다.
+    - 정렬·필터 기준으로 쓴 지표는 결과에도 포함합니다. "연체원금이 가장 큰"이면 연체원금을 냅니다.
 14. 가맹점명·기업명·상호명·브랜드명 등 이름 필터는 기본적으로 LIKE '%이름%' 부분일치를 사용합니다. 사용자가 "이름 고정", "이름만으로", "정확 일치"를 명시한 경우에만 앞뒤 % 없이 정확히 비교합니다.
 15. 사용자가 N개/N건을 명시하면 최종 결과에 LIMIT N을 적용합니다. 상위/최근/최신/마지막/뒤에서 N은 요청 지표 또는 시간축을 DESC로, 하위 N은 ASC로 정렬한 뒤 LIMIT N을 적용합니다. "최근 N개월"은 행 개수가 아니라 조회 기간입니다.
 16. 읽기 쉬운 alias. 17. 순수 SQL만 반환.
@@ -5702,7 +5707,10 @@ def _markdown_cell(value: object, max_length: int = 80) -> str:
 
 def _deterministic_result_answer(columns: list, rows: list[tuple], implicit_time_basis: str = "") -> str:
     """Render a truthful result summary when the answer model is unavailable."""
-    visible_columns = [str(column) for column in columns[:6]]
+    # 답변 모델이 없을 때의 대체 답변도 질문 커버리지를 보여줘야 한다. 컬럼 6개·
+    # 3행만 내면 "무엇을 조회했는지" 는 알아도 "무엇이 나왔는지" 는 안 보인다.
+    visible_columns = [str(column) for column in columns[:10]]
+    preview_rows = rows[:10]
     lines = ["### 핵심 요약", f"- 조회 결과: {len(rows):,}건"]
     if implicit_time_basis:
         lines.append(f"- 조회 기준: {implicit_time_basis}")
@@ -5717,11 +5725,14 @@ def _deterministic_result_answer(columns: list, rows: list[tuple], implicit_time
                 "| " + " | ".join("---" for _ in visible_columns) + " |",
             ]
         )
-        for row in rows[:3]:
+        for row in preview_rows:
             cells = [row[index] if index < len(row) else None for index in range(len(visible_columns))]
             lines.append("| " + " | ".join(_markdown_cell(value) for value in cells) + " |")
-        if len(rows) > 3:
-            lines.append(f"\n상위 3건을 표시했습니다. 전체 {len(rows):,}건은 결과 표에서 확인할 수 있습니다.")
+        if len(rows) > len(preview_rows):
+            lines.append(
+                f"\n상위 {len(preview_rows)}건을 표시했습니다. "
+                f"전체 {len(rows):,}건은 결과 표에서 확인할 수 있습니다."
+            )
     return "\n".join(lines)
 
 
@@ -5780,7 +5791,7 @@ def generate_answer(state: Text2SQLState) -> dict:
 {implicit_time_basis or "(사용자 질문 또는 SQL에서 별도 기준시점 안내 없음)"}
 
 ## 답변 형식
-아래 형식을 반드시 지키세요. 전체 답변은 10줄 이내로 제한하세요.
+아래 세 절을 모두 채우세요. 전체 답변은 25줄 이내로 씁니다.
 
 ### 핵심 요약
 | 항목 | 값 |
@@ -5789,21 +5800,28 @@ def generate_answer(state: Text2SQLState) -> dict:
 | 비교/순위 | ... |
 | 특이사항 | ... |
 
+### 주요 데이터
+쿼리 결과를 표로 최대 10행까지 보여주세요. 컬럼은 결과에 있는 것을 그대로 쓰고,
+행이 더 있으면 표 아래에 "외 N건"으로 적습니다. 결과가 1행이면 이 절은 생략합니다.
+
 ### 해석
-- 데이터에서 바로 확인되는 내용만 1~2개 bullet로 작성하세요.
+- 데이터에서 바로 확인되는 내용을 2~4개 bullet로 작성하세요.
 
 ## 답변 규칙
-1. 긴 문단을 쓰지 말고 표와 짧은 bullet 중심으로 작성하세요.
+1. 표와 bullet 중심으로 쓰되, 질문이 물은 항목은 하나도 빠뜨리지 마세요.
+   "A와 B를 비교" 면 A와 B를 각각 보여주고, "X별" 이면 X축을 보여줍니다.
 2. 금액은 억원/만원 단위로 변환하세요.
 3. 비율은 %로 표시하세요.
-4. 상위/하위 결과는 가장 중요한 3개까지만 언급하세요.
+4. 상위/하위 결과는 5개까지 언급하고, 나머지는 "주요 데이터" 표에 맡기세요.
 5. 데이터에 없는 원인 추정이나 영업 제안은 쓰지 마세요.
 6. 계산 요약의 row_count, 합계, 평균, 최소, 최대를 우선 활용하세요.
 7. 기준시점 안내가 있으면 핵심 요약 또는 해석에 "조회 기준"으로 반드시 명시하세요.
+8. 결과 컬럼 중 질문과 직접 관련된 것은 요약이나 표에서 최소 한 번은 드러내세요.
 
 답변:"""
     try:
-        answer = _coerce_llm_text(_call_llm(prompt, max_tokens=1200))
+        # 표 10행 + 요약 + 해석을 한글로 담으려면 1200 토큰은 중간에서 끊긴다.
+        answer = _coerce_llm_text(_call_llm(prompt, max_tokens=2000))
     except Exception:
         answer = ""
     return {"answer": answer or fallback_answer}
