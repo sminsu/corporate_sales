@@ -147,6 +147,33 @@ def accumulation_policy_for(table_name: str) -> dict[str, object] | None:
     return TABLE_ACCUMULATION_POLICIES.get(str(table_name).strip().lower())
 
 
+def live_source_for(table_name: str) -> dict[str, object] | None:
+    """Return the D-1 sibling that already holds a monthly table's open month.
+
+    A month-end snapshot only lands once its month closes, so ``tmdaaus01``
+    has no 202608 row on 2026-08-14 while its daily twin ``tbdaaus01`` does.
+    The pair is read back out of ``historical_source`` rather than listed a
+    second time, so registering one new tbd/tmd twin governs both directions.
+    """
+    target = str(table_name).strip().lower()
+    if not target.startswith("tmd"):
+        return None
+    sibling = f"tbd{target[3:]}"
+    policy = TABLE_ACCUMULATION_POLICIES.get(sibling) or {}
+    if policy.get("cadence") != "previous_day":
+        return None
+    historical_source = policy.get("historical_source")
+    if not isinstance(historical_source, Mapping):
+        return None
+    if str(historical_source.get("table") or "").strip().lower() != target:
+        return None
+    return {
+        "table": sibling,
+        "query_time_dimension": policy.get("query_time_dimension"),
+        "format": policy.get("format"),
+    }
+
+
 def kst_today(now: datetime | None = None) -> date:
     """Return today's business date in Korea Standard Time."""
     current = now or datetime.now(KST)

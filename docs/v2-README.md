@@ -17,14 +17,14 @@ v1 소스(`../semantic_layer.yaml`, `../text2sql_agent/`)는 수정하지 않았
 | syntax | 10 | 참고 SQL의 `::FLOAT` 전파, `QUALIFY`, WHERE 안의 윈도함수, `max_tokens` 부족 |
 | group_by | 1 | CROSS JOIN 스칼라를 집계 없이 SELECT |
 
-정답 SQL이 쓰는 컬럼은 **전부 semantic layer 에 있었다**. 스키마가 부족한 게 아니라,
-그 컬럼이 프롬프트까지 전달되지 않은 것이 문제였다.
+당시 정답 SQL이 쓰는 컬럼은 semantic layer에 있었지만, 이후 실제 스키마 대조에서
+평가·JCB 관련 20개 컬럼이 잘못 등록된 것으로 확인되어 제거했다.
 
 자세한 분석: [docs/goldenset-v2-sql-error-analysis.md](docs/goldenset-v2-sql-error-analysis.md)
 
 ## 무엇이 바뀌었나
 
-**semantic_layer.yaml** (v1과 동일 스키마, 드롭인 교체 가능)
+**semantic_layer.yaml** (v1 런타임에 드롭인 교체 가능)
 - `sql_generation_contract.ambiguity_rules` 의 "추가 입력을 요청한다" 삭제 →
   항상 SQL만 내보내는 `output_contract` + 기본값 해석 `resolution_defaults` 로 교체
 - 같은 이름의 컬럼은 테이블을 넘어 동의어를 공유 (107건 전파)
@@ -32,6 +32,7 @@ v1 소스(`../semantic_layer.yaml`, `../text2sql_agent/`)는 수정하지 않았
 - 0811 상세 컬럼 코드북 7종을 같은 이름의 컬럼 44곳에 `value_semantics` 로 적용
 - Athena 방언 규칙에 `QUALIFY`·`expr::type`·윈도함수 WHERE 금지 명시
 - 프롬프트 렌더 한도(12개)를 넘겨 잘리던 규칙 리스트 정리
+- 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거
 
 **sql_verified_queries.yaml** (v1과 동일 스키마)
 - `special_debt_by_asset_quality`: `tmdaaus01` → `tbmaisd06` (오류 22건의 원인)

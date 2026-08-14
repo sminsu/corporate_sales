@@ -71,8 +71,8 @@ def test_source_inventory_matches_every_physical_business_column() -> None:
     assert inventory == {
         "physical_tables": 31,
         "logical_relations": 0,
-        "source_columns": 2140,
-        "queryable_business_columns": 2068,
+        "source_columns": 2120,
+        "queryable_business_columns": 2048,
         "excluded_technical_columns": 72,
     }
     assert len(physical_tables) == inventory["physical_tables"]

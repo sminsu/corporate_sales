@@ -230,13 +230,6 @@
    "v1_synonyms": []
   },
   {
-   "id": "cs-golden-v2-0479",
-   "table": "tbdaaat03",
-   "column": "통합ASS평점",
-   "question": "회원자격별로 현재 기준 평균 통합 ASS 평점을 보여줘",
-   "v1_synonyms": []
-  },
-  {
    "id": "cs-golden-v2-0481",
    "table": "tmdaa3e16",
    "column": "회수방법구분코드",
@@ -269,13 +262,6 @@
    "table": "tbmaisd06",
    "column": "자산건전성분류구분코드",
    "question": "2024년 특수채권편입가지급금을 자산건전성 분류 기준으로 집계해줘",
-   "v1_synonyms": []
-  },
-  {
-   "id": "cs-golden-v2-0544",
-   "table": "tbdaaat03",
-   "column": "통합ASS평점",
-   "question": "현재 기준 카드등급별 평균 통합 ASS 평점을 알려줘",
    "v1_synonyms": []
   },
   {
@@ -1299,13 +1285,6 @@
    "v1_synonyms": []
   },
   {
-   "id": "cs-golden-v2-0454",
-   "table": "tbdaaat03",
-   "column": "통합BSS평점",
-   "question": "현재 기준 회원자격과 CA요율그룹을 교차해서 평균 통합 BSS 평점을 보여줘",
-   "v1_synonyms": []
-  },
-  {
    "id": "cs-golden-v2-0464",
    "table": "tbdaaat03",
    "column": "할부요율그룹구분코드",
@@ -1439,13 +1418,6 @@
    "table": "tmdaa5e11",
    "column": "가맹점할부매출건수",
    "question": "2025년 7월 가맹점매출건수가 전체 평균보다 높은 카드VAN사만 골라줘",
-   "v1_synonyms": []
-  },
-  {
-   "id": "cs-golden-v2-0534",
-   "table": "tbdaaat03",
-   "column": "통합BSS평점",
-   "question": "현재 기준 회원을 평균 통합 BSS 평점 구간별로 나눠서 분포를 보여줘",
    "v1_synonyms": []
   },
   {

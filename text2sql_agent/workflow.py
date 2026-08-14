@@ -25,7 +25,7 @@ from .config import (
     VERIFIED_QUERY_RULE_MATCH_THRESHOLD,
     MAX_QUERY_ROW_LIMIT,
 )
-from .db import execute_sql, prepare_sql_for_backend
+from .db import execute_sql, loaded_period_range, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
 from .managed_scope import ManagedScopeParseError, parse_business_number_list
@@ -48,6 +48,8 @@ from .schema import (
     _adjudicate_domain_with_llm,
     _result_summary,
     _phrase_in_text,
+    _schema_table_index,
+    _extract_cte_names,
     _extract_schema_tables,
     _entry_matches_domain,
     _sql_table_names,
@@ -71,9 +73,11 @@ from .schema import (
 )
 from .state import Text2SQLState
 from .time_policy import (
+    TABLE_ACCUMULATION_POLICIES,
     accumulation_policy_for,
     format_accumulation_policy,
     kst_today,
+    live_source_for,
     previous_day_ymd,
     recent_window_ymd,
 )
@@ -888,6 +892,15 @@ def _accumulation_policy_instruction(table_names: list[str] | None = None) -> st
                 f"      일자 요청도 적재 기준 조건은 `{column}`의 YYYYMM으로 축약합니다. "
                 "업무 발생일은 분석·집계 축으로 쓸 수 있지만 적재 월 조건을 생략하지 않습니다."
             )
+            live_source = live_source_for(name)
+            if live_source:
+                lines.append(
+                    f"      이번 달({_current_ym()})은 아직 적재되지 않았습니다. "
+                    f"이번 달만 물으면 일별 짝 `{live_source['table']}."
+                    f"{live_source['query_time_dimension']}`를 KST 전일 "
+                    f"`{latest_previous_day}` 1건으로 조회하고, 지난 달 이전은 "
+                    f"`{name}.{column}`을 그대로 씁니다."
+                )
         elif cadence == "yearly":
             lines.append(f"      월/일 요청도 적재 기준 조건은 `{column}`의 YYYY로 축약합니다.")
         elif cadence == "previous_day":
@@ -2104,9 +2117,13 @@ def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
     return routed
 
 
+# 짝(tbd↔tmd)은 적재 정책의 historical_source 한 곳에만 적는다. 여기에 표를 또
+# 두면 새 짝을 등록할 때 한쪽만 고쳐 두 방향이 어긋난다.
 _PREVIOUS_DAY_ARCHIVE_TABLES = {
-    "tbdaaus01": "tmdaaus01",
-    "tbdaa1d12": "tmdaa1d12",
+    table: str(policy["historical_source"]["table"])
+    for table, policy in TABLE_ACCUMULATION_POLICIES.items()
+    if policy.get("cadence") == "previous_day"
+    and isinstance(policy.get("historical_source"), dict)
 }
 
 
@@ -2268,9 +2285,143 @@ def _apply_previous_day_historical_sources(question: str, sql: str) -> str:
     return rewritten
 
 
+def _live_month_source_relation(
+    relation: str,
+    live_table: str,
+    day_column: str,
+    day_value: str,
+) -> str:
+    """Expose a D-1 sibling under the monthly snapshot's `기준년월` axis.
+
+    Wrapping instead of swapping column references keeps every position the
+    caller already wrote working — SELECT list, PARTITION BY, join keys — and
+    keeps `기준년월` in the output of a `SELECT *`.
+    """
+    return (
+        f"(SELECT {live_table}.*, "
+        f'SUBSTR({live_table}."{day_column}", 1, 6) AS "기준년월" '
+        f"FROM {relation} {live_table} "
+        f"WHERE {live_table}.\"{day_column}\" = '{day_value}')"
+    )
+
+
+def _live_source_covers_columns(sql: str, source_table: str, live_table: str) -> bool:
+    """Whether the daily twin carries every column this SQL reads.
+
+    The twins are near-identical by design, but not identical — ``tmdaa1d12``
+    owns `소호로지스틱BSS등급구분코드` and ``tbdaa1d12`` does not. Rerouting a
+    query that reads such a column would turn an empty result into a column
+    error, so leave those on the monthly source.
+    """
+    _, schema_columns = _schema_table_index(SCHEMA)
+    monthly_only = schema_columns.get(source_table, set()) - schema_columns.get(live_table, set())
+    # 기준년월은 감싸는 SELECT 가 기준년월일에서 파생해 채운다.
+    monthly_only.discard("기준년월")
+    return not any(
+        re.search(rf'"{re.escape(column)}"', sql or "", re.IGNORECASE)
+        for column in monthly_only
+    )
+
+
+def _route_table_to_live_source(
+    sql: str,
+    source_table: str,
+    live_table: str,
+    day_column: str,
+    day_value: str,
+) -> str:
+    """Replace each monthly relation with its D-1 sibling's latest day."""
+    cte_names = _extract_cte_names(sql)
+    rewritten = sql
+    for match in reversed(list(_SQL_RELATION_RE.finditer(sql))):
+        quoted_table = match.group("quoted_table") is not None
+        table_group = "quoted_table" if quoted_table else "plain_table"
+        if str(match.group(table_group) or "").lower() != source_table:
+            continue
+        schema_name = match.group("quoted_schema") or match.group("plain_schema") or ""
+        if not schema_name and source_table in cte_names:
+            continue
+
+        table_start, table_end = match.span(table_group)
+        relation_start = match.end("kind")
+        relation_end = table_end + 1 if quoted_table else table_end
+        relation = (
+            sql[relation_start:table_start].strip()
+            + live_table
+            + sql[table_end:relation_end]
+        )
+
+        quoted_alias = match.group("quoted_alias") is not None
+        alias_group = "quoted_alias" if quoted_alias else "plain_alias"
+        raw_alias = str(match.group(alias_group) or "")
+        explicit_alias = bool(raw_alias) and raw_alias.lower() not in _SQL_SOURCE_KEYWORDS
+        if not explicit_alias:
+            alias = source_table
+        else:
+            alias = f'"{raw_alias}"' if quoted_alias else raw_alias
+        end = (
+            match.end(alias_group) + (1 if quoted_alias else 0)
+            if explicit_alias
+            else relation_end
+        )
+
+        wrapped = _live_month_source_relation(relation, live_table, day_column, day_value)
+        rewritten = rewritten[:relation_start] + f" {wrapped} {alias}" + rewritten[end:]
+    return rewritten
+
+
+def _apply_current_month_live_sources(
+    sql: str,
+    source_tables: set[str] | None = None,
+) -> str:
+    """Read the open month from the daily sibling of a monthly snapshot.
+
+    `tmdaaus01` 같은 월말요약은 그 달이 닫힌 뒤에야 적재되므로 이번 달
+    `기준년월`로 물으면 빈 결과가 나온다. 같은 달을 이미 들고 있는 일별 짝
+    (`tbdaaus01`)의 최신 가용일 1건으로 돌린다 — 월별 테이블이 들고 있었을
+    "월 최신 스냅샷 1건"과 같은 의미다. 지난 달 이전은 그대로 월별을 쓴다.
+    """
+    latest_day = previous_day_ymd()
+    current_ym = kst_today().strftime("%Y%m")
+    # 매월 1일에는 일별 짝의 최신일도 아직 지난 달이라 돌릴 곳이 없다.
+    if latest_day[:6] != current_ym:
+        return sql
+
+    candidates = _extract_schema_tables(sql)
+    if source_tables is not None:
+        candidates &= source_tables
+    rewritten = sql
+    for source_table in sorted(candidates):
+        live = live_source_for(source_table)
+        day_column = str((live or {}).get("query_time_dimension") or "")
+        if not live or not day_column:
+            continue
+        # 이번 달만 물었을 때만 돌린다. 지난 달이 섞인 기간은 월별이 정답이다.
+        if set(_table_axis_literal_values(rewritten, source_table, "기준년월")) != {current_ym}:
+            continue
+        live_table = str(live["table"])
+        if not _live_source_covers_columns(rewritten, source_table, live_table):
+            continue
+        rewritten = _route_table_to_live_source(
+            rewritten,
+            source_table,
+            live_table,
+            day_column,
+            latest_day,
+        )
+    return rewritten
+
+
 def _apply_accumulation_historical_sources(question: str, sql: str) -> str:
+    # 이번 달 라우팅은 처음부터 월별이던 테이블만 본다. 명시 과거 일자를 월별
+    # 원천으로 돌린 결과("2026-08-10" → tmdaa1d12.기준년월 = '202608')를 이번
+    # 달이라는 이유로 다시 일별 D-1 로 되돌리면 질문한 날짜를 잃는다.
+    monthly_sources = {
+        table for table in _extract_schema_tables(sql) if live_source_for(table)
+    }
     routed = _apply_tbdaadt01_historical_source(question, sql)
-    return _apply_previous_day_historical_sources(question, routed)
+    routed = _apply_previous_day_historical_sources(question, routed)
+    return _apply_current_month_live_sources(routed, monthly_sources)
 
 
 def _extract_merchant_from_question(question: str) -> str:
@@ -3319,8 +3470,12 @@ _RANK_METRIC_ALIASES = (
     ("delinquency_amount", ("총연체원금", "연체원금", "연체 원금", "연체금액", "연체 금액", "채권금액", "채권 금액")),
     ("decline_amount", ("하락금액", "하락 금액", "감소금액", "감소 금액", "감액금액", "감액 금액")),
     ("usage_amount", ("총이용금액", "이용금액", "이용 금액", "이용액", "사용금액", "사용 금액", "사용액")),
-    ("member_count", ("회원수", "회원 수", "고객수", "고객 수", "명수")),
-    ("merchant_count", ("가맹점수", "가맹점 수", "업체수", "업체 수")),
+    # 고객식별자(기업 1곳)와 회원일련번호(카드 계약 1건)는 1:N이라 개수가 다르다.
+    # 한 버킷에 두면 "기업고객 수 상위" 요청에 회원수로 정렬한 SQL이 통과한다.
+    # customer_count 가 먼저 와야 "기업고객수" 가 member_count 로 새지 않는다.
+    ("customer_count", ("기업고객수", "기업고객 수", "법인고객수", "법인고객 수", "고객수", "고객 수", "업체수", "업체 수", "기업수", "기업 수")),
+    ("member_count", ("회원수", "회원 수", "명수")),
+    ("merchant_count", ("가맹점수", "가맹점 수")),
 )
 
 
@@ -5746,6 +5901,22 @@ def _mask_business_numbers_for_llm(value: object) -> str:
     )
 
 
+def _loaded_period_notes(sql: str) -> list[str]:
+    """SQL이 쓴 적재 관리 테이블의 실제 조회 가능 기간을 데이터에서 읽어 온다.
+
+    "왜 없는지"는 요청한 기간이 적재 범위 밖인지 아닌지로 갈린다. 정책표의 주기와
+    서버 시계로는 그 판단을 사용자에게 넘겨줄 수 없다.
+    """
+    notes = []
+    for table in sorted(_extract_schema_tables(sql)):
+        policy = accumulation_policy_for(table)
+        bounds = loaded_period_range(table) if policy else None
+        if bounds:
+            column = policy.get("query_time_dimension")
+            notes.append(f'{table} 조회 가능 기간: "{column}" {bounds[0]} ~ {bounds[1]}')
+    return notes
+
+
 def generate_answer(state: Text2SQLState) -> dict:
     if state.get("answer"):
         return {"answer": state["answer"]}
@@ -5755,10 +5926,11 @@ def generate_answer(state: Text2SQLState) -> dict:
     columns = state.get("query_columns", [])
     rows = state.get("query_rows", [])
     if not rows:
-        lines = ["조회 결과가 0건입니다."]
+        lines = ["해당 데이터가 없습니다. (조회 결과 0건)"]
         basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
         if basis:
             lines.append(f"- 조회 기준: {basis}")
+        lines.extend(f"- {note}" for note in _loaded_period_notes(sql))
         lines.append("- 기간을 넓히거나 이름·업종 등의 검색어를 줄여서 다시 시도해 보세요.")
         return {"answer": "\n".join(lines)}
     implicit_time_basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
@@ -5827,7 +5999,23 @@ def generate_answer(state: Text2SQLState) -> dict:
     return {"answer": answer or fallback_answer}
 
 
+# 적재 범위 밖 기간은 SQL을 고쳐도 결과가 나오지 않는다. "SQL을 잘못 만들었다"와
+# 같은 화면으로 알리면 사용자는 질문을 고쳐야 하는지 기다려야 하는지 알 수 없다.
+_NO_DATA_VALIDATION_RE = re.compile(r"최신 가용일은|범위 밖 일자는 조회할 수 없습니다")
+
+
 def handle_error(state: Text2SQLState) -> dict:
+    validation_result = str(state.get("validation_result") or "")
+    if _NO_DATA_VALIDATION_RE.search(validation_result):
+        sql = state.get("final_sql") or state.get("generated_sql") or ""
+        details = _loaded_period_notes(sql) or [
+            re.sub(r"^.*?적재 주기 위반:\s*", "", validation_result).strip()
+        ]
+        return {
+            "query_error": "",
+            "error_message": "",
+            "answer": "\n".join(["해당 데이터가 없습니다.", *(f"- {line}" for line in details)]),
+        }
     failed_sql = state.get("final_sql") or state.get("generated_sql") or ""
     direct_sql = state.get("question_type") == "direct_sql"
     return {

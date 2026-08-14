@@ -58,7 +58,7 @@ def _vq(name: str) -> dict:
         ("카드등급별로 2025년 6월 30일 기준 할부연체원금을 보여줘", "card_delinquency_by_grade"),
         ("2026년 3월 31일 기준 CA연체원금을 카드등급 기준으로 집계해줘", "card_delinquency_by_grade"),
         ("카드등급별로 현재 기준 유효체크카드수를 보여줘", "card_delinquency_by_grade"),
-        ("카드등급별로 현재 기준 평균 통합 BSS 평점을 보여줘", "card_delinquency_by_grade"),
+        ("카드등급별로 현재 기준 평균 KB카드 CA한도금액을 보여줘", "card_delinquency_by_grade"),
         ("카드등급별로 2026년 1월 금월이용합계건수를 보여줘", "card_delinquency_by_grade"),
         ("2025년 8월 금월취소이용금액을 카드브랜드 기준으로 집계해줘", "card_brand_usage_analysis"),
         ("MCC 업종코드와 업종코드명 목록을 보여줘", "active_merchant_industry_codes"),

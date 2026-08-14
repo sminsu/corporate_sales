@@ -12,7 +12,7 @@ from scripts.v2_build.build_semantic_layer_v2 import (
     apply_accumulation_policies,
     apply_previous_day_semantic_overrides,
 )
-from text2sql_agent import schema, time_policy, workflow
+from text2sql_agent import db, schema, time_policy, workflow
 from text2sql_agent.tools.sql_builders import _vq_sql_가맹점카드소지현황
 from text2sql_agent.time_policy import (
     TABLE_ACCUMULATION_POLICIES,
@@ -188,6 +188,119 @@ def test_current_corporate_customer_snapshot_stays_on_previous_day_source() -> N
     assert "tbdaa1d12" in routed
     assert "tmdaa1d12" not in routed
     assert 'a."기준년월일" = \'20260811\'' in routed
+
+
+def _merchant_month_sql(reference_month: str) -> str:
+    """기업카드 미보유 영업대상 VQ 의 tmdaaus01 축소 CTE 를 그대로 옮긴 것."""
+    return f"""
+    WITH merchant_ranked AS (
+      SELECT a."기준년월", a."기준년월일", a."가맹점번호", a."가맹점사업주체구분코드",
+             a."유효기업신용카드수", a."유효기업체크카드수",
+             ROW_NUMBER() OVER (
+               PARTITION BY a."기준년월", a."가맹점번호"
+               ORDER BY a."기준년월일" DESC
+             ) AS rn
+      FROM card_system.tmdaaus01 a
+      WHERE a."기준년월" = '{reference_month}'
+    )
+    SELECT r."가맹점번호" FROM merchant_ranked r WHERE r.rn = 1
+    """
+
+
+def test_current_month_monthly_snapshot_reads_its_daily_twin() -> None:
+    """월말요약은 달이 닫혀야 적재된다. 이번 달은 일별 짝의 D-1 이 유일한 원천이다."""
+    sql = _merchant_month_sql("202608")
+
+    with frozen_clock():
+        routed = workflow._apply_accumulation_historical_sources(
+            "월 매출액 1억원 이상 법인사업자 중 기업카드 미보유 명단",
+            sql,
+        )
+        # 적재 계약 검증도 통과해야 실행까지 간다.
+        assert workflow._availability_policy_issues("기업카드 미보유 명단", routed, []) == []
+
+    assert "card_system.tmdaaus01" not in routed
+    assert "FROM card_system.tbdaaus01 tbdaaus01" in routed
+    assert f'tbdaaus01."기준년월일" = \'{FROZEN_PREVIOUS_DAY}\'' in routed
+    # 감싸는 방식이라 호출부가 쓰던 축(SELECT·PARTITION BY·WHERE)은 그대로 남는다.
+    assert 'SUBSTR(tbdaaus01."기준년월일", 1, 6) AS "기준년월"' in routed
+    assert 'a."기준년월" = \'202608\'' in routed
+    assert 'PARTITION BY a."기준년월", a."가맹점번호"' in routed
+
+
+@pytest.mark.parametrize(
+    ("label", "reference_month"),
+    [("직전월", "202607"), ("작년 같은 달", "202508")],
+)
+def test_closed_month_keeps_the_monthly_snapshot(label: str, reference_month: str) -> None:
+    sql = _merchant_month_sql(reference_month)
+
+    with frozen_clock():
+        routed = workflow._apply_accumulation_historical_sources("가맹점 명단", sql)
+
+    assert routed == sql, label
+
+
+def test_month_range_spanning_closed_months_keeps_the_monthly_snapshot() -> None:
+    """이번 달이 섞였다고 범위 전체를 하루짜리 스냅샷으로 바꾸면 안 된다."""
+    sql = """
+    SELECT a."가맹점번호"
+    FROM card_system.tmdaaus01 a
+    WHERE a."기준년월" BETWEEN '202601' AND '202608'
+    """
+
+    with frozen_clock():
+        assert workflow._apply_accumulation_historical_sources("가맹점 명단", sql) == sql
+
+
+def test_first_of_month_keeps_the_monthly_snapshot() -> None:
+    """1일에는 일별 짝의 최신일(D-1)도 아직 지난 달이라 돌릴 곳이 없다."""
+    sql = _merchant_month_sql("202608")
+
+    with frozen_clock(date(2026, 8, 1)):
+        assert workflow._apply_accumulation_historical_sources("가맹점 명단", sql) == sql
+
+
+def test_column_the_daily_twin_lacks_keeps_the_monthly_snapshot() -> None:
+    """빈 결과를 컬럼 오류로 바꾸면 안 된다. 짝이 못 가진 컬럼을 읽으면 돌리지 않는다."""
+    sql = """
+    SELECT c."고객식별자", c."소호로지스틱BSS등급구분코드"
+    FROM card_system.tmdaa1d12 c
+    WHERE c."기준년월" = '202608'
+    """
+
+    with frozen_clock():
+        assert workflow._apply_accumulation_historical_sources("기업고객 현황", sql) == sql
+        # 같은 질문이라도 짝이 가진 컬럼만 읽으면 이번 달은 일별로 간다.
+        assert "card_system.tbdaa1d12" in workflow._apply_accumulation_historical_sources(
+            "기업고객 현황",
+            sql.replace(', c."소호로지스틱BSS등급구분코드"', ""),
+        )
+
+
+def test_live_source_pairs_come_from_the_declared_historical_source() -> None:
+    assert time_policy.live_source_for("tmdaaus01") == {
+        "table": "tbdaaus01",
+        "query_time_dimension": "기준년월일",
+        "format": "YYYYMMDD",
+    }
+    assert time_policy.live_source_for("tmdaa1d12")["table"] == "tbdaa1d12"
+    # 짝이 아닌 월별 테이블은 돌릴 곳이 없다. tbdaadt01 의 과거 원천이지만
+    # 이름 접미사가 달라 같은 grain 의 일별 짝이 아니다.
+    assert time_policy.live_source_for("tmdaa5d01") is None
+    assert time_policy.live_source_for("tmdaa5e11") is None
+    assert time_policy.live_source_for("tbdaaus01") is None
+
+
+def test_archive_pairs_are_derived_from_one_policy_declaration() -> None:
+    assert workflow._PREVIOUS_DAY_ARCHIVE_TABLES == {
+        "tbdaaus01": "tmdaaus01",
+        "tbdaa1d12": "tmdaa1d12",
+    }
+    assert {
+        time_policy.live_source_for(monthly)["table"]
+        for monthly in workflow._PREVIOUS_DAY_ARCHIVE_TABLES.values()
+    } == set(workflow._PREVIOUS_DAY_ARCHIVE_TABLES)
 
 
 def test_pure_historical_corporate_customer_sql_routes_to_monthly_source() -> None:
@@ -526,6 +639,116 @@ def test_verified_query_execution_checks_accumulation_policy_before_database() -
 
     assert "적재 주기 위반" in result["query_error"]
     execute.assert_not_called()
+
+
+@contextlib.contextmanager
+def stub_period_range(min_value: str, max_value: str):
+    """적재 범위 조회만 가로챈다. 캐시는 테스트끼리 새지 않게 비우고 시작한다."""
+    issued: list[str] = []
+
+    def execute(sql: str, **_kwargs: object):
+        issued.append(" ".join(sql.split()))
+        return ["min", "max"], [(min_value, max_value)], None
+
+    db._PERIOD_RANGE_CACHE.clear()
+    with patch.object(db, "execute_sql", side_effect=execute):
+        yield issued
+    db._PERIOD_RANGE_CACHE.clear()
+
+
+def test_no_data_answer_reports_the_range_read_from_the_table() -> None:
+    """"왜 없는지"는 적재 정책표가 아니라 테이블의 MIN/MAX 가 답한다."""
+    with stub_period_range("20240101", "20260810") as issued:
+        answer = workflow.generate_answer(
+            {
+                "question": "2026년 8월 기업카드 이용금액 알려줘",
+                "final_sql": 'SELECT 1 FROM card_system.tmdaa5e11 a',
+                "query_columns": ["x"],
+                "query_rows": [],
+            }
+        )
+
+    assert issued == ['SELECT MIN("기준년월"), MAX("기준년월") FROM card_system.tmdaa5e11']
+    assert answer["answer"].startswith("해당 데이터가 없습니다.")
+    assert 'tmdaa5e11 조회 가능 기간: "기준년월" 20240101 ~ 20260810' in answer["answer"]
+
+
+def test_loaded_period_range_is_read_once_per_table() -> None:
+    """MIN/MAX 는 해당 컬럼을 훑는다. 0건 답변마다 다시 때리면 안 된다."""
+    with stub_period_range("202401", "202607") as issued:
+        assert db.loaded_period_range("tmdaa5e11") == ("202401", "202607")
+        assert db.loaded_period_range("tmdaa5e11") == ("202401", "202607")
+
+    assert len(issued) == 1
+
+
+def test_period_range_is_not_probed_for_ungoverned_tables() -> None:
+    with stub_period_range("202401", "202607") as issued:
+        assert db.loaded_period_range("tbdaaac67") is None
+
+    assert issued == []
+
+
+def test_out_of_range_period_answers_no_data_with_the_loaded_range() -> None:
+    with stub_period_range("202401", "202607") as issued:
+        handled = workflow.handle_error(
+            {
+                "validation_result": (
+                    "SQL 적재 주기 위반: tmdaa5e11의 최신 가용일은 KST 전일 20260813입니다."
+                ),
+                "query_error": "테이블 적재 주기 위반: 최신 가용일은 KST 전일 20260813입니다.",
+                "final_sql": "SELECT 1 FROM card_system.tmdaa5e11 a",
+                "retry_count": 3,
+            }
+        )
+
+    assert issued
+    assert 'tmdaa5e11 조회 가능 기간: "기준년월" 202401 ~ 202607' in handled["answer"]
+    assert "20260813" not in handled["answer"]
+    assert handled["error_message"] == ""
+    assert handled["query_error"] == ""
+
+
+def test_out_of_range_period_answers_no_data_instead_of_sql_failure() -> None:
+    """적재 범위 밖 기간은 SQL 실패가 아니라 "데이터가 없다"로 알린다.
+
+    SQL 을 못 만든 것과 SQL 은 맞는데 그 기간이 적재돼 있지 않은 것은 사용자가
+    해야 할 일이 다르다. 앞의 것은 질문을 고쳐야 하고, 뒤의 것은 고쳐도 안 나온다.
+
+    DB 를 못 읽으면(여기서는 관리 테이블이 없는 SQL) 검증 메시지로 되돌아간다.
+    """
+    handled = workflow.handle_error(
+        {
+            "validation_result": (
+                "SQL 적재 주기 위반: tbdaabt30의 조회 가능 범위는 KST 20260807~20260813입니다. "
+                "범위 밖 일자는 조회할 수 없습니다."
+            ),
+            "query_error": "테이블 적재 주기 위반: 범위 밖 일자는 조회할 수 없습니다.",
+            "final_sql": "SELECT 1",
+            "retry_count": 3,
+        }
+    )
+
+    assert handled["answer"].startswith("해당 데이터가 없습니다.")
+    assert "조회 가능 범위는 KST 20260807~20260813입니다" in handled["answer"]
+    # error 가 비어야 UI 가 "SQL 처리 실패" 대신 답변으로 렌더한다.
+    assert handled["error_message"] == ""
+    assert handled["query_error"] == ""
+    assert web_service._public_result_error(handled["error_message"]) == ""
+
+
+def test_unfixable_sql_still_reports_a_sql_failure() -> None:
+    handled = workflow.handle_error(
+        {
+            "validation_result": "COLUMN_NOT_FOUND: 스키마에 없는 컬럼입니다.",
+            "query_error": "COLUMN_NOT_FOUND",
+            "final_sql": "SELECT 없는컬럼 FROM card_system.tmdaa5e11",
+            "retry_count": 3,
+        }
+    )
+
+    assert handled["error_message"].startswith("SQL 생성/실행에 실패했습니다")
+    assert "해당 데이터가 없습니다" not in handled["answer"]
 
 
 def test_continuation_parser_understands_previous_day() -> None:

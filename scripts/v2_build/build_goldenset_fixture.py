@@ -130,6 +130,12 @@ def main() -> None:
 
     tables = load_v1_columns(args.schema)
     gaps = collect_column_gaps(rows, tables)
+    current_tables = load_v1_columns(PROJECT_ROOT / "semantic_layer.yaml")
+    gaps = [
+        gap
+        for gap in gaps
+        if gap["column"] in current_tables.get(gap["table"], {})
+    ]
 
     dialect = [
         {
@@ -157,6 +163,7 @@ def main() -> None:
             "baseline": "v1 semantic_layer.yaml + v1 _phrase_in_text",
             "notes": [
                 "column_gaps 는 v1 기준으로 질문↔컬럼 매칭이 실패한 조합이다. 회귀 테스트의 기준선.",
+                "현재 semantic layer에서 제거된 컬럼은 column_gaps에서도 제외한다.",
                 "dialect_failures 의 agent_sql 은 Athena가 거절한 원문이므로 수정하지 않는다.",
             ],
         },

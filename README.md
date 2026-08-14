@@ -397,7 +397,7 @@ athena_partition:
 회사 Athena DDL에서 파티션 키가 `daty`라면 `day` 대신 `name: daty`로 적으면 됩니다.
 
 기본 schema는 `semantic_layer.yaml`입니다. `테이블 내용 예시_001.xlsx`의 30개 테이블·2,061개 컬럼과
-`예시.xlsx`의 `tmdaa1d12` 월 스냅샷 79개 컬럼(`tbdaaat18`은 기존 정의 교차 검증)을 합쳐 총 31개 테이블·2,140개 원천 컬럼으로 구성합니다.
+`예시.xlsx`의 `tmdaa1d12` 월 스냅샷 79개 컬럼(`tbdaaat18`은 기존 정의 교차 검증)을 합친 뒤 실제 스키마에 없는 20개 컬럼을 제외해 총 31개 테이블·2,120개 원천 컬럼으로 구성합니다.
 `athena_text2sql_reference.xlsx`의 기본 9개·추가 3개 질의를 기준으로 기업영업 semantic contract를 구성하며,
 실행용 Athena VQ는 `text2sql_agent/tools/sql_verified_queries.yaml`에서 관리합니다.
 다른 schema를 쓰려면 다음 환경 변수를 지정하면 됩니다.

@@ -3,6 +3,7 @@
 goldenset v2 SQL 오류 400건의 원인별 대응을 한 번에 적용한다.
 
 컬럼 레벨 (guard 332건 / column_not_found 57건)
+  0. 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 제거한다.
   1. 같은 이름의 컬럼은 어느 테이블에 있든 동의어를 합친다.
      tmdaaus01."가맹점상태구분코드" 에는 동의어가 없고 tmdaa5e11 의 같은 컬럼에는
      ['가맹점상태','가맹점 상태'] 가 있어서, 질문이 어느 테이블로 라우팅되는지에
@@ -50,7 +51,23 @@ from text2sql_agent.v2.sql_contract import (  # noqa: E402
 )
 
 COLUMN_SECTIONS = ("dimensions", "measures", "time_dimensions")
-V2_VERSION = "2026-08-11.2-v2"
+V2_VERSION = "2026-08-14.3-v2"
+
+REMOVED_COLUMNS_BY_TABLE: dict[str, frozenset[str]] = {
+    "tbdaa1d12": frozenset({"소호로지스틱BSS등급구분코드"}),
+    "tbdaaat03": frozenset(
+        {"ASS평점", "BSS평점", "통합ASS평점", "통합BSS평점", "통합BSS한도등급"}
+    ),
+    "tbdaadb17": frozenset({"JCB카드수수료율", "JCB카드한도금액"}),
+    "tbdaadt01": frozenset({"JCB카드수수료율"}),
+    "tmdaaus01": frozenset({"JCB카드수수료율"}),
+    "tmdaa5e11": frozenset({"JCB카드수수료율"}),
+    "tmdaa5d01": frozenset({"JCB카드수수료율"}),
+    "tddaa3l01": frozenset({"통합BSS한도등급"}),
+    "tddaa3e21": frozenset({"통합ASS평점", "통합BSS평점", "통합BSS한도등급"}),
+    "tddaa3e23": frozenset({"통합ASS평점", "통합BSS한도등급"}),
+    "tmdaa3e16": frozenset({"ASS평점", "BSS평점"}),
+}
 
 
 def _yaml() -> YAML:
@@ -59,6 +76,51 @@ def _yaml() -> YAML:
     parser.width = 4096
     parser.indent(mapping=2, sequence=2, offset=0)
     return parser
+
+
+# ---------------------------------------------------------------------------
+# 0. 실제 스키마에 없는 컬럼 제거
+# ---------------------------------------------------------------------------
+def remove_retired_columns(schema: dict) -> list[str]:
+    removed: list[str] = []
+    for table in schema.get("tables", []):
+        table_name = str(table.get("name") or "").lower()
+        targets = REMOVED_COLUMNS_BY_TABLE.get(table_name, frozenset())
+        for section in COLUMN_SECTIONS:
+            kept = []
+            for column in table.get(section) or []:
+                name = str(column.get("name") or "")
+                if name in targets:
+                    removed.append(f"{table_name}.{name}")
+                else:
+                    kept.append(column)
+            if section in table:
+                table[section] = kept
+
+        metadata = table.get("source_metadata") or {}
+        if metadata.get("source_column_count") is not None:
+            queryable = sum(len(table.get(section) or []) for section in COLUMN_SECTIONS)
+            excluded = len(metadata.get("excluded_technical_columns") or [])
+            metadata["queryable_column_count"] = queryable
+            metadata["source_column_count"] = queryable + excluded
+
+    inventory = schema.get("semantic_layer_metadata", {}).get("source_inventory")
+    if inventory is not None:
+        physical = [
+            table
+            for table in schema.get("tables", [])
+            if table.get("relation_type") != "request_scoped_values_cte"
+        ]
+        inventory["source_columns"] = sum(
+            int((table.get("source_metadata") or {}).get("source_column_count") or 0)
+            for table in physical
+        )
+        inventory["queryable_business_columns"] = sum(
+            int((table.get("source_metadata") or {}).get("queryable_column_count") or 0)
+            for table in physical
+        )
+
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +872,217 @@ def apply_corporate_customer_semantic_overrides(schema: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 9~10. SQL 생성 계약
+# 9. 고객식별자(기업 1곳)와 회원일련번호(카드 계약 1건)의 역할 분리
+#
+# customer_to_member 는 one_to_many 다. 한 기업고객 아래에 부서·사업장 단위
+# 회원일련번호가 여러 개 달리므로 두 키의 COUNT DISTINCT 값이 서로 다르다.
+# 그런데 v1 은 "고객수" 를 회원수 지표의, "연체고객수" 를 연체회원수 지표의
+# 동의어로 선언해 두었다. build_metrics_summary() 는 질문에 등장한 가장 긴
+# 동의어로 지표를 고르므로, "기업고객 수" 를 물어도 프롬프트에는
+# COUNT(DISTINCT tbdaaat03."회원일련번호") 가 정답 지표로 들어갔다.
+# 골든셋 정답은 COUNT(DISTINCT tbdaaat01."고객식별자") 다.
+#
+# 잘못된 동의어를 떼는 것만으로는 "기업 수" 가 갈 곳이 없어지므로, 고객식별자를
+# 세는 지표 두 개와 두 키를 대비시키는 용어 두 개를 같이 넣는다.
+# ---------------------------------------------------------------------------
+CORPORATE_CUSTOMER_COUNT_METRIC = {
+    "name": "기업고객수",
+    "domain": "customer_card_portfolio",
+    "business_definition": "개인기업구분코드가 기업인 고유 고객식별자 수",
+    "expression": 'COUNT(DISTINCT tbdaaat01."고객식별자")',
+    "source_table": "tbdaaat01",
+    "source_entity": "customer",
+    "default_time_dimension": "",
+    "result_grain": "질문이 요청한 분류축 조합별 1행",
+    "required_filters": ["tbdaaat01.\"개인기업구분코드\" = '2'"],
+    "semantic_cautions": [
+        "회원일련번호가 아니라 고객식별자를 DISTINCT 집계한다. 한 기업고객에 부서·사업장 회원일련번호가 여러 개 달린다.",
+        "같은 값이 전표·가맹점 테이블에서는 기업고객식별자, 부서사업장회원(tbdaaac67)에서는 법인고객식별자라는 이름으로 들어 있다.",
+    ],
+    "synonyms": ["기업수", "업체수", "회사수", "법인수", "법인고객수", "고객수"],
+    "unit": "개",
+    "aggregation_behavior": "distinct_count",
+}
+
+DELINQUENT_CORPORATE_COUNT_METRIC = {
+    "name": "연체기업수",
+    "domain": "credit_risk",
+    "business_definition": "기준 시점에 카드 또는 여신 연체가 있는 고유 기업고객 수",
+    "expression": 'COUNT(DISTINCT tbdaa1d12."고객식별자")',
+    "source_table": "tbdaa1d12",
+    "source_entity": "corporate_customer_daily",
+    "default_time_dimension": "기준년월일",
+    "result_grain": "기준 시점 1행 또는 기준년월별 1행",
+    "required_filters": [
+        "카드연체여부 = '1' OR 여신연체여부 = '1' OR COALESCE(카드연체원금, 0) + COALESCE(여신연체원금, 0) > 0",
+        "현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용",
+    ],
+    "semantic_cautions": [
+        "연체 회원 수(tddaa3l01.회원일련번호)와 다른 지표다. 기업 수는 고객식별자를 DISTINCT 집계한다.",
+        "일별 snapshot이므로 고객식별자별 기준년월일 DESC 최신 1건으로 축소한 뒤 연체 조건을 적용한다.",
+    ],
+    "synonyms": ["연체고객수", "연체업체수", "연체기업고객수"],
+    "unit": "개",
+    "aggregation_behavior": "snapshot_dedup_then_aggregate",
+}
+
+IDENTITY_GLOSSARY_TERMS = (
+    {
+        "term": "기업고객",
+        "canonical": "tbdaaat01.고객식별자 (전표·가맹점은 기업고객식별자, 부서사업장회원은 법인고객식별자)",
+        "description": (
+            "당사와 거래하는 기업·법인 1곳. 기업 수·업체 수·고객 수는 모두 이 식별자의 고유 개수이며, "
+            "한 기업고객 아래에 부서·사업장 단위 회원일련번호가 여러 개 달린다."
+        ),
+        "aliases": ["법인고객", "기업 수", "업체 수", "고객 수", "고객식별자", "기업고객식별자", "법인고객식별자"],
+        "sql_hint": (
+            "기업·업체·법인·고객 수는 COUNT(DISTINCT \"고객식별자\")로 세고 개인기업구분코드 = '2' 를 함께 적용한다. "
+            "회원일련번호로 세지 않는다."
+        ),
+    },
+    {
+        "term": "카드회원",
+        "canonical": "tbdaaat03.회원일련번호",
+        "description": (
+            "기업고객이 맺은 카드 계약 1건. 부서·사업장 단위로 채번되며 보유 카드·이용·연체·충당금이 이 키로 연결된다."
+        ),
+        "aliases": ["회원 수", "회원일련번호", "회원번호", "부서사업장회원"],
+        "sql_hint": (
+            "회원 수는 COUNT(DISTINCT \"회원일련번호\")로 센다. 고객식별자와는 1:N이므로 "
+            "같은 결과에서 기업 수를 낼 때는 고객식별자로 다시 DISTINCT한다."
+        ),
+    },
+)
+
+
+def apply_customer_member_identity_overrides(schema: dict) -> int:
+    """Stop 고객식별자 questions from resolving to 회원일련번호 metrics."""
+    metric_list = schema.get("canonical_metrics")
+    if not isinstance(metric_list, list):
+        raise SystemExit("canonical_metrics 없음")
+    metrics = {str(item.get("name") or ""): item for item in metric_list}
+
+    # 고객 단위 표현을 회원 지표에서 떼어낸다.
+    wrong_synonyms = {"회원수": "고객수", "연체회원수": "연체고객수"}
+    for metric_name, synonym in wrong_synonyms.items():
+        metric = metrics.get(metric_name)
+        if metric is None:
+            raise SystemExit(f"고객/회원 분리 대상 지표 없음: {metric_name}")
+        synonyms = metric.get("synonyms") or []
+        if synonym not in synonyms:
+            raise SystemExit(f"{metric_name} 에 {synonym} 동의어가 없다. 이미 분리됐는지 확인 필요")
+        synonyms.remove(synonym)
+
+    # 고객식별자를 세는 지표를 헷갈리던 회원 지표 바로 앞에 놓는다.
+    new_metrics = {
+        "회원수": CORPORATE_CUSTOMER_COUNT_METRIC,
+        "연체회원수": DELINQUENT_CORPORATE_COUNT_METRIC,
+    }
+    for anchor_name, new_metric in new_metrics.items():
+        if new_metric["name"] in metrics:
+            raise SystemExit(f"이미 있는 지표: {new_metric['name']}")
+        anchor = metric_list.index(metrics[anchor_name])
+        metric_list.insert(anchor, deepcopy(new_metric))
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    existing_terms = {str(item.get("term") or "") for item in glossary}
+    for entry in IDENTITY_GLOSSARY_TERMS:
+        if entry["term"] in existing_terms:
+            raise SystemExit(f"이미 있는 용어: {entry['term']}")
+        glossary.append(deepcopy(entry))
+
+    # 도메인 preferred_metrics 는 build_metrics_summary() 의 1차 필터다.
+    domains = {str(item.get("name") or ""): item for item in schema.get("canonical_domains", [])}
+    for domain_name in ("customer_card_portfolio", "corporate_sales_targeting"):
+        domain = domains.get(domain_name)
+        if domain is None:
+            raise SystemExit(f"도메인 없음: {domain_name}")
+        domain["preferred_metrics"].append(CORPORATE_CUSTOMER_COUNT_METRIC["name"])
+
+    entities = {str(item.get("name") or ""): item for item in schema.get("semantic_entities", [])}
+    entity_use_when = {
+        "customer": "기업·업체·법인·고객 수를 고객식별자로 셀 때",
+        "member": "카드 계약 단위(회원일련번호)로 회원 수나 카드 보유를 셀 때",
+    }
+    for entity_name, use_when in entity_use_when.items():
+        entity = entities.get(entity_name)
+        if entity is None:
+            raise SystemExit(f"semantic entity 없음: {entity_name}")
+        entity["use_when"].append(use_when)
+
+    return (
+        len(wrong_synonyms)
+        + len(new_metrics)
+        + len(IDENTITY_GLOSSARY_TERMS)
+        + 2
+        + len(entity_use_when)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. 이용금액과 매출금액 중 질문이 쓴 쪽 컬럼을 고르게 한다
+#
+# 두 단어는 테이블마다 섞여 쓰인다. 전표(tbdaabt30·tbdaabt08)는 "매출금액",
+# 기업 월 스냅샷(tmdaa1d12)은 "금월신용카드이용금액", 가맹점 월실적(tmdaa5e11)은
+# "가맹점일시불매출금액" 이다. 둘을 같은 뜻으로 뭉치면 안 된다. 기업 단위에서
+# 이용금액은 그 기업이 카드로 쓴 돈이고, 매출금액은 그 기업이 가맹점으로서
+# 받은 돈이라 값이 서로 다르다(tmdaa5e11 은 기업고객식별자를 직접 들고 있다).
+# 골든셋도 "법인카드 매출금액"→tbdaabt30."매출금액",
+# "기업 … 이용금액"→tbdaa1d12."금월*이용금액" 으로 단어를 따라 컬럼을 고른다.
+#
+# 그런데 어느 단어가 어느 컬럼 계열인지는 어디에도 없어서
+# build_glossary_summary() 가 "가맹점별 이용금액" 에 아무것도 못 내놓고
+# "기업별 매출금액" 에는 가맹점 지표인 가맹점월매출만 내놓는다.
+# ---------------------------------------------------------------------------
+USAGE_SALES_GLOSSARY_TERM = {
+    "term": "이용금액",
+    "canonical": (
+        "카드로 쓴 돈. 받은 돈인 매출금액과 다른 지표이며, "
+        "질문이 쓴 단어가 이용금액 컬럼과 매출금액 컬럼 중 어느 쪽을 볼지 결정한다"
+    ),
+    "description": (
+        "이용금액은 회원·기업·카드가 카드로 쓴 금액이고, 매출금액은 가맹점이 카드로 "
+        "받은 금액이다. 같은 기업이라도 카드로 쓴 이용금액과 가맹점으로서 받은 매출금액은 "
+        "서로 다른 값이므로 두 단어를 바꿔 쓰지 않는다. 단어가 컬럼 계열을 정하고, "
+        "질문의 집계 대상이 그 안에서 테이블을 정한다."
+    ),
+    "aliases": ["매출금액", "매출액", "이용액", "사용금액", "카드매출", "카드이용금액", "결제금액"],
+    "sql_hint": (
+        "이용금액을 물으면 이용금액 컬럼을 쓴다: 기업·법인 월은 tmdaa1d12의 "
+        "금월신용카드이용금액+금월체크카드이용금액, 카드 월은 tmdaa3e16의 금월이용합계금액. "
+        "매출금액을 물으면 매출금액 컬럼을 쓴다: 전표·업종·일자는 tbdaabt30(해외는 tbdaabt08)의 "
+        "매출금액, 가맹점 월은 tmdaa5e11의 가맹점일시불매출금액+가맹점할부매출금액이며 "
+        "기업 단위 매출은 tmdaa5e11의 기업고객식별자로 묶는다."
+    ),
+}
+
+
+def apply_usage_sales_vocabulary(schema: dict) -> int:
+    """Tell 이용금액 and 매출금액 apart by 집계 대상 instead of by wording."""
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    if any(item.get("term") == USAGE_SALES_GLOSSARY_TERM["term"] for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {USAGE_SALES_GLOSSARY_TERM['term']}")
+
+    # 가맹점월매출 바로 앞에 놓는다. 동점이면 build_glossary_summary() 가
+    # 먼저 선언된 용어를 위로 올리므로, 대상을 가리는 규칙이 앞에 와야 한다.
+    anchor = next(
+        (
+            position
+            for position, item in enumerate(glossary)
+            if item.get("term") == "가맹점월매출"
+        ),
+        len(glossary),
+    )
+    glossary.insert(anchor, deepcopy(USAGE_SALES_GLOSSARY_TERM))
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# 11~12. SQL 생성 계약
 # ---------------------------------------------------------------------------
 def apply_sql_contract(schema: dict) -> dict:
     contract = schema.get("sql_generation_contract")
@@ -887,12 +1159,15 @@ def main() -> None:
     schema = yaml.load(args.source.read_text(encoding="utf-8"))
     codebooks = load_codebooks(args.codebooks)
 
+    removed_columns = remove_retired_columns(schema)
     column_stats = apply_column_metadata(schema, codebooks)
     accumulation_policy_count = apply_accumulation_policies(schema)
     time_axis_count = apply_time_axis_fixes(schema)
     recent_merchant_semantic_count = apply_recent_merchant_semantic_overrides(schema)
     previous_day_semantic_count = apply_previous_day_semantic_overrides(schema)
     corporate_customer_semantic_count = apply_corporate_customer_semantic_overrides(schema)
+    identity_count = apply_customer_member_identity_overrides(schema)
+    usage_sales_count = apply_usage_sales_vocabulary(schema)
     contract_stats = apply_sql_contract(schema)
 
     metadata = schema.get("semantic_layer_metadata")
@@ -911,6 +1186,9 @@ def main() -> None:
             "전일 적재 테이블의 지표·계약·질의 참조를 KST D-1 기준으로 통일했다.",
             "기업고객 현재 상태는 tbdaa1d12 KST D-1, 명시한 과거 월은 tmdaa1d12 기준년월, 현재+이력 질의는 두 소스를 함께 사용하도록 분리했다.",
             "tbmaisd06 의 물리 시간축은 유지하고 연 단위 적재 조회 컬럼을 정책으로 분리했으며, 기업영업 스코프 필터를 기본값으로 못 박았다.",
+            "기업 수는 고객식별자, 회원 수는 회원일련번호로 세도록 지표·용어·grain 규칙을 분리했다(기업고객수·연체기업수 지표 신설).",
+            "이용금액과 매출금액이 같은 금액의 다른 관점임을 용어로 선언하고, 기업·카드·가맹점·전표 단위별 원천 컬럼을 못 박았다.",
+            "실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.",
         ]
 
     schema["column_codebooks"] = _yaml().load(args.codebooks.read_text(encoding="utf-8"))[
@@ -928,6 +1206,7 @@ def main() -> None:
         yaml.dump(schema, handle)
 
     print(f"semantic layer v2 -> {args.output}")
+    print(f"  columns removed      : {len(removed_columns)}")
     print(f"  columns touched      : {column_stats['columns_touched']}")
     print(f"  synonyms propagated  : {column_stats['synonyms_propagated']}")
     print(f"  synonyms derived     : {column_stats['synonyms_derived']}")
@@ -939,6 +1218,8 @@ def main() -> None:
     print(f"  recent merchant semantics: {recent_merchant_semantic_count} entries")
     print(f"  previous-day semantics: {previous_day_semantic_count} entries")
     print(f"  corporate customer semantics: {corporate_customer_semantic_count} entries")
+    print(f"  customer/member identity: {identity_count} entries")
+    print(f"  usage/sales vocabulary: {usage_sales_count} entries")
     print(f"  contract list sizes  : {contract_stats['before']} -> {contract_stats['after']}")
 
 

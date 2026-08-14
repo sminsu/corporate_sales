@@ -45,7 +45,7 @@ export VERIFIED_QUERY_FILE_PATH=corporate_sales_fable_v2/sql_verified_queries.ya
 | syntax 4+3건 | `athena_rules` 에 QUALIFY·윈도함수 WHERE 금지 명시 |
 | 코드값 해석 | 0811 코드북 7종을 같은 이름의 컬럼 44곳에 `value_semantics` 로 적용 |
 
-`semantic_layer_metadata.version` 이 `2026-08-11.2-v2` 면 v2 가 로드된 것이다.
+`semantic_layer_metadata.version` 이 `2026-08-14.3-v2` 면 v2 가 로드된 것이다.
 
 ## 2단계 — 매처·가드 연결 (컬럼 매칭에는 필수)
 

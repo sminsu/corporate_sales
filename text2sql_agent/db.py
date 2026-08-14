@@ -30,6 +30,7 @@ from .config import (
     DB_POOL_MAX,
     DB_PORT,
     DB_SCHEMA,
+    DB_SCHEMA_PREFIX,
     DB_USER,
     MAX_QUERY_ROW_LIMIT,
 )
@@ -636,6 +637,38 @@ def execute_sql(
             statement_timeout_ms=effective_timeout_ms,
         )
         return [], [], str(e)
+
+
+# 적재 정책표는 주기만 알 뿐 어디까지 들어왔는지는 모른다. "데이터가 없다"의 근거는
+# 서버 시계가 아니라 데이터에서 읽어야 한다. MIN/MAX 는 해당 컬럼을 훑으므로
+# 결과를 캐시하고, 조회 결과가 비었을 때만 부른다.
+_PERIOD_RANGE_TTL_SECONDS = 3600
+_PERIOD_RANGE_CACHE: dict[str, tuple[float, tuple[str, str] | None]] = {}
+
+
+def loaded_period_range(table: str) -> tuple[str, str] | None:
+    """Return the (min, max) time-axis values a governed table actually holds."""
+    column = str((accumulation_policy_for(table) or {}).get("query_time_dimension") or "")
+    if not column:
+        return None
+    name = str(table).strip().lower()
+    cached = _PERIOD_RANGE_CACHE.get(name)
+    if cached and time.monotonic() - cached[0] < _PERIOD_RANGE_TTL_SECONDS:
+        return cached[1]
+    bounds = None
+    try:
+        _, rows, error = execute_sql(
+            f'SELECT MIN("{column}"), MAX("{column}") FROM {DB_SCHEMA_PREFIX}{name}',
+            max_rows=1,
+            allow_cross_cycle_fallback=False,
+        )
+        if not error and rows and len(rows[0]) >= 2 and None not in rows[0][:2]:
+            bounds = (str(rows[0][0]), str(rows[0][1]))
+    except Exception:
+        # 범위 안내는 부가 정보다. 못 읽어도 "데이터가 없다"는 답변은 나가야 한다.
+        bounds = None
+    _PERIOD_RANGE_CACHE[name] = (time.monotonic(), bounds)
+    return bounds
 
 
 def _log_db_query(

@@ -14,6 +14,9 @@ from text2sql_agent.v2.sql_contract import PROMPT_LIST_RENDER_LIMIT
 PROJECT_ROOT = Path(__file__).resolve().parents[1]          # v2 적용본 루트
 V1_ROOT = PROJECT_ROOT.parent / "corporate_sales_fable"     # 변환 원본(v1 저장소)
 FIXTURE = Path(__file__).parent / "fixtures" / "goldenset_v2_sql_errors.json"
+CORPORATE_GOLDENSET = (
+    Path(__file__).parent / "fixtures" / "corporate_sales_text2sql_goldenset_v2.jsonl"
+)
 
 # v1 대조 테스트는 원본 저장소가 옆에 있을 때만 의미가 있다.
 requires_v1 = pytest.mark.skipif(
@@ -22,6 +25,29 @@ requires_v1 = pytest.mark.skipif(
 )
 
 COLUMN_SECTIONS = ("dimensions", "measures", "time_dimensions")
+
+REMOVED_COLUMNS = {
+    ("tbdaa1d12", "소호로지스틱BSS등급구분코드"),
+    ("tbdaaat03", "ASS평점"),
+    ("tbdaaat03", "BSS평점"),
+    ("tbdaaat03", "통합ASS평점"),
+    ("tbdaaat03", "통합BSS평점"),
+    ("tbdaaat03", "통합BSS한도등급"),
+    ("tbdaadb17", "JCB카드수수료율"),
+    ("tbdaadb17", "JCB카드한도금액"),
+    ("tbdaadt01", "JCB카드수수료율"),
+    ("tmdaaus01", "JCB카드수수료율"),
+    ("tmdaa5e11", "JCB카드수수료율"),
+    ("tmdaa5d01", "JCB카드수수료율"),
+    ("tddaa3l01", "통합BSS한도등급"),
+    ("tddaa3e21", "통합ASS평점"),
+    ("tddaa3e21", "통합BSS평점"),
+    ("tddaa3e21", "통합BSS한도등급"),
+    ("tddaa3e23", "통합ASS평점"),
+    ("tddaa3e23", "통합BSS한도등급"),
+    ("tmdaa3e16", "ASS평점"),
+    ("tmdaa3e16", "BSS평점"),
+}
 
 # 되묻기 회귀 방지. 이 표현이 계약에 다시 들어오면 모델이 다시 자연어로 답한다.
 FORBIDDEN_CONTRACT_PHRASES = ("추가 입력을 요청", "입력을 요청한다", "직접 입력하도록 요청")
@@ -59,9 +85,32 @@ def _column_index(schema: dict) -> dict[tuple[str, str], dict]:
 # 드롭인 호환성
 # ---------------------------------------------------------------------------
 @requires_v1
-def test_table_and_column_sets_are_unchanged(v1: dict, v2: dict) -> None:
-    """컬럼을 잃으면 기존에 성공했던 질의가 깨진다."""
-    assert set(_column_index(v1)) == set(_column_index(v2))
+def test_only_confirmed_invalid_columns_are_removed(v1: dict, v2: dict) -> None:
+    v1_columns = set(_column_index(v1))
+    v2_columns = set(_column_index(v2))
+
+    assert v1_columns - v2_columns == REMOVED_COLUMNS
+    assert v2_columns - v1_columns == set()
+
+
+def test_confirmed_invalid_columns_are_absent(v2: dict) -> None:
+    assert REMOVED_COLUMNS.isdisjoint(_column_index(v2))
+
+
+def test_corporate_goldenset_does_not_expect_removed_columns() -> None:
+    issues = []
+    for line in CORPORATE_GOLDENSET.read_text(encoding="utf-8").splitlines():
+        case = json.loads(line)
+        tables = {
+            str(table).rsplit(".", 1)[-1].lower()
+            for table in case.get("expected_tables", [])
+        }
+        sql = str(case.get("sql") or "")
+        for table, column in REMOVED_COLUMNS:
+            if table in tables and f'"{column}"' in sql:
+                issues.append(f"{case['id']}: {table}.{column}")
+
+    assert issues == []
 
 
 @requires_v1

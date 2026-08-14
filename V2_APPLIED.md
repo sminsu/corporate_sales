@@ -12,10 +12,11 @@
 
 | 파일 | 변경 |
 |---|---|
-| `semantic_layer.yaml` | 버전 `2026-08-11.2-v2`. 되묻기 지시 제거, 같은 이름 컬럼 동의어 통합(107) + 유도(3,243), 0811 코드북 7종을 컬럼 44곳에 적용, Athena 방언 규칙 보강, 프롬프트 렌더 한도(12개) 정리 |
+| `semantic_layer.yaml` | 버전 `2026-08-14.3-v2`. 되묻기 지시 제거, 같은 이름 컬럼 동의어 통합(107) + 유도(3,243), 0811 코드북 7종을 컬럼 44곳에 적용, 실제 스키마에 없는 평가·JCB 컬럼 20개 제거, Athena 방언 규칙 보강, 프롬프트 렌더 한도(12개) 정리, 질문의 단어대로 이용금액 컬럼과 매출금액 컬럼을 가르는 용어 추가 |
 | `text2sql_agent/tools/sql_verified_queries.yaml` | `special_debt_by_asset_quality` 원천 테이블 `tmdaaus01`→`tbmaisd06`(오류 22건 원인), `merchant_risk_combined_customer_month` `tbmaisd06`→`tbdaaus01`, `::FLOAT` 8곳 → `CAST(... AS DOUBLE)` |
 | `codebooks/column_codebooks.yaml` | 0811 xlsx 8종에서 만든 코드북 7종(단일 출처). 유효종료 코드도 이력 해석용으로 보존 |
 | `tests/fixtures/semantic_layer_golden_v1.jsonl` | semantic layer 버전 변경에 맞춰 재생성 |
+| `tests/fixtures/corporate_sales_text2sql_goldenset_v2.{jsonl,csv}` | 제거 컬럼을 쓰던 17건을 유효한 월 스냅샷·한도 컬럼으로 교정 |
 
 **코드** (v1 대비 이 4곳만 다르다)
 

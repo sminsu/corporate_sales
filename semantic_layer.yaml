@@ -20,7 +20,7 @@
 # =============================================================================
 
 semantic_layer_metadata:
-  version: "2026-08-11.2-v2"
+  version: "2026-08-14.3-v2"
   sql_dialect: athena_engine_v3
   target_models: [gemma4, gpt-oss]
   sources:
@@ -57,8 +57,8 @@ semantic_layer_metadata:
   source_inventory:
     physical_tables: 31
     logical_relations: 0
-    source_columns: 2140
-    queryable_business_columns: 2068
+    source_columns: 2120
+    queryable_business_columns: 2048
     excluded_technical_columns: 72
   derived_from: semantic_layer.yaml (v1)
   v2_changes:
@@ -73,6 +73,9 @@ semantic_layer_metadata:
   - 전일 적재 테이블의 지표·계약·질의 참조를 KST D-1 기준으로 통일했다.
   - 기업고객 현재 상태는 tbdaa1d12 KST D-1, 명시한 과거 월은 tmdaa1d12 기준년월, 현재+이력 질의는 두 소스를 함께 사용하도록 분리했다.
   - tbmaisd06 의 물리 시간축은 유지하고 연 단위 적재 조회 컬럼을 정책으로 분리했으며, 기업영업 스코프 필터를 기본값으로 못 박았다.
+  - 기업 수는 고객식별자, 회원 수는 회원일련번호로 세도록 지표·용어·grain 규칙을 분리했다(기업고객수·연체기업수 지표 신설).
+  - 이용금액과 매출금액이 같은 금액의 다른 관점임을 용어로 선언하고, 기업·카드·가맹점·전표 단위별 원천 컬럼을 못 박았다.
+  - 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.
 tables:
 - name: tbdaa1d12
   physical_table: tbdaa1d12
@@ -425,20 +428,6 @@ tables:
     - 최하자산건전성구분
     - 최하자산건전성
     - 최하자산건전성 구분
-  - name: 소호로지스틱BSS등급구분코드
-    data_type: VARCHAR
-    description: "한국신용정보(KCB)로부터 수신받은 소호 로지스틱 BSS 특화된 평가등급 ex)01:1등급 ... 99:기타"
-    synonyms:
-    - 소호로지스틱BSS등급구분
-    - 소호로지스틱BSS등급
-    - 소호로지스틱BSS
-    - 소호로지스틱 BSS 등급구분코드
-    - 소호로지스틱 BSS 등급구분
-    - 소호로지스틱BSS등급 구분
-    - 소호로지스틱 BSS 등급 구분
-    - 소호로지스틱 BSS 등급
-    - 소호로지스틱BSS 등급
-    - 소호로지스틱 BSS
   - name: 그룹최종평가신용등급코드
     data_type: VARCHAR
     description: 법인등록번호 기준으로 산출된 그룹최종평가신용등급코드를 나타낸다. / 그룹 CRS단일신용평가최종등급 기준의 데이터이다.
@@ -651,8 +640,8 @@ tables:
   source_definition: 1. 매일 기준으로 데이터를 집계하여 관리한다. 2. TBDAAAT01(고객기본) 기준으로 개인기업구분코드 '2'(기업)인 경우 모수로 잡고 데이터를 생성한다. 3. 고객식별자, 고객고유번호 기준으로 대표 1건으로 관리한다 * 고객관리번호 오름차순 기준으로 첫번째에 해당하는 값 셋팅
   source_metadata:
     workbook_entity: 고객
-    source_column_count: 79
-    queryable_column_count: 75
+    source_column_count: 78
+    queryable_column_count: 74
     excluded_technical_columns: [시스템최종갱신일시, 시스템최종갱신식별자, 시스템최종거래일시, ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월일
   aggregation_policy:
@@ -2368,13 +2357,6 @@ tables:
     - BC 카드 CA 한도 등급
     - BC 카드 CA 한도
     - BC카드CA 한도
-  - name: 통합BSS한도등급
-    data_type: VARCHAR
-    description: 고객의 연체정보,사용실적,외부평가정보등 통합적인 정보를 활용하여 산출한 BSS(Behavior Score System)한도등급
-    synonyms:
-    - 통합 BSS 한도등급
-    - 통합BSS한도 등급
-    - 통합 BSS 한도 등급
   - name: 카드일반특정이원화구분코드
     data_type: VARCHAR
     description: 카드의 결제단위가 일반카드/특정카드이원화 인지 통합인지 구분하는 코드 이다.
@@ -2491,40 +2473,6 @@ tables:
     - BC 카드 CA 한도금액
     - BC카드CA한도 금액
     - BC 카드 CA 한도 금액
-  - name: ASS평점
-    data_type: BIGINT
-    description: 신청평점 시스템의 신용평가 결과 점수
-    required: true
-    unit: count
-    aggregation: sum_at_declared_grain
-    synonyms:
-    - ASS 평점
-  - name: BSS평점
-    data_type: BIGINT
-    description: 기존고객의 향후 부실 가능성을 예측하기 위하여 행동평점을 평가점수
-    required: true
-    unit: count
-    aggregation: sum_at_declared_grain
-    synonyms:
-    - BSS 평점
-  - name: 통합ASS평점
-    data_type: BIGINT
-    description: 고객의 신용도를 통합적으로 평가한 ASS(Application scoring system)평점
-    required: true
-    unit: count
-    aggregation: sum_at_declared_grain
-    synonyms:
-    - 통합 ASS 평점
-    - 통합ASS 평점
-  - name: 통합BSS평점
-    data_type: BIGINT
-    description: 고객의 연체정보,사용실적,외부평가정보등 통합적인 정보를 활용하여 산출한 BSS(Behavior Score System)평점
-    required: true
-    unit: count
-    aggregation: sum_at_declared_grain
-    synonyms:
-    - 통합 BSS 평점
-    - 통합BSS 평점
   time_dimensions:
   - name: 실적기준년월일
     data_type: VARCHAR
@@ -2618,8 +2566,8 @@ tables:
   source_definition: "1. KB국민카드에 카드 계약이 체결되어 유지되고 있는 고객을 회원으로 관리 2. 카드 계약이 모두 해지된 이후 재가입(신규)시 고객의 회원번호는 유지된다. 위 대상에 회원의 결제단위,한도, 평점등을 추가 관리하는 엔티티 <특이사항> : ASIS의 THKBAHW00(회원기본) 의 한도가 TBGACHD01(GAC개인신용한도기본) 의 본인한도로 전환됨,THKBAHW01(회원결제단위)의 한도가 TBGACHD01(GAC개인신용한도기본) 으로 전환됨( 결제단위구분-> 이용한도구분 : '1'->'5', '2'->'6', 'B'->'D', 'C' -> 'C') 따라서 TOBE의 TBDAAAT03(DAA회원정보기본)의 한도세팅은 통합한도 는 개인본인한도를 세팅, KB,BC한도는 결제단위분리구분이 이원화('1':KB,BC, '2':신용,체크, '3':일반,특정) 일때만 세팅함"
   source_metadata:
     workbook_entity: 고객회원카드
-    source_column_count: 72
-    queryable_column_count: 71
+    source_column_count: 67
+    queryable_column_count: 66
     excluded_technical_columns: [ADW시스템최종갱신일시]
   aggregation_policy:
     deduplicate_before_aggregation: false
@@ -5727,14 +5675,6 @@ tables:
     aggregation: recompute_or_weighted_avg
     synonyms:
     - MASTER 카드수수료율
-  - name: JCB카드수수료율
-    data_type: DECIMAL
-    description: JCB카드 사용시 일정비율로 부과하는 수수료에 대한 산정비
-    required: true
-    unit: ratio
-    aggregation: recompute_or_weighted_avg
-    synonyms:
-    - JCB 카드수수료율
   - name: AMEX카드수수료율
     data_type: DECIMAL
     description: AMEX카드 사용으로 발생하는 수수료율
@@ -5815,16 +5755,6 @@ tables:
     - MASTER 카드한도금액
     - MASTER카드한도 금액
     - MASTER 카드한도 금액
-  - name: JCB카드한도금액
-    data_type: DECIMAL
-    description: JCB카드를 사용 및 취급할 수 있는 최대한도금액
-    required: true
-    unit: KRW
-    aggregation: non_additive
-    synonyms:
-    - JCB 카드한도금액
-    - JCB카드한도 금액
-    - JCB 카드한도 금액
   - name: AMEX카드한도금액
     data_type: DECIMAL
     description: AMEX카드 브랜드에 적용하는 가맹점의 총매출 한도 금액. 해당 한도 이상이 되면 AMEX카드 거래가 불가함
@@ -6035,8 +5965,8 @@ tables:
   source_definition: 1. 상품처리계로부터 전달받은 테이블(TBGDBC018) 정보 2. 각 가맹점의 업종을 유형별로 분류하여 각 업종별 가맹점수수료율, 할부가능여부, 정산에 필요한 요율 등을 코드로 관리한다.
   source_metadata:
     workbook_entity: 가맹점 상품서비스(가맹점업종코드)
-    source_column_count: 82
-    queryable_column_count: 78
+    source_column_count: 80
+    queryable_column_count: 76
     excluded_technical_columns: [시스템최종갱신일시, 시스템최종갱신식별자, 시스템최종거래일시, ADW시스템최종갱신일시]
   aggregation_policy:
     deduplicate_before_aggregation: false
@@ -6602,14 +6532,6 @@ tables:
     aggregation: recompute_or_weighted_avg
     synonyms:
     - VISA 카드수수료율
-  - name: JCB카드수수료율
-    data_type: DECIMAL
-    description: JCB카드 사용시 일정비율로 부과하는 수수료에 대한 산정비
-    required: true
-    unit: ratio
-    aggregation: recompute_or_weighted_avg
-    synonyms:
-    - JCB 카드수수료율
   - name: 가맹점선지급처리건수
     data_type: BIGINT
     description: 가맹점 선지급처리에 대한 건수
@@ -6747,8 +6669,8 @@ tables:
   source_definition: 1. 상품처리계 GDB가맹점기본(TBGDBC001) 전체대상 기준으로 수수료,결제기관,연락처정보등의 추가정보를 추출하여 관리하는 엔티티
   source_metadata:
     workbook_entity: 가맹점 상품서비스(가맹점정보기본)
-    source_column_count: 115
-    queryable_column_count: 114
+    source_column_count: 114
+    queryable_column_count: 113
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 등록년월일
   aggregation_policy:
@@ -8832,13 +8754,6 @@ tables:
     - 업체가맹점구분
     - 업체가맹점
     - 업체가맹점 구분
-  - name: 통합BSS한도등급
-    data_type: VARCHAR
-    description: 고객의 연체정보,사용실적,외부평가정보등 통합적인 정보를 활용하여 산출한 BSS(Behavior Score System)한도등급
-    synonyms:
-    - 통합 BSS 한도등급
-    - 통합BSS한도 등급
-    - 통합 BSS 한도 등급
   - name: 해지후3개월내신규발급여부
     data_type: VARCHAR
     description: 해지 후 3개월 이내에 신규발급인지를 구분한다.
@@ -8876,24 +8791,6 @@ tables:
     aggregation: semi_additive_latest_snapshot
     synonyms:
     - 고객한도신청 평점
-  - name: 통합ASS평점
-    data_type: BIGINT
-    description: 고객의 신용도를 통합적으로 평가한 ASS(Application scoring system)평점
-    required: true
-    unit: count
-    aggregation: semi_additive_latest_snapshot
-    synonyms:
-    - 통합 ASS 평점
-    - 통합ASS 평점
-  - name: 통합BSS평점
-    data_type: BIGINT
-    description: 고객의 연체정보,사용실적,외부평가정보등 통합적인 정보를 활용하여 산출한 BSS(Behavior Score System)평점
-    required: true
-    unit: count
-    aggregation: semi_additive_latest_snapshot
-    synonyms:
-    - 통합 BSS 평점
-    - 통합BSS 평점
   time_dimensions:
   - name: 기준년월일
     data_type: VARCHAR
@@ -8948,8 +8845,8 @@ tables:
   source_definition: 1. DAA카드모집최초회원정보 테이블의 일별 스냅샷 테이블로 해당 기준년월일의 시점정보를 적재하는 엔티티이다.추후 재작업 및 과거 시점정보 확인에 필요한 엔티티로 TOBE에 신규로 생성하는 엔티티이다.
   source_metadata:
     workbook_entity: 카드(카드모집최조회원정보시점정보)
-    source_column_count: 62
-    queryable_column_count: 61
+    source_column_count: 59
+    queryable_column_count: 58
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월일
   aggregation_policy:
@@ -9227,13 +9124,6 @@ tables:
     synonyms:
     - TM재수행
     - TM 재수행여부
-  - name: 통합BSS한도등급
-    data_type: VARCHAR
-    description: 고객의 연체정보,사용실적,외부평가정보등 통합적인 정보를 활용하여 산출한 BSS(Behavior Score System)한도등급
-    synonyms:
-    - 통합 BSS 한도등급
-    - 통합BSS한도 등급
-    - 통합 BSS 한도 등급
   - name: 카드청구지도로명우편번호
     data_type: VARCHAR
     description: 카드 청구지 주소의 도로명우편번호 이다.
@@ -9256,16 +9146,7 @@ tables:
     - 카드청구지주소표시구분
     - 카드청구지주소표시
     - 카드청구지주소표시 구분
-  measures:
-  - name: 통합ASS평점
-    data_type: BIGINT
-    description: 고객의 신용도를 통합적으로 평가한 ASS(Application scoring system)평점
-    required: true
-    unit: count
-    aggregation: semi_additive_latest_snapshot
-    synonyms:
-    - 통합 ASS 평점
-    - 통합ASS 평점
+  measures: []
   time_dimensions:
   - name: 기준년월일
     data_type: VARCHAR
@@ -9320,8 +9201,8 @@ tables:
   source_definition: 1. DAA카드모집기타실적집계 테이블의 일별 스냅샷 테이블로 해당 기준년월일의 시점정보를 적재하는 엔티티이다.추후 재작업 및 과거 시점정보 확인에 필요한 엔티티로 TOBE에 신규로 생성하는 엔티티이다.
   source_metadata:
     workbook_entity: 카드(일카드모집기타실적집계시점정보)
-    source_column_count: 55
-    queryable_column_count: 54
+    source_column_count: 53
+    queryable_column_count: 52
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월일
   aggregation_policy:
@@ -9564,13 +9445,6 @@ tables:
   - name: 권유자번호
     data_type: VARCHAR
     description: "회원가입신청서 작성시 권유 모집인 식별을 위해 사용하는 번호 역할구분과 모집인번호가 조합 권유자식별자 -모집인구분(역할유형구분코드) +모집인번호(모집인식별내용(M) + 모집인코드)"
-  - name: 통합BSS한도등급
-    data_type: VARCHAR
-    description: 고객의 연체정보,사용실적,외부평가정보등 통합적인 정보를 활용하여 산출한 BSS(Behavior Score System)한도등급
-    synonyms:
-    - 통합 BSS 한도등급
-    - 통합BSS한도 등급
-    - 통합 BSS 한도 등급
   measures:
   - name: 자산유동화회차
     data_type: BIGINT
@@ -9829,8 +9703,8 @@ tables:
   source_definition: '1. DAA일채권카드실적집계 테이블 데이터를 기초로 각종 연체정보(연체일수,연체회차,연체원금,연체료 등)을 계산하여 구축 관리한다. - 해당월 수보된 청구회수의 총괄전표명세를 집계 하여 카드별 연체 정보를 최종 산출한다. 2. ASIS 원장성 테이블에서 TOBE 이력관리 테이블로 변경 - ASIS : TSTAFLA01(최종 마트) , TSTAFLA04(최종 마트 구축전 전일 이미지 백업) - TOBE : TDDAA3L01 (일별 이력관리:기준년월일)'
   source_metadata:
     workbook_entity: 카드(일채권카드연체내역)
-    source_column_count: 61
-    queryable_column_count: 60
+    source_column_count: 60
+    queryable_column_count: 59
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월일
   aggregation_policy:
@@ -11081,22 +10955,6 @@ tables:
     aggregation: sum_at_declared_month_grain
     synonyms:
     - 부서사업장이용한도 금액
-  - name: BSS평점
-    data_type: BIGINT
-    description: MFX월카드통합실적집계의 기존고객의 향후 부실 가능성을 예측하기 위하여 행동평점을 평가점수
-    required: true
-    unit: count
-    aggregation: sum_at_declared_month_grain
-    synonyms:
-    - BSS 평점
-  - name: ASS평점
-    data_type: BIGINT
-    description: MFX월카드통합실적집계의 신청평점 시스템의 신용평가 결과 점수
-    required: true
-    unit: count
-    aggregation: sum_at_declared_month_grain
-    synonyms:
-    - ASS 평점
   - name: 발송물반송횟수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 자택또는 직장으로 발송된 우편물이 반송된경우 반송횟수를 관리한다.
@@ -11965,8 +11823,8 @@ tables:
   source_definition: 1. 월회원정보기본시점정보을 기준으로 월카드연간청구실적집계, 월카드연간청구실적집계 데이터를 카드구분키번호, 회원일련번호별로 기준년월의 회원정보, 카드이용실적, 카드청구실적 데이터 정보를 생성하고 관리한다. - 금월청구건수, 금월청구금액, 금월이용합계건수,금월이용합계금액 등
   source_metadata:
     workbook_entity: 카드(월카드통합실적집계)
-    source_column_count: 191
-    queryable_column_count: 190
+    source_column_count: 189
+    queryable_column_count: 188
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월
   aggregation_policy:
@@ -12537,14 +12395,6 @@ tables:
     aggregation: recompute_or_weighted_avg
     synonyms:
     - VISA 카드수수료율
-  - name: JCB카드수수료율
-    data_type: DECIMAL
-    description: MFX월가맹점정보기본시점정보의JCB카드 사용시 일정비율로 부과하는 수수료에 대한 산정비
-    required: true
-    unit: ratio
-    aggregation: recompute_or_weighted_avg
-    synonyms:
-    - JCB 카드수수료율
   - name: 가맹점선지급처리건수
     data_type: BIGINT
     description: MFX월가맹점정보기본시점정보의가맹점 선지급처리에 대한 건수
@@ -12684,8 +12534,8 @@ tables:
   source_definition: 1. DAA가맹점정보기본 전체건을 매월말 시점으로 관리하기위한 엔티티(월말 스냅샷)
   source_metadata:
     workbook_entity: 서비스상품(월가맹점정보기본시점정보)
-    source_column_count: 115
-    queryable_column_count: 114
+    source_column_count: 114
+    queryable_column_count: 113
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월
   aggregation_policy:
@@ -13098,14 +12948,6 @@ tables:
     aggregation: recompute_or_weighted_avg
     synonyms:
     - VISA 카드수수료율
-  - name: JCB카드수수료율
-    data_type: DECIMAL
-    description: MFX월가맹점실적집계의JCB카드 사용시 일정비율로 부과하는 수수료에 대한 산정비
-    required: true
-    unit: ratio
-    aggregation: recompute_or_weighted_avg
-    synonyms:
-    - JCB 카드수수료율
   - name: 대금지급주기일수
     data_type: BIGINT
     description: MFX월가맹점실적집계의가맹점에게 신판 판매대금을 지급하는 주기. 전표매입일로 부터 1일 후, 2일후, 3일후 등.
@@ -13694,8 +13536,8 @@ tables:
   source_definition: 1. 가맹점의 전표매입, 대금지급, 미수금, 특약 등에 대해 가맹점번호별로 당월의 현황데이터에 대한 정보를 생성하고 관리한다. - 사업장등록번호, 가맹점최종가입년월일, 금년가맹점매출액, 가맹점일시불매입건수 등
   source_metadata:
     workbook_entity: 서비스상품(월가맹점실적집계)
-    source_column_count: 143
-    queryable_column_count: 142
+    source_column_count: 142
+    queryable_column_count: 141
     excluded_technical_columns: [ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월
   aggregation_policy:
@@ -14269,13 +14111,6 @@ tables:
     aggregation: recompute_or_weighted_avg
     synonyms:
     - VISA 카드수수료율
-  - name: JCB카드수수료율
-    data_type: DECIMAL
-    description: JCB카드 사용시 일정비율로 부과하는 수수료에 대한 산정비
-    unit: ratio
-    aggregation: recompute_or_weighted_avg
-    synonyms:
-    - JCB 카드수수료율
   - name: 전월일시불매입건수
     data_type: BIGINT
     description: 전월 기준의 입력 기준의 일시불매입건수를 나타낸다. / 원천은 TMDAA5E03[DAA월가맹점실적기간별입력월실적집계] 이다.
@@ -14406,8 +14241,8 @@ tables:
   source_definition: 1. TBDAADT01(가맹점기본) + TBDAAUH02(DAA왓섭가맹점부가정보내역) 결합한 월 스냅샷 가맹점기본이다. 2. 가맹점풍성화(왓섭-TBDAAUH02)의 경우, 월배치임에 따라 가장 최근 데이터 기준으로 집계하여 관리한다. 3. 법정동/행정동 데이터의 경우, 주소표준화 결과값 기준으로 맵핑한 결과값이다. 4. 가맹점 이용고객에 대한 특성정보는 당사 매입전표(TBDAABT30) 기준으로 집계한다. 5. 자동납부 관련 제휴업체소분류구분코드 로직의 경우, 표준화된 Keasy 화면/테이블과 연계하여 관리한다. (TBDAADA18) * 가맹점번호로 관리되는 제휴업체에 한해서만 매핑된 정보로, 전체 실적은 TBDAADA18 가맹점번호, PG하위사업자번호, 가맹점번호+PG하위사업자번호로 맵핑하여 산출이 필요하다.
   source_metadata:
     workbook_entity: FEEDBACK(월가맹점풍성화결합기본)
-    source_column_count: 87
-    queryable_column_count: 83
+    source_column_count: 86
+    queryable_column_count: 82
     excluded_technical_columns: [시스템최종갱신일시, 시스템최종갱신식별자, 시스템최종거래일시, ADW시스템최종갱신일시]
   primary_time_dimension: 기준년월
   aggregation_policy:
@@ -15074,14 +14909,14 @@ sql_generation_contract:
   grain_and_aggregation_rules:
   - 일·월 snapshot은 table aggregation_policy의 최신행 축소를 먼저 적용한다. 월 최신행은 서브쿼리에서 ROW_NUMBER() OVER (PARTITION BY 키 ORDER BY 기준년월일 DESC) AS rn 을 만든 뒤 WHERE rn = 1 로 거른다.
   - 1:N JOIN 뒤 상위 grain 개체 수는 COUNT(DISTINCT key)로 계산하고 fact 금액 중복을 점검한다.
+  - 고객·기업·업체·법인 수는 고객식별자(전표·가맹점 테이블은 기업고객식별자, 부서사업장은 법인고객식별자)를, 회원 수는 회원일련번호를 COUNT DISTINCT한다. 한 고객식별자에 부서·사업장 회원일련번호가 여러 개 달리므로 둘을 바꿔 쓰면 수가 달라진다.
   - measure aggregation이 recompute_or_weighted_avg 또는 semi_additive_latest_snapshot이면 무조건 SUM하지 않는다.
   - 기업카드 신용+체크 축과 개별+공용 축, 총이용액과 세부 이용액처럼 overlap_group이 다른 값을 함께 더하지 않는다.
   - 기업 총한도와 잔여한도는 현재 조회이면 tbdaa1d12의 KST 전일 고객별 1행을 쓰고, 명시한 과거 월 조회이면 tmdaa1d12를 고객×월 최신 기준년월일 1건으로 축소한다. snapshot 행을 기간 합계로 더하지 않는다.
   - 기업별 한도소진율은 1 - 잔여한도/총한도, 포트폴리오 한도소진율은 1 - SUM(잔여한도)/NULLIF(SUM(총한도), 0)으로 재계산하며 기업별 비율을 AVG하지 않는다.
   - 기업 월평균 이용금액은 고객×월 최신행의 신용+체크 이용금액 합계를 요청 기간의 달력 월수로 나누며 데이터가 없는 월도 0원으로 포함한다. 사용월 평균을 명시한 경우에만 실적이 있는 월수를 분모로 쓴다.
   - 가맹점 월매출은 tmdaa5e11의 일시불+할부이며 tmdaaus01 가맹점총지급금액으로 대체하지 않는다.
-  - 가맹점주 인원은 대표고객식별자를 COUNT DISTINCT하고, 가맹점 수는 가맹점번호를 COUNT DISTINCT한다. 둘을 섞지 않는다.
-  - 가맹점주가 운영하는 기업의 속성·리스크를 물으면 기업고객식별자를, 가맹점주 개인의 식별·인원은 대표고객식별자를 사용한다.
+  - 가맹점주 인원은 대표고객식별자를, 가맹점 수는 가맹점번호를 COUNT DISTINCT하며 둘을 섞지 않는다. 가맹점주가 운영하는 기업의 속성·리스크는 기업고객식별자로, 가맹점주 개인의 식별·인원은 대표고객식별자로 조회한다.
   - 폐업 가맹점 수는 국세청 휴폐업여부가 정상(0)이 아닌 최초 관측일과 가맹점번호 DISTINCT를 사용하며 KB 가맹점 계약 해지와 구분한다.
   - 전월 대비 증감률은 요청 시작월보다 한 달 앞선 월까지 읽어 LAG를 계산한 뒤 요청 기간만 출력한다.
   ambiguity_rules:
@@ -15133,7 +14968,7 @@ canonical_domains:
   business_scope: "기업카드 보유·이용·이탈·한도와 가맹점 매출 조건을 결합한 신규 영업 대상군 발굴"
   keywords: [신규영업, 영업대상, 대상기업, 6무, 무실적, 미이용, 이탈회원, 탈회, 해지, 체크카드만, 교차판매, 기업카드미보유, 한도소진율]
   primary_entities: [corporate_customer_daily, corporate_customer_no_usage_snapshot, merchant_daily_enrichment, merchant_monthly_enrichment, merchant_monthly_performance, domestic_sales, merchant_industry]
-  preferred_metrics: [기업월카드이용금액, 기업유효카드수, 기업카드소지가맹점주수, 기업한도소진율, 가맹점월매출금액]
+  preferred_metrics: [기업월카드이용금액, 기업유효카드수, 기업카드소지가맹점주수, 기업한도소진율, 가맹점월매출금액, 기업고객수]
   default_fact_table: tbdaa1d12
   default_time_dimension: 기준년월일
   default_filters: []
@@ -15141,7 +14976,7 @@ canonical_domains:
   business_scope: "기업고객·회원·보유카드의 규모, 상태, 상품과 신규 발급 현황 분석"
   keywords: [기업고객, 법인고객, 회원, 보유카드, 유효카드, 카드수, 발급, 신규회원, 카드상품, 대기업, 중소기업, 영세기업, 공공기업, 기업규모]
   primary_entities: [customer, member, member_card, product, customer_monthly_snapshot]
-  preferred_metrics: [회원수, 유효신용카드수]
+  preferred_metrics: [회원수, 유효신용카드수, 기업고객수]
   default_fact_table: tbdaaat03
   default_time_dimension: ""
   default_filters: []
@@ -15169,14 +15004,14 @@ semantic_entities:
   grain: 고객식별자 × 고객관리번호
   canonical_dimensions: [고객식별자, 고객관리번호, 개인기업구분코드, 법인고객식별자, 직업유형구분코드, 주식상장비상장구분코드, 업종구분코드, 본사구분코드, 기업형태구분코드]
   canonical_facts: []
-  use_when: [기업고객의 기본 속성이나 회원·가맹점·전담직원 연결이 필요할 때]
+  use_when: [기업고객의 기본 속성이나 회원·가맹점·전담직원 연결이 필요할 때, 기업·업체·법인·고객 수를 고객식별자로 셀 때]
 - name: member
   korean_name: 회원
   physical_table: tbdaaat03
   grain: 회원일련번호
   canonical_dimensions: [회원일련번호, 개인기업구분코드, 카드등급구분코드, 회원자격코드, 카드결제기관구분코드, 회원자산관리부점코드]
   canonical_facts: [유효신용카드수]
-  use_when: [회원 수나 보유 카드 현황을 조회할 때]
+  use_when: [회원 수나 보유 카드 현황을 조회할 때, 카드 계약 단위(회원일련번호)로 회원 수나 카드 보유를 셀 때]
 - name: member_card
   korean_name: 회원카드
   physical_table: tbdaaat05
@@ -15903,7 +15738,29 @@ canonical_metrics:
   unit: 개
   aggregation_behavior: distinct_count
 - {name: 신용카드가맹점수수료율, domain: merchant_sales, expression: 'AVG(tmdaa5e11."신용카드가맹점수수료율")', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점수수료율, 수수료율], unit: '%', aggregation_behavior: derived_non_additive}
-- {name: 회원수, domain: customer_card_portfolio, expression: 'COUNT(DISTINCT tbdaaat03."회원일련번호")', source_table: tbdaaat03, source_entity: member, default_time_dimension: '', required_filters: [], synonyms: [회원인원, 고객수], unit: 명, aggregation_behavior: distinct_count}
+- name: 기업고객수
+  domain: customer_card_portfolio
+  business_definition: 개인기업구분코드가 기업인 고유 고객식별자 수
+  expression: COUNT(DISTINCT tbdaaat01."고객식별자")
+  source_table: tbdaaat01
+  source_entity: customer
+  default_time_dimension: ''
+  result_grain: 질문이 요청한 분류축 조합별 1행
+  required_filters:
+  - tbdaaat01."개인기업구분코드" = '2'
+  semantic_cautions:
+  - 회원일련번호가 아니라 고객식별자를 DISTINCT 집계한다. 한 기업고객에 부서·사업장 회원일련번호가 여러 개 달린다.
+  - 같은 값이 전표·가맹점 테이블에서는 기업고객식별자, 부서사업장회원(tbdaaac67)에서는 법인고객식별자라는 이름으로 들어 있다.
+  synonyms:
+  - 기업수
+  - 업체수
+  - 회사수
+  - 법인수
+  - 법인고객수
+  - 고객수
+  unit: 개
+  aggregation_behavior: distinct_count
+- {name: 회원수, domain: customer_card_portfolio, expression: 'COUNT(DISTINCT tbdaaat03."회원일련번호")', source_table: tbdaaat03, source_entity: member, default_time_dimension: '', required_filters: [], synonyms: [회원인원], unit: 명, aggregation_behavior: distinct_count}
 - {name: 유효신용카드수, domain: customer_card_portfolio, expression: 'SUM(tbdaaat03."유효신용카드수")', source_table: tbdaaat03, source_entity: member, default_time_dimension: '', required_filters: [], synonyms: [유효카드수, 카드보유수], unit: 매, aggregation_behavior: additive_at_declared_grain}
 - {name: 기업월카드이용금액, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tmdaa1d12."금월신용카드이용금액", 0) + COALESCE(tmdaa1d12."금월체크카드이용금액", 0))', source_table: tmdaa1d12, source_entity: corporate_customer_no_usage_snapshot, default_time_dimension: 기준년월, required_filters: [고객별 월 최신 기준년월일 1건], synonyms: [기업회원월이용금액, 기업카드월이용금액, 월이용액, 유실적, 무실적], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - name: 기업월평균카드이용금액
@@ -15936,7 +15793,27 @@ canonical_metrics:
 - {name: 관리기업월이용금액, domain: relationship_sales_management, expression: 'SUM(COALESCE(tmdaa1d12."금월신용카드이용금액", 0) + COALESCE(tmdaa1d12."금월체크카드이용금액", 0))', source_table: tmdaa1d12, source_entity: corporate_customer_no_usage_snapshot, default_time_dimension: 기준년월, required_filters: [관리기업목록 파라미터의 사업자등록번호로 범위 제한, 고객별 월 최신 기준년월일 1건], synonyms: [관리기업이용추이, 담당기업이용금액, 최근6개월이용금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 관리기업연체원금, domain: relationship_sales_management, expression: 'SUM(COALESCE(tbdaa1d12."카드연체원금", 0) + COALESCE(tbdaa1d12."여신연체원금", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [관리기업목록 파라미터의 사업자등록번호로 범위 제한, 카드연체여부 = '1' OR 여신연체여부 = '1' OR 연체원금 > 0, 현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [관리기업연체금액, 담당기업연체원금], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 총여신한도금액, domain: credit_risk, expression: 'SUM(tbdaa1d12."기업총한도금액")', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [기업한도, 여신한도, 총한도, 기업총한도, 한도금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
-- {name: 연체회원수, domain: credit_risk, expression: 'COUNT(DISTINCT tddaa3l01."회원일련번호")', source_table: tddaa3l01, source_entity: card_delinquency_daily, default_time_dimension: 기준년월일, required_filters: ['tddaa3l01."신용카드연체회차" > 0'], synonyms: [연체자수, 연체고객수], unit: 명, aggregation_behavior: distinct_count}
+- name: 연체기업수
+  domain: credit_risk
+  business_definition: 기준 시점에 카드 또는 여신 연체가 있는 고유 기업고객 수
+  expression: COUNT(DISTINCT tbdaa1d12."고객식별자")
+  source_table: tbdaa1d12
+  source_entity: corporate_customer_daily
+  default_time_dimension: 기준년월일
+  result_grain: 기준 시점 1행 또는 기준년월별 1행
+  required_filters:
+  - 카드연체여부 = '1' OR 여신연체여부 = '1' OR COALESCE(카드연체원금, 0) + COALESCE(여신연체원금, 0) > 0
+  - 현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용
+  semantic_cautions:
+  - 연체 회원 수(tddaa3l01.회원일련번호)와 다른 지표다. 기업 수는 고객식별자를 DISTINCT 집계한다.
+  - 일별 snapshot이므로 고객식별자별 기준년월일 DESC 최신 1건으로 축소한 뒤 연체 조건을 적용한다.
+  synonyms:
+  - 연체고객수
+  - 연체업체수
+  - 연체기업고객수
+  unit: 개
+  aggregation_behavior: snapshot_dedup_then_aggregate
+- {name: 연체회원수, domain: credit_risk, expression: 'COUNT(DISTINCT tddaa3l01."회원일련번호")', source_table: tddaa3l01, source_entity: card_delinquency_daily, default_time_dimension: 기준년월일, required_filters: ['tddaa3l01."신용카드연체회차" > 0'], synonyms: [연체자수], unit: 명, aggregation_behavior: distinct_count}
 - {name: 특수채권편입원금, domain: credit_risk, expression: 'SUM(tbmaisd06."특수채권편입원금")', source_table: tbmaisd06, source_entity: special_debt, default_time_dimension: 특수채권편입기준년월일, required_filters: [], synonyms: [부실채권원금, 특수채권원금], unit: 원, aggregation_behavior: additive_at_declared_grain}
 - {name: 기대대손충당금, domain: credit_risk, expression: 'SUM(tbmewcm94."기대대손충당금")', source_table: tbmewcm94, source_entity: loss_provision, default_time_dimension: 기준년월, required_filters: [기준년월 제한 또는 기준년월별 GROUP BY], synonyms: [대손충당금, 충당금, 기대손실, ECL], unit: 원, aggregation_behavior: additive_at_declared_grain}
 - name: 가맹점포트폴리오대손충당금률
@@ -18048,6 +17925,18 @@ glossary:
   description: "관리영업 질의의 요청별 접근 범위. 사용자가 직접 입력한 목록은 10자리 사업자등록번호로 파싱·검증해 현재 요청에만 적용한다."
   aliases: ["내가 관리하는 기업", "담당기업", "관리회원"]
   sql_hint: "필수 관리기업목록을 요청별 VALUES CTE로 만들고, 현재·기간 미지정은 tbdaa1d12 KST 전일 행, 명시 과거 월은 tmdaa1d12 고객×월 최신행과 사업자등록번호로 INNER JOIN한다."
+- term: 이용금액
+  canonical: 카드로 쓴 돈. 받은 돈인 매출금액과 다른 지표이며, 질문이 쓴 단어가 이용금액 컬럼과 매출금액 컬럼 중 어느 쪽을 볼지 결정한다
+  description: 이용금액은 회원·기업·카드가 카드로 쓴 금액이고, 매출금액은 가맹점이 카드로 받은 금액이다. 같은 기업이라도 카드로 쓴 이용금액과 가맹점으로서 받은 매출금액은 서로 다른 값이므로 두 단어를 바꿔 쓰지 않는다. 단어가 컬럼 계열을 정하고, 질문의 집계 대상이 그 안에서 테이블을 정한다.
+  aliases:
+  - 매출금액
+  - 매출액
+  - 이용액
+  - 사용금액
+  - 카드매출
+  - 카드이용금액
+  - 결제금액
+  sql_hint: '이용금액을 물으면 이용금액 컬럼을 쓴다: 기업·법인 월은 tmdaa1d12의 금월신용카드이용금액+금월체크카드이용금액, 카드 월은 tmdaa3e16의 금월이용합계금액. 매출금액을 물으면 매출금액 컬럼을 쓴다: 전표·업종·일자는 tbdaabt30(해외는 tbdaabt08)의 매출금액, 가맹점 월은 tmdaa5e11의 가맹점일시불매출금액+가맹점할부매출금액이며 기업 단위 매출은 tmdaa5e11의 기업고객식별자로 묶는다.'
 - term: "가맹점월매출"
   canonical: "tmdaa5e11.가맹점일시불매출금액 + tmdaa5e11.가맹점할부매출금액"
   description: "실제 월 매출 지표. tmdaaus01.가맹점총지급금액은 지급·정산 대리값이므로 동일 지표로 합치지 않는다."
@@ -18089,6 +17978,27 @@ glossary:
   aliases: ["당좌계좌", "가맹점 당좌", "계좌 종류"]
   sql_hint: "계좌 종류 원천 컬럼과 당좌 코드 매핑이 추가되기 전에는 SQL을 만들지 않는다."
   domains: [merchant_sales]
+- term: 기업고객
+  canonical: tbdaaat01.고객식별자 (전표·가맹점은 기업고객식별자, 부서사업장회원은 법인고객식별자)
+  description: 당사와 거래하는 기업·법인 1곳. 기업 수·업체 수·고객 수는 모두 이 식별자의 고유 개수이며, 한 기업고객 아래에 부서·사업장 단위 회원일련번호가 여러 개 달린다.
+  aliases:
+  - 법인고객
+  - 기업 수
+  - 업체 수
+  - 고객 수
+  - 고객식별자
+  - 기업고객식별자
+  - 법인고객식별자
+  sql_hint: 기업·업체·법인·고객 수는 COUNT(DISTINCT "고객식별자")로 세고 개인기업구분코드 = '2' 를 함께 적용한다. 회원일련번호로 세지 않는다.
+- term: 카드회원
+  canonical: tbdaaat03.회원일련번호
+  description: 기업고객이 맺은 카드 계약 1건. 부서·사업장 단위로 채번되며 보유 카드·이용·연체·충당금이 이 키로 연결된다.
+  aliases:
+  - 회원 수
+  - 회원일련번호
+  - 회원번호
+  - 부서사업장회원
+  sql_hint: 회원 수는 COUNT(DISTINCT "회원일련번호")로 센다. 고객식별자와는 1:N이므로 같은 결과에서 기업 수를 낼 때는 고객식별자로 다시 DISTINCT한다.
 
 # =============================================================================
 # 6. QUERY REFERENCES - 질의별 컬럼/필터/조인 선택 지침

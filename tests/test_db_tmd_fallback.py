@@ -226,7 +226,7 @@ def test_tmd_fallback_error_keeps_the_original_zero_result() -> None:
     assert state["query_error"] == ""
     assert workflow.after_matched_query(state) == "generate_answer"
     answer = workflow.generate_answer({"question": "기업회원을 알려줘", **state})
-    assert answer["answer"].startswith("조회 결과가 0건입니다.")
+    assert answer["answer"].startswith("해당 데이터가 없습니다.")
     assert execute.call_count == 4
 
 
