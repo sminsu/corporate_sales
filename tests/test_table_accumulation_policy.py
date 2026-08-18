@@ -44,6 +44,20 @@ def frozen_clock(today: date = FROZEN_TODAY):
         yield today
 
 
+@contextlib.contextmanager
+def no_period_range():
+    """적재 범위를 못 읽는 상태. 최신 가용일이 KST 전일로 되돌아가는지 볼 때 쓴다."""
+    with patch.object(workflow, "loaded_period_range", return_value=None):
+        yield
+
+
+@contextlib.contextmanager
+def latest_loaded_day(day: str):
+    """적재된 최신 일자를 고정한다. 시계의 D-1 과 다른 값을 줘야 의미가 있다."""
+    with patch.object(workflow, "loaded_period_range", return_value=("20240101", day)):
+        yield
+
+
 def test_frozen_clock_covers_every_kst_today_binding() -> None:
     """헬퍼가 시계를 하나라도 놓치면 아래 테스트들이 조용히 날짜에 의존하게 된다."""
     with frozen_clock():
@@ -208,10 +222,10 @@ def _merchant_month_sql(reference_month: str) -> str:
 
 
 def test_current_month_monthly_snapshot_reads_its_daily_twin() -> None:
-    """월말요약은 달이 닫혀야 적재된다. 이번 달은 일별 짝의 D-1 이 유일한 원천이다."""
+    """월말요약은 달이 닫혀야 적재된다. 이번 달은 일별 짝의 최신 가용일이 유일한 원천이다."""
     sql = _merchant_month_sql("202608")
 
-    with frozen_clock():
+    with frozen_clock(), latest_loaded_day("20260810"):
         routed = workflow._apply_accumulation_historical_sources(
             "월 매출액 1억원 이상 법인사업자 중 기업카드 미보유 명단",
             sql,
@@ -221,7 +235,8 @@ def test_current_month_monthly_snapshot_reads_its_daily_twin() -> None:
 
     assert "card_system.tmdaaus01" not in routed
     assert "FROM card_system.tbdaaus01 tbdaaus01" in routed
-    assert f'tbdaaus01."기준년월일" = \'{FROZEN_PREVIOUS_DAY}\'' in routed
+    # 시계의 D-1(20260811)이 아니라 실제 적재된 최신일로 고정한다.
+    assert 'tbdaaus01."기준년월일" = \'20260810\'' in routed
     # 감싸는 방식이라 호출부가 쓰던 축(SELECT·PARTITION BY·WHERE)은 그대로 남는다.
     assert 'SUBSTR(tbdaaus01."기준년월일", 1, 6) AS "기준년월"' in routed
     assert 'a."기준년월" = \'202608\'' in routed
@@ -235,7 +250,7 @@ def test_current_month_monthly_snapshot_reads_its_daily_twin() -> None:
 def test_closed_month_keeps_the_monthly_snapshot(label: str, reference_month: str) -> None:
     sql = _merchant_month_sql(reference_month)
 
-    with frozen_clock():
+    with frozen_clock(), latest_loaded_day(FROZEN_PREVIOUS_DAY):
         routed = workflow._apply_accumulation_historical_sources("가맹점 명단", sql)
 
     assert routed == sql, label
@@ -249,16 +264,22 @@ def test_month_range_spanning_closed_months_keeps_the_monthly_snapshot() -> None
     WHERE a."기준년월" BETWEEN '202601' AND '202608'
     """
 
-    with frozen_clock():
+    with frozen_clock(), latest_loaded_day(FROZEN_PREVIOUS_DAY):
         assert workflow._apply_accumulation_historical_sources("가맹점 명단", sql) == sql
 
 
-def test_first_of_month_keeps_the_monthly_snapshot() -> None:
-    """1일에는 일별 짝의 최신일(D-1)도 아직 지난 달이라 돌릴 곳이 없다."""
+def test_daily_twin_without_the_open_month_keeps_the_monthly_snapshot() -> None:
+    """월초나 적재 지연으로 짝의 최신일이 아직 지난 달이면 돌릴 곳이 없다."""
     sql = _merchant_month_sql("202608")
 
-    with frozen_clock(date(2026, 8, 1)):
+    with frozen_clock(date(2026, 8, 1)), latest_loaded_day("20260731"):
         assert workflow._apply_accumulation_historical_sources("가맹점 명단", sql) == sql
+
+    # 적재 범위를 못 읽으면 시계의 D-1 로 되돌아간다. 8/12 의 D-1 은 이번 달이다.
+    with frozen_clock(), no_period_range():
+        assert "card_system.tbdaaus01" in workflow._apply_accumulation_historical_sources(
+            "가맹점 명단", sql
+        )
 
 
 def test_column_the_daily_twin_lacks_keeps_the_monthly_snapshot() -> None:
@@ -269,7 +290,7 @@ def test_column_the_daily_twin_lacks_keeps_the_monthly_snapshot() -> None:
     WHERE c."기준년월" = '202608'
     """
 
-    with frozen_clock():
+    with frozen_clock(), latest_loaded_day(FROZEN_PREVIOUS_DAY):
         assert workflow._apply_accumulation_historical_sources("기업고객 현황", sql) == sql
         # 같은 질문이라도 짝이 가진 컬럼만 읽으면 이번 달은 일별로 간다.
         assert "card_system.tbdaa1d12" in workflow._apply_accumulation_historical_sources(
@@ -359,10 +380,11 @@ def test_kst_previous_day_and_recent_ten_day_bounds_are_inclusive() -> None:
 
 
 def test_previous_day_tables_expose_d_minus_one_without_reference_month() -> None:
-    with frozen_clock():
+    """적재 범위를 못 읽으면 최신 가용일은 KST 전일로 돌아간다."""
+    with frozen_clock(), no_period_range():
         instruction = workflow._accumulation_policy_instruction(["tbdaa1d12"])
 
-    assert f"KST 전일 `{FROZEN_PREVIOUS_DAY}`" in instruction
+    assert f"최신 가용일은 `{FROZEN_PREVIOUS_DAY}`" in instruction
     assert "물리 `기준년월` 컬럼은 없습니다" in instruction
 
 
@@ -639,6 +661,56 @@ def test_verified_query_execution_checks_accumulation_policy_before_database() -
 
     assert "적재 주기 위반" in result["query_error"]
     execute.assert_not_called()
+
+
+def _current_snapshot_sql(day: str) -> str:
+    return (
+        'SELECT a."고객식별자" FROM card_system.tbdaa1d12 a '
+        f"WHERE a.\"기준년월일\" = '{day}'"
+    )
+
+
+def test_blocking_follows_the_loaded_max_not_the_clock() -> None:
+    """적재가 밀리면 KST 전일에는 데이터가 없다. 그날로 고정한 SQL을 통과시키면 안 된다."""
+    stale_max = "20260810"
+
+    with frozen_clock(), latest_loaded_day(stale_max):
+        # 시계의 D-1 은 적재된 최신일보다 뒤라 막힌다.
+        clock_issues = workflow._availability_policy_issues(
+            "현재 기업고객 현황", _current_snapshot_sql(FROZEN_PREVIOUS_DAY)
+        )
+        # 실제 적재된 최신일은 통과한다.
+        loaded_issues = workflow._availability_policy_issues(
+            "현재 기업고객 현황", _current_snapshot_sql(stale_max)
+        )
+
+    assert any(f"최신 가용일은 {stale_max}" in issue for issue in clock_issues)
+    assert loaded_issues == []
+
+
+def test_blocking_falls_back_to_the_clock_when_the_range_is_unreadable() -> None:
+    with frozen_clock(), no_period_range():
+        assert (
+            workflow._availability_policy_issues(
+                "현재 기업고객 현황", _current_snapshot_sql(FROZEN_PREVIOUS_DAY)
+            )
+            == []
+        )
+
+
+def test_generation_and_params_target_the_same_day_the_guard_accepts() -> None:
+    """프롬프트·파라미터가 시계를 보고 가드가 데이터를 보면 통과할 수 없는 SQL만 나온다."""
+    stale_max = "20260810"
+    specs = [{"name": "기준년월일", "type": "string"}]
+
+    with frozen_clock(), latest_loaded_day(stale_max):
+        instruction = workflow._accumulation_policy_instruction(["tbdaa1d12"])
+        params = workflow._extract_params_by_rule("현재 현황", specs, ["tbdaa1d12"])
+        basis = workflow._implicit_time_basis_note("현재 현황", _current_snapshot_sql(stale_max))
+
+    assert f"최신 가용일은 `{stale_max}`" in instruction
+    assert params == {"기준년월일": stale_max}
+    assert stale_max in basis
 
 
 @contextlib.contextmanager

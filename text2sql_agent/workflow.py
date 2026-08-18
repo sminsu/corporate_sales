@@ -864,6 +864,18 @@ def _is_snapshot_status_question(question: str) -> bool:
     return bool(_SNAPSHOT_STATUS_RE.search(question or ""))
 
 
+def _latest_available_day(table_name: str) -> str:
+    """전일 적재 테이블이 실제로 들고 있는 최신 일자.
+
+    KST 전일은 "적재됐어야 하는 날"이지 "적재된 날"이 아니다. 적재가 하루라도
+    밀리면 그 차이만큼 멀쩡한 SQL이 막히고, 정작 데이터가 있는 날은 "과거"로
+    분류돼 월별 아카이브로 새어 나간다. 데이터를 못 읽을 때만 시계로 돌아간다.
+    """
+    bounds = loaded_period_range(table_name)
+    latest = bounds[1] if bounds else ""
+    return latest if len(latest) == 8 and latest.isdigit() else previous_day_ymd()
+
+
 def _accumulation_policy_instruction(table_names: list[str] | None = None) -> str:
     """Return table-specific load-cycle rules for SQL generation and validation."""
     policies: list[tuple[str, dict]] = []
@@ -875,7 +887,6 @@ def _accumulation_policy_instruction(table_names: list[str] | None = None) -> st
     if not policies:
         return ""
 
-    latest_previous_day = previous_day_ymd()
     recent_start, recent_end = recent_window_ymd()
     lines = ["    - 선택 테이블별 적재 주기 계약을 최우선으로 적용합니다."]
     for name, policy in policies:
@@ -908,16 +919,17 @@ def _accumulation_policy_instruction(table_names: list[str] | None = None) -> st
                 lines.append(
                     f"      이번 달({_current_ym()})은 아직 적재되지 않았습니다. "
                     f"이번 달만 물으면 일별 짝 `{live_source['table']}."
-                    f"{live_source['query_time_dimension']}`를 KST 전일 "
-                    f"`{latest_previous_day}` 1건으로 조회하고, 지난 달 이전은 "
-                    f"`{name}.{column}`을 그대로 씁니다."
+                    f"{live_source['query_time_dimension']}`를 최신 가용일 "
+                    f"`{_latest_available_day(str(live_source['table']))}` 1건으로 조회하고, "
+                    f"지난 달 이전은 `{name}.{column}`을 그대로 씁니다."
                 )
         elif cadence == "yearly":
             lines.append(f"      월/일 요청도 적재 기준 조건은 `{column}`의 YYYY로 축약합니다.")
         elif cadence == "previous_day":
             historical_source = policy.get("historical_source")
+            latest_available = _latest_available_day(name)
             lines.append(
-                f'      현재/오늘/전일/기본 조회의 최신 가용일은 KST 전일 `{latest_previous_day}`이며 `{column}`로 조회합니다.'
+                f'      현재/오늘/전일/기본 조회의 최신 가용일은 `{latest_available}`이며 `{column}`로 조회합니다.'
             )
             if isinstance(historical_source, dict):
                 lines.append(
@@ -926,7 +938,7 @@ def _accumulation_policy_instruction(table_names: list[str] | None = None) -> st
                     f"({historical_source.get('format')})로 조회합니다. 최신 스냅샷에만 D-1을 적용합니다."
                 )
             else:
-                lines.append(f"      명시 기간의 종료일도 `{latest_previous_day}`를 넘길 수 없습니다.")
+                lines.append(f"      명시 기간의 종료일도 `{latest_available}`를 넘길 수 없습니다.")
             if policy.get("has_reference_month") is False:
                 lines.append(
                     f'      현재 원천에는 물리 `기준년월` 컬럼은 없습니다.'
@@ -1036,8 +1048,8 @@ def _implicit_time_basis_note(question: str, sql: str) -> str:
     )
     if previous_day_tables:
         return (
-            f"{', '.join(previous_day_tables)}는 KST 전일({previous_day_ymd()})까지 적재되는 "
-            "전일 스냅샷 기준으로 조회했습니다."
+            f"{', '.join(previous_day_tables)}는 최신 가용일"
+            f"({_latest_available_day(previous_day_tables[0])}) 기준으로 조회했습니다."
         )
     recent_window_tables = sorted(
         table
@@ -1629,9 +1641,13 @@ def _extract_params_by_rule(
         }
         params.update({name: value for name, value in comparison_period_params.items() if name in names})
     start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
-    previous_day_source = any(
-        (accumulation_policy_for(table_name) or {}).get("cadence") == "previous_day"
-        for table_name in (table_names or [])
+    previous_day_source = next(
+        (
+            table_name
+            for table_name in (table_names or [])
+            if (accumulation_policy_for(table_name) or {}).get("cadence") == "previous_day"
+        ),
+        "",
     )
     for name in names:
         if not start_ym and not explicit_day:
@@ -1643,7 +1659,7 @@ def _extract_params_by_rule(
                 r"오늘|현재(?:\s*(?:시점|기준))?", question or ""
             )
             if name == "기준년월일" and previous_day_source and use_today:
-                params[name] = previous_day_ymd()
+                params[name] = _latest_available_day(previous_day_source)
             else:
                 params[name] = explicit_day or (kst_today().strftime("%Y%m%d") if use_today else _month_end(end_ym))
         elif name == "전월기준년월":
@@ -2392,12 +2408,7 @@ def _apply_current_month_live_sources(
     (`tbdaaus01`)의 최신 가용일 1건으로 돌린다 — 월별 테이블이 들고 있었을
     "월 최신 스냅샷 1건"과 같은 의미다. 지난 달 이전은 그대로 월별을 쓴다.
     """
-    latest_day = previous_day_ymd()
     current_ym = kst_today().strftime("%Y%m")
-    # 매월 1일에는 일별 짝의 최신일도 아직 지난 달이라 돌릴 곳이 없다.
-    if latest_day[:6] != current_ym:
-        return sql
-
     candidates = _extract_schema_tables(sql)
     if source_tables is not None:
         candidates &= source_tables
@@ -2411,6 +2422,11 @@ def _apply_current_month_live_sources(
         if set(_table_axis_literal_values(rewritten, source_table, "기준년월")) != {current_ym}:
             continue
         live_table = str(live["table"])
+        # 월초나 적재 지연으로 짝이 아직 이번 달을 못 들고 있으면 돌릴 곳이 없다.
+        # 여기서만 적재 범위를 읽으므로, 이번 달을 물은 SQL 외에는 조회가 없다.
+        latest_day = _latest_available_day(live_table)
+        if latest_day[:6] != current_ym:
+            continue
         if not _live_source_covers_columns(rewritten, source_table, live_table):
             continue
         rewritten = _route_table_to_live_source(
@@ -5542,7 +5558,6 @@ def _availability_policy_issues(
         return []
 
     issues = _monthly_archive_join_issues(sql)
-    latest_previous_day = previous_day_ymd()
     recent_start, recent_end = recent_window_ymd()
     has_requested_period = _has_time_expression(question)
 
@@ -5571,22 +5586,23 @@ def _availability_policy_issues(
                     question or "",
                 )
             )
+            latest_available = _latest_available_day(table_name)
             axis_values = [
                 value
                 for value in _table_axis_literal_values(sql, table_name, column)
                 if len(value) == 8
             ]
-            if any(value > latest_previous_day for value in axis_values):
+            if any(value > latest_available for value in axis_values):
                 issues.append(
-                    f'{table_name}의 최신 가용일은 KST 전일 {latest_previous_day}입니다. '
-                    f'"{column}"에 금일/미래 일자를 사용하지 마세요.'
+                    f"{table_name}의 최신 가용일은 {latest_available}입니다. "
+                    f'"{column}"에 그보다 뒤의 일자를 사용하지 마세요.'
                 )
             if current_request and not _has_exact_table_axis_value(
-                sql, table_name, column, latest_previous_day
+                sql, table_name, column, latest_available
             ):
                 issues.append(
-                    f'{table_name}의 현재 가용일은 KST 전일 {latest_previous_day}입니다. '
-                    f'"{column}"을 전일로 제한하고 MAX 전체시점이나 금일을 사용하지 마세요.'
+                    f"{table_name}의 현재 가용일은 {latest_available}입니다. "
+                    f'"{column}"을 그 일자로 제한하고 MAX 전체시점이나 금일을 사용하지 마세요.'
                 )
             elif not current_request and not _has_table_axis_filter(
                 sql, table_name, column
