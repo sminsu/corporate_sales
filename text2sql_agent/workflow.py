@@ -37,6 +37,7 @@ from .row_constraints import (
     outer_limit,
     parse_row_request,
 )
+from .safety import SAFETY_REFUSAL, check_content_safety
 from .schema import (
     SCHEMA,
     VERIFIED_QUERIES,
@@ -380,6 +381,16 @@ def _missing_ambiguous_target_params(question: str) -> list[dict]:
 
 
 def classify_question(state: Text2SQLState) -> dict:
+    if state.get("safety_action") != "ALLOW":
+        decision = check_content_safety(state.get("question", ""), direction="INPUT")
+        if decision["action"] == "BLOCK":
+            return {
+                "question_type": "safety_blocked",
+                "safety_action": decision["action"],
+                "safety_category": decision["category"],
+                "safety_reason_code": decision["reason_code"],
+                "safety_direction": decision["direction"],
+            }
     if state.get("question_type"):
         return {"question_type": state["question_type"]}
 
@@ -4163,6 +4174,10 @@ def reject_answer(state: Text2SQLState) -> dict:
     return {"answer": "죄송합니다. 현재 기업영업 데이터 범위에서는 답변하기 어려운 질문입니다.\n\n다음처럼 질문해 주세요:\n- 카드 매출·이용금액과 월별 추이\n- 가맹점·업종별 매출과 순위\n- 기업고객의 카드 보유, 여신한도, 연체, 특수채권, 대손충당금\n- 예: `2025년 12월 가맹점별 매출 상위 10곳을 보여줘`"}
 
 
+def policy_refusal(_: Text2SQLState) -> dict:
+    return {"answer": SAFETY_REFUSAL}
+
+
 _GENERIC_TABLE_TERMS = {"기준년월", "기준년월일", "고객식별자", "회원일련번호", "금액", "건수"}
 
 # 이 개수 이하의 테이블만 가진 컬럼은 그 테이블을 특정하는 단서로 본다.
@@ -6062,8 +6077,10 @@ def prepare_direct_sql(state: Text2SQLState) -> dict:
 
 def route_by_question_type(
     state: Text2SQLState,
-) -> Literal["refine_search_query", "prepare_direct_sql", "direct_answer", "reject_answer"]:
+) -> Literal["refine_search_query", "prepare_direct_sql", "direct_answer", "reject_answer", "policy_refusal"]:
     qtype = state.get("question_type", "need_sql")
+    if qtype == "safety_blocked":
+        return "policy_refusal"
     if qtype == "direct_sql":
         return "prepare_direct_sql"
     if qtype == "direct":
@@ -6153,6 +6170,7 @@ def build_graph() -> StateGraph:
     graph.add_node("run_matched_query", run_matched_query)
     graph.add_node("direct_answer", direct_answer)
     graph.add_node("reject_answer", reject_answer)
+    graph.add_node("policy_refusal", policy_refusal)
     graph.add_node("analyze_question", analyze_question)
     graph.add_node("check_sql_gen_params", check_sql_gen_params)
     graph.add_node("generate_sql", generate_sql)
@@ -6169,6 +6187,7 @@ def build_graph() -> StateGraph:
 
     graph.add_edge("direct_answer", END)
     graph.add_edge("reject_answer", END)
+    graph.add_edge("policy_refusal", END)
 
     graph.add_conditional_edges("select_tool", after_tool_selection)
     graph.add_conditional_edges("check_tool_params", after_check_params)
@@ -6197,6 +6216,7 @@ def build_graph() -> StateGraph:
 def _new_initial_state(question: str) -> Text2SQLState:
     return {
         "question": question, "retrieval_query": "", "question_type": "",
+        "safety_action": "", "safety_category": "", "safety_reason_code": "", "safety_direction": "",
         "previous_question": "", "previous_sql": "", "previous_answer": "", "followup_question": "",
         "query_frame": {},
         "selected_domain": "", "domain_candidates": [], "domain_routing_trace": "", "domain_context": "",

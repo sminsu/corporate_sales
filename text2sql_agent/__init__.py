@@ -21,6 +21,14 @@ from .config import (
 )
 from .exports import _get_source_label, export_all, export_to_csv, export_to_excel, export_to_text, export_to_word, prepare_export_result
 from .llm import _call_llm, close_common_clients, probe_llm
+from .pii import (
+    PII_STORAGE_REDACTION,
+    PiiMaskingError,
+    close_pii_client,
+    mask_pii_for_storage,
+    mask_pii_text,
+)
+from .safety import BLOCKED_USER_MESSAGE, SAFETY_REFUSAL, check_content_safety
 from .workflow import (
     _new_initial_state,
     build_graph,
@@ -29,21 +37,27 @@ from .workflow import (
 
 __all__ = [
     "BAD_DEBT_OUTPUT_DIR",
+    "BLOCKED_USER_MESSAGE",
     "LLM_API_KEY",
     "LLM_BASE_URL",
     "LLM_ENDPOINT_PATH",
     "LLM_MODEL",
     "LLM_PROVIDER",
+    "PII_STORAGE_REDACTION",
+    "PiiMaskingError",
     "REPORT_DIR",
+    "SAFETY_REFUSAL",
     "_call_llm",
     "_get_source_label",
     "_new_initial_state",
     "build_graph",
+    "check_content_safety",
     "common_error_name",
     "common_feature_status",
     "common_http_status",
     "common_package_status",
     "close_common_clients",
+    "close_pii_client",
     "create_trace_context",
     "emit_execution_log",
     "emit_module_event",
@@ -52,6 +66,8 @@ __all__ = [
     "export_to_excel",
     "export_to_text",
     "export_to_word",
+    "mask_pii_for_storage",
+    "mask_pii_text",
     "prepare_export_result",
     "observability_context",
     "probe_llm",

@@ -176,6 +176,26 @@ def _emit_log(level: str, message: str, **metadata: Any) -> dict[str, Any] | Non
     if logger is None:
         return None
     cleaned = _clean_metadata(metadata)
+    try:
+        from .pii import mask_pii_for_storage
+
+        cleaned = mask_pii_for_storage(cleaned)
+    except Exception:
+        # Never fall back to raw log metadata when the masking service is down.
+        safe_keys = {
+            "agent_name",
+            "event_type",
+            "latency_ms",
+            "log_level",
+            "message_id",
+            "module",
+            "request_id",
+            "status",
+            "total_latency_ms",
+            "trace_id",
+        }
+        cleaned = {key: value for key, value in cleaned.items() if key in safe_keys}
+        cleaned["pii_masking_failed"] = True
     log_method = getattr(logger, "_log", None)
     if callable(log_method):
         return log_method(level, message, **cleaned)

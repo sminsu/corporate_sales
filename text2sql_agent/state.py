@@ -10,6 +10,11 @@ class Text2SQLState(TypedDict):
     question: str
     retrieval_query: str
     question_type: str
+    # --- Prompt-based safety guardrail ---
+    safety_action: str
+    safety_category: str
+    safety_reason_code: str
+    safety_direction: str
     # --- Multi-turn context (optional values, initialized as empty strings) ---
     previous_question: str
     previous_sql: str

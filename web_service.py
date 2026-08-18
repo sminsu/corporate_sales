@@ -89,6 +89,7 @@ async def _lifespan(_: FastAPI):
     finally:
         _stream_log(logging.INFO, "service_stopping")
         agent.close_common_clients()
+        agent.close_pii_client()
         _SESSION_STORE.close()
 
 
@@ -237,6 +238,18 @@ def _stream_log(level: int, event: str, *, exc_info: bool = False, **fields: Any
         exception_trace = traceback.format_exc()
         if exception_trace and exception_trace.strip() != "NoneType: None":
             payload["exception_trace"] = exception_trace
+    sensitive_log_fields = {
+        key: payload[key]
+        for key in ("error_message", "exception_trace")
+        if payload.get(key)
+    }
+    if sensitive_log_fields:
+        try:
+            payload.update(agent.mask_pii_for_storage(sensitive_log_fields))
+        except agent.PiiMaskingError:
+            for key in sensitive_log_fields:
+                payload[key] = agent.PII_STORAGE_REDACTION
+            payload["pii_masking_failed"] = True
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
     line = json.dumps(payload, ensure_ascii=False, default=str)
     try:
@@ -794,7 +807,7 @@ def _get_or_create_session(session_id: str | None, user_id: str = "ui", agent_na
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.") from exc
 
 
-def _append_message(session: dict[str, Any], role: str, content: str, **extra: Any) -> None:
+def _append_message(session: dict[str, Any], role: str, content: str, **extra: Any) -> dict[str, Any]:
     message = {
         "role": role,
         "content": content,
@@ -802,7 +815,25 @@ def _append_message(session: dict[str, Any], role: str, content: str, **extra: A
         "created_at": datetime.now().isoformat(),
     }
     message.update({k: _jsonable(v) for k, v in extra.items() if v is not None})
-    _SESSION_STORE.append_message(session, message)
+    try:
+        stored_message = agent.mask_pii_for_storage(message)
+    except agent.PiiMaskingError:
+        stored_message = {
+            "role": role,
+            "content": agent.PII_STORAGE_REDACTION,
+            "text": agent.PII_STORAGE_REDACTION,
+            "created_at": message["created_at"],
+            "pii_masking_failed": True,
+        }
+    _SESSION_STORE.append_message(session, stored_message)
+    return stored_message
+
+
+def _mask_for_persistence(value: Any) -> Any | None:
+    try:
+        return agent.mask_pii_for_storage(value)
+    except agent.PiiMaskingError:
+        return None
 
 
 def _user_message_text(question: str, params: dict[str, Any] | None = None) -> str:
@@ -824,6 +855,68 @@ def _user_message_text(question: str, params: dict[str, Any] | None = None) -> s
             pass
         return f"추가 입력: {natural_input}"
     return "추가 입력: " + json.dumps(_jsonable(params), ensure_ascii=False)
+
+
+def _apply_safety_decision(target: dict[str, Any], decision: dict[str, str]) -> None:
+    target.update(
+        {
+            "safety_action": decision.get("action", ""),
+            "safety_category": decision.get("category", ""),
+            "safety_reason_code": decision.get("reason_code", ""),
+            "safety_direction": decision.get("direction", ""),
+        }
+    )
+
+
+def _blocked_result(decision: dict[str, str]) -> dict[str, Any]:
+    result = agent._new_initial_state(agent.BLOCKED_USER_MESSAGE)
+    result.update({"question_type": "safety_blocked", "answer": agent.SAFETY_REFUSAL})
+    _apply_safety_decision(result, decision)
+    return result
+
+
+def _record_guarded_user_message(
+    session: dict[str, Any],
+    content: str,
+    message_id: int,
+    decision: dict[str, str],
+) -> None:
+    _append_message(
+        session,
+        "user",
+        agent.BLOCKED_USER_MESSAGE if decision.get("action") == "BLOCK" else content,
+        message_id=message_id,
+        safety_action=decision.get("action"),
+        safety_reason_code=decision.get("reason_code"),
+    )
+
+
+def _apply_output_guard(result: dict[str, Any]) -> None:
+    if result.get("safety_action") == "BLOCK" or not str(result.get("answer") or "").strip():
+        return
+    decision = agent.check_content_safety(
+        str(result.get("answer") or ""),
+        direction="OUTPUT",
+        question=str(result.get("question") or ""),
+    )
+    _apply_safety_decision(result, decision)
+    if decision["action"] != "BLOCK":
+        return
+    result.update(
+        {
+            "answer": agent.SAFETY_REFUSAL,
+            "final_sql": "",
+            "generated_sql": "",
+            "query_columns": [],
+            "query_rows": [],
+            "query_error": "",
+            "error_message": "",
+            "selected_tables": [],
+            "suggestions": [],
+            "chart": None,
+            "bad_debt_excel_path": "",
+        }
+    )
 
 
 def _session_summary(session: dict[str, Any]) -> dict[str, Any]:
@@ -1139,7 +1232,11 @@ def _coerce_natural_params(params: dict[str, Any], continuation: dict[str, Any])
     return explicit
 
 
-def _state_from_request(req: CompatibleQueryRequest, session: dict[str, Any]) -> dict[str, Any]:
+def _state_from_request(
+    req: CompatibleQueryRequest,
+    session: dict[str, Any],
+    safety_decision: dict[str, str] | None = None,
+) -> dict[str, Any]:
     question = req.query.strip()
     if not question:
         raise HTTPException(status_code=400, detail="query를 입력해주세요.")
@@ -1152,7 +1249,10 @@ def _state_from_request(req: CompatibleQueryRequest, session: dict[str, Any]) ->
     if continuation and params:
         params = _coerce_natural_params(params, continuation)
     if not continuation:
-        return agent._new_initial_state(question)
+        state = agent._new_initial_state(question)
+        if safety_decision:
+            _apply_safety_decision(state, safety_decision)
+        return state
 
     state = agent._new_initial_state(continuation.get("question") or question)
     state["question_type"] = "need_sql"
@@ -1185,6 +1285,8 @@ def _state_from_request(req: CompatibleQueryRequest, session: dict[str, Any]) ->
         state["user_provided_params"] = merged
         state["selected_tables"] = continuation.get("selected_tables") or []
         state["table_details"] = continuation.get("table_details") or ""
+    if safety_decision:
+        _apply_safety_decision(state, safety_decision)
     return state
 
 
@@ -1463,13 +1565,26 @@ def _result_payload(
     if original_question:
         result["original_question"] = original_question
     requires_params = result.get("param_stage") == "need_params"
+    if not requires_params:
+        _apply_output_guard(result)
+    is_blocked = result.get("safety_action") == "BLOCK"
     if requires_params:
         status = "requires_params"
         result_id = ""
         answer = _requires_params_answer(result)
         documents = []
         continuation = _build_continuation(result)
-        _SESSION_STORE.update_session_state(session, pending_continuation=continuation)
+        _SESSION_STORE.update_session_state(
+            session,
+            pending_continuation=_mask_for_persistence(continuation),
+        )
+    elif is_blocked:
+        status = "blocked"
+        result_id = ""
+        answer = agent.SAFETY_REFUSAL
+        documents = []
+        continuation = None
+        _SESSION_STORE.update_session_state(session, pending_continuation=None)
     else:
         status = "complete"
         result_id = uuid.uuid4().hex
@@ -1480,8 +1595,14 @@ def _result_payload(
             last_question=str(result.get("followup_question") or ""),
         )
         result["suggestions"] = _suggest_followups(result)
-        _SESSION_STORE.save_result(result_id, session, dict(result))
-        _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
+        stored_result = _mask_for_persistence(dict(result))
+        if stored_result is None:
+            result_id = ""
+            result["pii_persistence_failed"] = True
+            _SESSION_STORE.update_session_state(session, pending_continuation=None)
+        else:
+            _SESSION_STORE.save_result(result_id, session, stored_result)
+            _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
         answer = result.get("answer", "") or result.get("error_message", "")
         documents = _documents_from_result(result, top_k, source_override)
         continuation = None
@@ -1498,7 +1619,7 @@ def _result_payload(
         "message_id": message_id,
         "conversation_id": _conversation_id(session),
         "images": [],
-        "insufficient_evidence": bool(requires_params or error),
+        "insufficient_evidence": bool(requires_params or is_blocked or error),
         "status": status,
         "result_id": result_id,
         "question": result.get("question", ""),
@@ -1526,6 +1647,10 @@ def _result_payload(
         "followup_operations": result.get("followup_operations", []),
         "chart": result.get("chart"),
         "parent_result_id": result.get("parent_result_id", ""),
+        "safety": {
+            "action": result.get("safety_action", ""),
+            "reason_code": result.get("safety_reason_code", ""),
+        },
         "messages": session.get("messages", []),
         "session": _session_summary(session),
     }
@@ -1788,9 +1913,22 @@ def _run_query(
 ) -> dict[str, Any]:
     started = time.monotonic()
     context = agent.create_trace_context(session_id=session["id"], message_id=message_id)
+    log_question = req.query
     try:
         with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
-            result = _get_graph().invoke(_state_from_request(req, session))
+            decision = agent.check_content_safety(req.query, direction="INPUT")
+            _record_guarded_user_message(
+                session,
+                _user_message_text(req.query, req.params),
+                message_id,
+                decision,
+            )
+            if decision["action"] == "BLOCK":
+                log_question = agent.BLOCKED_USER_MESSAGE
+                result = _blocked_result(decision)
+            else:
+                state = _state_from_request(req, session, decision)
+                result = _get_graph().invoke(state)
             data = _result_payload(result, session, message_id, req.top_k)
         agent.emit_execution_log(
             context=context,
@@ -1798,7 +1936,7 @@ def _run_query(
             agent_name=agent_name,
             status="SUCCESS",
             total_latency_ms=int((time.monotonic() - started) * 1000),
-            question=req.query,
+            question=log_question,
             result=data,
         )
         return data
@@ -1809,7 +1947,7 @@ def _run_query(
             agent_name=agent_name,
             status="ERROR",
             total_latency_ms=int((time.monotonic() - started) * 1000),
-            question=req.query,
+            question=log_question,
             result={},
             error=str(exc),
         )
@@ -1828,6 +1966,7 @@ def _stream_query(
     context = agent.create_trace_context(session_id=session["id"], message_id=message_id)
     current_stage = "start"
     last_node_name = ""
+    log_question = req.query
     _stream_log(
         logging.INFO,
         "stream_query_started",
@@ -1837,34 +1976,47 @@ def _stream_query(
     )
     yield _sse("start", {"message": "질문을 분석 중입니다...", "data": {"session_id": session["id"], "message_id": message_id, "conversation_id": _conversation_id(session)}})
     try:
+        current_stage = "input_guard"
+        with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
+            decision = agent.check_content_safety(req.query, direction="INPUT")
+        _record_guarded_user_message(
+            session,
+            _user_message_text(req.query, req.params),
+            message_id,
+            decision,
+        )
         current_stage = "build_state"
-        state = _state_from_request(req, session)
-        final_result = dict(state)
-        current_stage = "graph_stream"
-        for node_name, result in _stream_graph(
-            req,
-            state,
-            context=context,
-            agent_name=agent_name,
-            user_id=user_id,
-        ):
-            final_result = result
-            if node_name == "__heartbeat__":
-                yield _sse("heartbeat", result)
-                continue
-            last_node_name = node_name
-            current_stage = f"serialize_progress:{node_name}"
-            _stream_log(
-                logging.INFO,
-                "stream_node_completed",
-                session_id=session["id"],
-                message_id=message_id,
-                node=node_name,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                row_count=len(final_result.get("query_rows", []) or []),
-            )
-            yield _sse("text2sql_progress", _progress_payload(node_name, req, final_result))
+        if decision["action"] == "BLOCK":
+            log_question = agent.BLOCKED_USER_MESSAGE
+            final_result = _blocked_result(decision)
+        else:
+            state = _state_from_request(req, session, decision)
+            final_result = dict(state)
             current_stage = "graph_stream"
+            for node_name, result in _stream_graph(
+                req,
+                state,
+                context=context,
+                agent_name=agent_name,
+                user_id=user_id,
+            ):
+                final_result = result
+                if node_name == "__heartbeat__":
+                    yield _sse("heartbeat", result)
+                    continue
+                last_node_name = node_name
+                current_stage = f"serialize_progress:{node_name}"
+                _stream_log(
+                    logging.INFO,
+                    "stream_node_completed",
+                    session_id=session["id"],
+                    message_id=message_id,
+                    node=node_name,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    row_count=len(final_result.get("query_rows", []) or []),
+                )
+                yield _sse("text2sql_progress", _progress_payload(node_name, req, final_result))
+                current_stage = "graph_stream"
         current_stage = "build_result_payload"
         data = _result_payload(final_result, session, message_id, req.top_k)
         _stream_log(
@@ -1918,7 +2070,7 @@ def _stream_query(
             agent_name=agent_name,
             status="SUCCESS",
             total_latency_ms=int((time.monotonic() - started) * 1000),
-            question=req.query,
+            question=log_question,
             result=data,
         )
 
@@ -1964,7 +2116,7 @@ def _stream_query(
             agent_name=agent_name,
             status="ERROR",
             total_latency_ms=int((time.monotonic() - started) * 1000),
-            question=req.query,
+            question=log_question,
             result={},
             error=str(exc),
         )
@@ -2484,6 +2636,26 @@ def _stream_followup(
 ):
     started = time.monotonic()
     context = agent.create_trace_context(session_id=session["id"], message_id=message_id)
+    with agent.observability_context(context=context, agent_name=agent_name, user_id=user_id):
+        decision = agent.check_content_safety(req.question, direction="INPUT")
+    _record_guarded_user_message(session, req.question.strip(), message_id, decision)
+    if decision["action"] == "BLOCK":
+        blocked = _blocked_result(decision)
+        blocked["parent_result_id"] = req.result_id
+        data = _result_payload(blocked, session, message_id, 10, source_override="안전 정책")
+        data = _finalize_assistant_message(session, data, message_id)
+        agent.emit_execution_log(
+            context=context,
+            user_id=user_id,
+            agent_name=agent_name,
+            status="SUCCESS",
+            total_latency_ms=int((time.monotonic() - started) * 1000),
+            question=agent.BLOCKED_USER_MESSAGE,
+            result=data,
+        )
+        yield _sse("result", data)
+        return
+
     base_result = _SESSION_STORE.get_result(req.result_id, session.get("user_id"))
     if not base_result:
         yield _sse("error", {"detail": "이전 결과를 찾을 수 없습니다."})
@@ -2552,6 +2724,7 @@ def _stream_followup(
                 route_message += " 조회가 끝나면 새 결과로 차트도 생성합니다."
             yield _sse("progress", {**route_progress, "message": route_message})
             state = _followup_query_state(base_result, req.question, followup_plan)
+            _apply_safety_decision(state, decision)
             compatible = CompatibleQueryRequest(query=req.question, session_id=req.session_id)
             followup_result = dict(state)
             for node_name, result in _stream_graph(
@@ -2725,8 +2898,6 @@ def query(
         raise HTTPException(status_code=400, detail="result_id 후속 질문은 스트리밍 API를 사용해주세요.")
     session = _get_or_create_session(req.session_id or x_session_id, x_user_id, agent_name)
     message_id = _message_id()
-    user_text = _user_message_text(req.query, req.params)
-    _append_message(session, "user", user_text, message_id=message_id)
     try:
         data = _run_query(req, session, message_id, agent_name=agent_name, user_id=x_user_id)
     except Exception as exc:
@@ -2746,8 +2917,6 @@ def query_stream(
     _validate_agent(agent_name, x_agent_name, req.agent_name)
     session = _get_or_create_session(req.session_id or x_session_id, x_user_id, agent_name)
     message_id = _message_id()
-    user_text = _user_message_text(req.query, req.params)
-    _append_message(session, "user", user_text, message_id=message_id)
     if req.result_id:
         followup_req = FollowupRequest(result_id=req.result_id, question=req.query, session_id=session["id"])
 
@@ -2986,7 +3155,13 @@ def save_saved_query(
     user_id = _request_user_id(x_user_id)
     agent_name = _request_agent_name(x_agent_name)
     try:
-        saved_query = _SESSION_STORE.save_saved_query(user_id, agent_name, _saved_query_payload(req))
+        payload = _mask_for_persistence(_saved_query_payload(req))
+        if payload is None:
+            raise HTTPException(
+                status_code=503,
+                detail="개인정보 마스킹 서비스가 일시적으로 응답하지 않아 저장하지 않았습니다.",
+            )
+        saved_query = _SESSION_STORE.save_saved_query(user_id, agent_name, payload)
     except SessionOwnershipError as exc:
         raise HTTPException(status_code=403, detail="다른 사용자의 저장 쿼리는 수정할 수 없습니다.") from exc
     return {"saved_query": _saved_query_summary(saved_query)}
@@ -3029,8 +3204,6 @@ def legacy_query(
     agent_name = _request_agent_name(x_agent_name)
     session = _get_or_create_session(compatible.session_id, user_id, agent_name)
     message_id = _message_id()
-    user_text = _user_message_text(req.question, req.params)
-    _append_message(session, "user", user_text, message_id=message_id)
     try:
         data = _run_query(compatible, session, message_id, agent_name=agent_name, user_id=user_id)
     except Exception as exc:
@@ -3050,8 +3223,6 @@ def legacy_query_stream(
     agent_name = _request_agent_name(x_agent_name)
     session = _get_or_create_session(compatible.session_id, user_id, agent_name)
     message_id = _message_id()
-    user_text = _user_message_text(req.question, req.params)
-    _append_message(session, "user", user_text, message_id=message_id)
     return StreamingResponse(
         _observed_sse_stream(
             _legacy_stream_adapter(_stream_query(compatible, session, message_id, agent_name=agent_name, user_id=user_id)),
@@ -3075,7 +3246,6 @@ def legacy_followup_stream(
         raise HTTPException(status_code=404, detail="이전 결과를 찾을 수 없습니다.")
     session = _get_or_create_session(req.session_id, user_id, agent_name)
     message_id = _message_id()
-    _append_message(session, "user", req.question.strip(), message_id=message_id)
     return StreamingResponse(
         _observed_sse_stream(
             _stream_followup(req, session, message_id, agent_name=agent_name, user_id=user_id),

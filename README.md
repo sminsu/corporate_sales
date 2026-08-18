@@ -495,6 +495,17 @@ uv run uvicorn embedding_server:app --app-dir .local --host 0.0.0.0 --port 8124
 `KBCARD_CONFIG_PATH` YAML을 두는 방식을 우선 권장합니다. (LLM/임베딩 호출은 모두
 `kbcard-agent-common`의 OpenAI 호환 클라이언트를 단일 경로로 사용합니다.)
 
+프롬프트 기반 입력·출력 가드레일은 배포 이미지에서 기본 활성화됩니다. 로컬 실행에서
+같은 정책을 사용하려면 `PROMPT_GUARDRAIL_ENABLED=1`을 설정하세요. 판정 모델 오류나
+형식 오류를 차단으로 처리하는 기본 정책은 `PROMPT_GUARDRAIL_FAIL_CLOSED=1`이며,
+입력과 최종 답변마다 LLM 호출이 한 번씩 추가됩니다.
+
+세션 메시지, 저장 결과, continuation, 저장 쿼리 및 오류 로그의 문자열은 저장 직전에
+PII API(`/pii`, `mask=true`)로 마스킹합니다. 배포 이미지는
+`PII_MASKING_ENABLED=1`, `PII_BASE_URL=http://10.95.21.15:18240`을 기본으로 사용하며,
+요청 헤더 `X-Agnet-Name`에는 ECS 서비스명을 전달합니다. 마스킹 API가 실패하면 원문
+메시지는 저장하지 않고 대체 문구를 저장하며, 결과/저장 쿼리 적재는 건너뜁니다.
+
 `kbcard-agent-common` 문서 기준으로는 uv 환경을 권장합니다.
 
 ```bash

@@ -158,11 +158,34 @@ FOLLOWUP_SUGGESTION_MAX_COUNT = max(
 FOLLOWUP_SUGGESTION_ROW_LIMIT = max(1, min(50, _env_int("WEBAPP_FOLLOWUP_SUGGESTION_ROW_LIMIT", "FOLLOWUP_SUGGESTION_ROW_LIMIT", default=20)))
 
 # ---------------------------------------------------------------------------
+# Prompt-based content guardrail
+# ---------------------------------------------------------------------------
+# Local/test runs opt in explicitly so offline development does not require an
+# additional LLM call. The production image enables the guardrail in Dockerfile.
+PROMPT_GUARDRAIL_ENABLED = _env_bool("PROMPT_GUARDRAIL_ENABLED", False)
+PROMPT_GUARDRAIL_FAIL_CLOSED = _env_bool("PROMPT_GUARDRAIL_FAIL_CLOSED", True)
+
+# ---------------------------------------------------------------------------
 # Agent identity
 # ---------------------------------------------------------------------------
 AGENT_NAME = _env("KBCARD_AGENT_NAME", default=(_AGENT.name if _AGENT else "text2sql-v4"))
 AGENT_ENVIRONMENT = _env("KBCARD_AGENT_ENV", default=(_AGENT.environment if _AGENT else "local"))
 AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=((_AGENT.service_name if _AGENT else None) or AGENT_NAME))
+
+# ---------------------------------------------------------------------------
+# PII masking service (persistence/log boundary)
+# ---------------------------------------------------------------------------
+PII_MASKING_ENABLED = _env_bool("PII_MASKING_ENABLED", False)
+PII_BASE_URL = _env("PII_BASE_URL", default="")
+PII_ENDPOINT = _env("PII_ENDPOINT", default="/pii")
+PII_AGENT_HEADER = _env("PII_AGENT_HEADER", default="X-Agnet-Name")
+PII_AGENT_NAME = _env(
+    "PII_AGENT_NAME",
+    "ECS_SERVICE_NAME",
+    "SERVICE_NAME",
+    default=AGENT_SERVICE_NAME,
+)
+PII_TIMEOUT = float(_env("PII_TIMEOUT", default="60"))
 
 # ---------------------------------------------------------------------------
 # Database backend selection
