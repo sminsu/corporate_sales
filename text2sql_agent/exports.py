@@ -1,9 +1,10 @@
 """Report/export helpers for completed query results."""
 
 import csv
+import math
 import re
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from html import escape
 from typing import Any
@@ -13,6 +14,16 @@ from .config import REPORT_DIR
 # ---------------------------------------------------------------------------
 # 7. 보고서 내보내기
 # ---------------------------------------------------------------------------
+
+# xlsx/docx 는 둘 다 XML 문서라서 이 제어문자를 담을 수 없다. openpyxl 은
+# IllegalCharacterError, python-docx 는 lxml ValueError 로 저장 자체를 거부한다.
+# 화면 경로는 세션 저장에서 값이 문자열로 바뀌며 걸러지지만, 다운로드 경로는
+# prepare_export_result 가 DB 원본 타입을 다시 읽어오므로 여기서 걸러야 한다.
+_XML_UNSAFE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _xml_safe_text(value: Any) -> str:
+    return _XML_UNSAFE_RE.sub("", str(value))
 
 
 def _ensure_report_dir():
@@ -34,7 +45,7 @@ def format_number_for_report(val) -> str:
             return f"{val / 10_000:,.0f}만"
         else:
             return f"{val:,}"
-    return str(val)
+    return _xml_safe_text(val)
 
 
 def _is_numeric_value(value: Any) -> bool:
@@ -72,7 +83,7 @@ def _raw_result_columns_and_rows(result: dict) -> tuple[list[Any], list[Any]]:
 def _result_columns_and_rows(result: dict, row_limit: int | None = None) -> tuple[list[str], list[list[Any]]]:
     raw_columns, raw_rows = _raw_result_columns_and_rows(result)
     selected_rows = raw_rows if row_limit is None else raw_rows[:row_limit]
-    columns = [str(col) for col in raw_columns]
+    columns = [_xml_safe_text(col) for col in raw_columns]
     rows = [_row_values(row, raw_columns) for row in selected_rows]
     return columns, rows
 
@@ -119,10 +130,18 @@ def prepare_export_result(result: dict) -> dict:
 
 def _excel_cell_value(value: Any) -> Any:
     if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, (datetime, date, str, int, float, bool)) or value is None:
+        value = float(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        # Excel 에는 NaN/Inf 셀이 없다. 숫자로 쓰면 저장은 되지만 열리지 않는 파일이 된다.
+        return str(value)
+    if isinstance(value, str):
+        return _xml_safe_text(value)
+    if isinstance(value, (datetime, time)) and value.tzinfo is not None:
+        # Postgres timestamptz/timetz. openpyxl 은 tzinfo 가 붙은 값을 저장하지 못한다.
+        return value.replace(tzinfo=None)
+    if isinstance(value, (datetime, date, time, int, float, bool)) or value is None:
         return value
-    return str(value)
+    return _xml_safe_text(value)
 
 
 def _word_run(value: Any, *, bold: bool = False, size: int = 20, color: str | None = None) -> str:
@@ -134,7 +153,7 @@ def _word_run(value: Any, *, bold: bool = False, size: int = 20, color: str | No
         props.append("<w:b/>")
     if color:
         props.append(f'<w:color w:val="{color}"/>')
-    text = str(value or "")
+    text = _xml_safe_text(value or "")
     parts = text.splitlines() or [""]
     runs = []
     for i, part in enumerate(parts):
@@ -264,6 +283,30 @@ def _export_to_word_fallback(result: dict, filepath) -> str:
     return str(filepath)
 
 
+_WORD_KOREAN_FONT = "Malgun Gothic"
+# 제목/본문 문단이 실제로 쓰는 스타일. 여기에 한글 글꼴을 심지 않으면 해당 문단만
+# 대체 글꼴로 나온다.
+_WORD_KOREAN_STYLES = ("Normal", "Title", "Heading 1")
+
+
+def _apply_korean_font(style) -> None:
+    """Word 는 한글을 eastAsia 글꼴로 그린다.
+
+    python-docx 의 ``font.name`` 은 ascii/hAnsi 만 채우기 때문에, 그대로 두면 한글은
+    테마 글꼴로 렌더링된다. 그런데 기본 서식 파일의 테마는 eastAsia typeface 가 비어
+    있어서 결과가 대체 글꼴이 된다. 제목 스타일에 남아 있는 ``*Theme`` 속성은 명시한
+    글꼴보다 우선하므로(ECMA-376) 함께 지운다. 글꼴 이름은 로케일 독립적인
+    "Malgun Gothic" 을 써야 한국어 Windows 밖에서도 Word 가 글꼴을 찾는다.
+    """
+    from docx.oxml.ns import qn
+
+    style.font.name = _WORD_KOREAN_FONT
+    fonts = style.element.rPr.rFonts
+    for theme_attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+        fonts.attrib.pop(qn(theme_attr), None)
+    fonts.set(qn("w:eastAsia"), _WORD_KOREAN_FONT)
+
+
 def export_to_word(result: dict) -> str:
     _ensure_report_dir()
     question = result.get("question", "조회결과")
@@ -276,10 +319,11 @@ def export_to_word(result: dict) -> str:
     except ImportError:
         return _export_to_word_fallback(result, filepath)
 
+    question = _xml_safe_text(question)
     doc = Document()
-    style = doc.styles["Normal"]
-    style.font.name = "맑은 고딕"
-    style.font.size = Pt(10)
+    for style_name in _WORD_KOREAN_STYLES:
+        _apply_korean_font(doc.styles[style_name])
+    doc.styles["Normal"].font.size = Pt(10)
     doc.add_heading("KB카드 법인영업 데이터 분석 보고서", level=0)
     info_table = doc.add_table(rows=3, cols=2)
     info_table.style = "Light List"
@@ -291,7 +335,7 @@ def export_to_word(result: dict) -> str:
         info_table.rows[i].cells[0].text = label
         info_table.rows[i].cells[1].text = value
     doc.add_paragraph("")
-    answer = result.get("answer", "")
+    answer = _xml_safe_text(result.get("answer", ""))
     if answer:
         doc.add_heading("분석 결과", level=1)
         doc.add_paragraph(answer)
@@ -322,7 +366,7 @@ def export_to_word(result: dict) -> str:
                         cell.paragraphs[0].runs[0].font.size = Pt(9)
         if total_rows > 200:
             doc.add_paragraph(f"* 전체 {total_rows}건 중 상위 200건만 표시")
-    sql = result.get("final_sql", "")
+    sql = _xml_safe_text(result.get("final_sql", ""))
     if sql:
         doc.add_heading("실행 SQL", level=1)
         sql_para = doc.add_paragraph()
@@ -352,18 +396,18 @@ def _export_to_excel_write_only(result: dict, filepath) -> str:
     if len(raw_rows) > _EXCEL_MAX_DATA_ROWS:
         raise ValueError(f"Excel은 헤더를 제외하고 최대 {_EXCEL_MAX_DATA_ROWS:,}행까지 저장할 수 있습니다.")
 
-    columns = [str(column) for column in raw_columns]
+    columns = [_xml_safe_text(column) for column in raw_columns]
     wb = Workbook(write_only=True)
     summary = wb.create_sheet("요약")
     summary.append(["KB카드 법인영업 데이터 분석 보고서"])
     summary.append([])
     summary.append(["작성일시", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-    summary.append(["질문", result.get("question", "조회결과")])
+    summary.append(["질문", _xml_safe_text(result.get("question", "조회결과"))])
     summary.append(["분석 경로", _get_source_label(result)])
     summary.append(["조회 행 수", len(raw_rows)])
     summary.append(["조회 컬럼 수", len(columns)])
     summary.append([])
-    summary.append(["분석 결과", result.get("answer", "") or "분석 결과가 없습니다."])
+    summary.append(["분석 결과", _xml_safe_text(result.get("answer", "")) or "분석 결과가 없습니다."])
 
     data_sheet = wb.create_sheet("상세 데이터")
     data_sheet.freeze_panes = "A2"
@@ -377,7 +421,7 @@ def _export_to_excel_write_only(result: dict, filepath) -> str:
 
     sql_sheet = wb.create_sheet("SQL")
     sql_sheet.append(["실행 SQL"])
-    sql_sheet.append([result.get("final_sql", "") or "실행 SQL이 없습니다."])
+    sql_sheet.append([_xml_safe_text(result.get("final_sql", "")) or "실행 SQL이 없습니다."])
     wb.save(str(filepath))
     return str(filepath)
 
@@ -397,8 +441,9 @@ def export_to_excel(result: dict) -> str:
         return _export_to_excel_write_only(result, filepath)
 
     columns, rows = _result_columns_and_rows(result)
-    answer = result.get("answer", "")
-    sql = result.get("final_sql", "")
+    question = _xml_safe_text(question)
+    answer = _xml_safe_text(result.get("answer", ""))
+    sql = _xml_safe_text(result.get("final_sql", ""))
 
     wb = Workbook()
     summary = wb.active
