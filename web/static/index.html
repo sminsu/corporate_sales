@@ -2825,6 +2825,7 @@ function renderResult(data, context = {}) {
   state.lastResultSummary = {
     question: latestUserMessage?.text || data.question || context.question || state.pendingQuestion || "직전 조회 결과",
     rowCount: Array.isArray(data.rows) ? data.rows.length : 0,
+    totalRowCount: data.result_meta?.result_scope?.total_row_count ?? null,
     source: data.source || data.question_type || "",
   };
   state.lastResultData = data.columns?.length && data.rows?.length

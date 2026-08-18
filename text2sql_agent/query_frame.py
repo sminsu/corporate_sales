@@ -109,6 +109,7 @@ def build_result_scope(
     *,
     fetched_row_count: int,
     displayed_row_count: int,
+    total_row_count: int | None = None,
     display_limit: int = DISPLAY_ROW_LIMIT,
     fetch_limit: int = DEFAULT_FETCH_ROW_LIMIT,
 ) -> dict[str, Any]:
@@ -119,10 +120,14 @@ def build_result_scope(
     fetch_limit_reached = fetch_limit > 0 and fetched_row_count >= fetch_limit
     sql_limit_reached = limit is not None and fetched_row_count >= limit
     is_complete = not (display_truncated or fetch_limit_reached or sql_limit_reached)
-    if display_truncated:
-        reason = f"화면 처리 범위 {display_limit}행을 초과해 일부 행만 유지했습니다."
-    elif fetch_limit_reached:
-        reason = f"DB 조회 안전 한도 {fetch_limit}행에 도달해 전체 결과 여부를 확인할 수 없습니다."
+    # 답변이 말하는 "N건"은 남겨 둔 행 수가 아니라 원본 결과의 행 수여야 한다.
+    # 조회 한도에 걸리지 않았다면 가져온 행 수가 그대로 전체 건수다.
+    if total_row_count is None and not fetch_limit_reached:
+        total_row_count = fetched_row_count
+    if total_row_count is None:
+        reason = f"DB 조회 안전 한도 {fetch_limit}행에 도달해 전체 건수를 확인할 수 없습니다."
+    elif display_truncated or fetch_limit_reached:
+        reason = f"전체 {total_row_count:,}건 중 상위 {displayed_row_count}행만 유지했습니다."
     elif sql_limit_reached:
         reason = f"SQL LIMIT {limit}에 도달해 전체 원본 범위가 아닐 수 있습니다."
     else:
@@ -132,6 +137,7 @@ def build_result_scope(
         "reason": reason,
         "fetched_row_count": int(fetched_row_count),
         "displayed_row_count": int(displayed_row_count),
+        "total_row_count": None if total_row_count is None else int(total_row_count),
         "display_limit": int(display_limit),
         "fetch_limit": int(fetch_limit),
         "sql_limit": limit,
@@ -156,6 +162,7 @@ def infer_result_scope(result: dict[str, Any]) -> dict[str, Any]:
     # the display boundary is therefore unknown rather than provably complete.
     if len(rows) >= DISPLAY_ROW_LIMIT and scope.get("is_complete"):
         scope["is_complete"] = False
+        scope["total_row_count"] = None
         scope["reason"] = (
             f"저장된 결과가 화면 한도 {DISPLAY_ROW_LIMIT}행에 도달해 "
             "전체 결과 여부를 확인할 수 없습니다."

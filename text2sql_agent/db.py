@@ -639,9 +639,32 @@ def execute_sql(
         return [], [], str(e)
 
 
-# 적재 정책표는 주기만 알 뿐 어디까지 들어왔는지는 모른다. "데이터가 없다"의 근거는
-# 서버 시계가 아니라 데이터에서 읽어야 한다. MIN/MAX 는 해당 컬럼을 훑으므로
-# 결과를 캐시하고, 조회 결과가 비었을 때만 부른다.
+def count_result_rows(sql: str) -> int | None:
+    """조회 결과의 원본 행 수를 센다.
+
+    행 상한(fetchmany)에 걸린 결과는 가져온 행 수가 곧 전체 건수가 아니다.
+    "몇 건이냐"에 답하려면 잘리지 않은 개수를 DB에서 다시 물어야 한다.
+    """
+    statement = sqlparse.format(sql, strip_comments=True).strip().rstrip(";").strip()
+    if not statement:
+        return None
+    _, rows, error = execute_sql(
+        f"SELECT COUNT(*) FROM (\n{statement}\n) AS _row_total",
+        max_rows=1,
+        allow_cross_cycle_fallback=False,
+    )
+    if error or not rows or not rows[0]:
+        return None
+    try:
+        return int(rows[0][0])
+    except (TypeError, ValueError):
+        # 전체 건수는 부가 정보다. 못 세면 "확인 불가"로 남기고 답변은 나가야 한다.
+        return None
+
+
+# 적재 정책표는 주기만 알 뿐 어디까지 들어왔는지는 모른다. 최신 가용일 판정과
+# "데이터가 없다"의 근거는 서버 시계가 아니라 데이터에서 읽어야 한다. MIN/MAX 는
+# 해당 컬럼을 훑으므로 테이블당 한 시간에 한 번만 실제로 조회한다.
 _PERIOD_RANGE_TTL_SECONDS = 3600
 _PERIOD_RANGE_CACHE: dict[str, tuple[float, tuple[str, str] | None]] = {}
 

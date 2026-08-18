@@ -1807,10 +1807,26 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
     return issues
 
 
-def _result_summary(columns: list, rows: list[tuple], max_top_values: int = 5) -> str:
+def _result_summary(
+    columns: list,
+    rows: list[tuple],
+    max_top_values: int = 5,
+    total_row_count: int | None = None,
+) -> str:
     if not columns or not rows:
         return "(조회 데이터 없음)"
-    lines = [f"- row_count: {len(rows)}"]
+    # 합계·평균은 넘겨받은 행만 집계한 값이다. 원본이 더 크면 그 사실을 같이
+    # 적어야 부분 합계가 전체 합계로 답변에 실리지 않는다.
+    # total_row_count=None 은 조회 한도에 걸려 전체 건수를 세지 못한 경우다.
+    if total_row_count == len(rows):
+        lines = [f"- row_count: {len(rows)} (전체 건수)"]
+    else:
+        lines = [
+            f"- row_count: {total_row_count} (전체 건수)"
+            if total_row_count is not None
+            else "- row_count: 조회 한도에 걸려 미확인 (건수는 결과 범위 안내를 따를 것)",
+            f"- 아래 합계·평균·최소·최대는 상위 {len(rows)}행만 집계한 값입니다.",
+        ]
     for idx, column in enumerate(columns):
         values = [row[idx] for row in rows if idx < len(row) and row[idx] is not None]
         numeric_values = [float(v) for v in values if isinstance(v, (int, float, Decimal))]

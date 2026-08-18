@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import web_service
-from text2sql_agent import workflow
+from text2sql_agent import db, workflow
 from text2sql_agent.followup_ops import plan_followup
 from text2sql_agent.query_frame import build_query_frame, build_result_scope, query_frame_prompt
 
@@ -559,7 +559,90 @@ def test_query_execution_records_raw_and_displayed_result_scope() -> None:
     assert len(result["query_rows"]) == 100
     assert result["result_scope"]["fetched_row_count"] == 120
     assert result["result_scope"]["displayed_row_count"] == 100
+    assert result["result_scope"]["total_row_count"] == 120
     assert result["result_scope"]["is_complete"] is False
     meta = web_service._result_meta({**state, **result})
     assert meta["result_complete"] is False
     assert meta["rows_may_be_limited"] is True
+
+
+def _answered_state(rows: list[tuple], *, counted: int | None) -> tuple[dict, str]:
+    """Run one query + answer turn and hand back the state and answer prompt."""
+    state = workflow._new_initial_state("가맹점을 보여줘")
+    state["generated_sql"] = "SELECT value FROM sample"
+    state["final_sql"] = "SELECT value FROM sample"
+
+    with (
+        patch.object(workflow, "execute_sql", return_value=(["value"], rows, None)),
+        patch.object(workflow, "count_result_rows", return_value=counted),
+    ):
+        state.update(workflow.run_query(state))
+    with patch.object(workflow, "_call_llm", return_value="답변") as call:
+        workflow.generate_answer(state)
+    return state, call.call_args.args[0]
+
+
+def test_answer_prompt_reports_original_row_count_not_display_slice() -> None:
+    state, prompt = _answered_state([(index,) for index in range(120)], counted=None)
+
+    assert len(state["query_rows"]) == 100
+    assert state["result_scope"]["total_row_count"] == 120
+    assert "전체 120건" in prompt
+    assert "row_count: 120 (전체 건수)" in prompt
+    assert "건수·개수는 120건으로 답하세요" in prompt
+    assert "쿼리 결과 (100건)" not in prompt
+
+
+def test_answer_prompt_counts_rows_cut_by_the_fetch_limit() -> None:
+    rows = [(index,) for index in range(workflow.DEFAULT_FETCH_ROW_LIMIT)]
+    state, prompt = _answered_state(rows, counted=4321)
+
+    assert state["result_scope"]["total_row_count"] == 4321
+    assert "전체 4,321건" in prompt
+    assert "건수·개수는 4,321건으로 답하세요" in prompt
+
+
+def test_answer_prompt_admits_when_the_total_cannot_be_counted() -> None:
+    rows = [(index,) for index in range(workflow.DEFAULT_FETCH_ROW_LIMIT)]
+    state, prompt = _answered_state(rows, counted=None)
+
+    assert state["result_scope"]["total_row_count"] is None
+    assert "500건 이상" in prompt
+    assert "전체 건수를 세지 못했습니다" in prompt
+
+
+def test_original_row_count_is_read_with_a_wrapped_count_query() -> None:
+    executed: list[str] = []
+
+    def backend(sql: str, *args) -> tuple[list[str], list[tuple]]:
+        executed.append(sql)
+        return ["count"], [(4321,)]
+
+    with (
+        patch.object(db, "_execute_backend", side_effect=backend),
+        patch.object(db, "_log_db_query"),
+    ):
+        counted = db.count_result_rows(f"{SQL}\nLIMIT 1000000;")
+        rejected = db.count_result_rows("DROP TABLE card_system.tmdaa5e11")
+
+    assert counted == 4321
+    assert rejected is None
+    assert "SELECT COUNT(*) FROM (" in executed[0]
+    assert ";" not in executed[0]
+    assert len(executed) == 1
+
+
+def test_fallback_answer_uses_the_original_row_count() -> None:
+    state = workflow._new_initial_state("가맹점을 보여줘")
+    state["final_sql"] = "SELECT value FROM sample"
+
+    with (
+        patch.object(workflow, "execute_sql", return_value=(["value"], [(index,) for index in range(120)], None)),
+        patch.object(workflow, "count_result_rows", return_value=None),
+    ):
+        state.update(workflow.run_query(state))
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("timeout")):
+        answer = workflow.generate_answer(state)["answer"]
+
+    assert "조회 결과: 120건" in answer
+    assert "조회 결과: 100건" not in answer

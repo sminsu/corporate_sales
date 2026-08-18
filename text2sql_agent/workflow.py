@@ -25,7 +25,7 @@ from .config import (
     VERIFIED_QUERY_RULE_MATCH_THRESHOLD,
     MAX_QUERY_ROW_LIMIT,
 )
-from .db import execute_sql, loaded_period_range, prepare_sql_for_backend
+from .db import count_result_rows, execute_sql, loaded_period_range, prepare_sql_for_backend
 from .exports import _get_source_label
 from .llm import _call_llm, _cosine_similarity, _get_embedding, _get_embeddings_batch
 from .managed_scope import ManagedScopeParseError, parse_business_number_list
@@ -114,6 +114,28 @@ DOMAIN_EMBEDDINGS_AVAILABLE = False
 DOMAIN_EMBEDDINGS: dict[str, list[float]] = {}
 _EMBEDDINGS_INITIALIZED = False
 _DISPLAY_ROW_LIMIT = DISPLAY_ROW_LIMIT
+
+
+def _executed_query_state(sql: str, columns: list, rows: list[tuple]) -> dict:
+    """Keep the display slice of a result together with the original row count.
+
+    상태에 남는 행은 화면 한도까지뿐이다. "몇 건이냐"에 그 행 수로 답하면 결과가
+    한도 크기(100건)로 보이므로, 조회 한도에 잘린 결과는 전체 건수를 따로 센다.
+    """
+    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
+    total_row_count = len(rows) if len(rows) < DEFAULT_FETCH_ROW_LIMIT else count_result_rows(sql)
+    return {
+        "query_columns": columns,
+        "query_rows": visible_rows,
+        "query_error": "",
+        "final_sql": sql,
+        "result_scope": build_result_scope(
+            sql,
+            fetched_row_count=len(rows),
+            displayed_row_count=len(visible_rows),
+            total_row_count=total_row_count,
+        ),
+    }
 
 
 def _coerce_llm_text(value: object) -> str:
@@ -3238,6 +3260,8 @@ def execute_tool(state: Text2SQLState) -> dict:
                     final_sql,
                     fetched_row_count=len(rows),
                     displayed_row_count=len(visible_rows),
+                    # Tool은 자기 결과를 전부 넘겨주므로 여기서는 전체 건수를 이미 안다.
+                    total_row_count=len(rows),
                 ),
                 "answer": result.get("answer", ""),
                 "bad_debt_excel_path": result.get("excel_path", ""),
@@ -3309,18 +3333,7 @@ def run_tool_query(state: Text2SQLState) -> dict:
             "selected_tool": "",
             "final_sql": prepared_sql,
         }
-    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
-    return {
-        "query_columns": columns,
-        "query_rows": visible_rows,
-        "query_error": "",
-        "final_sql": prepared_sql,
-        "result_scope": build_result_scope(
-            prepared_sql,
-            fetched_row_count=len(rows),
-            displayed_row_count=len(visible_rows),
-        ),
-    }
+    return _executed_query_state(prepared_sql, columns, rows)
 
 
 def _match_vq_by_embedding(
@@ -4104,18 +4117,7 @@ def run_matched_query(state: Text2SQLState) -> dict:
             "retry_count": retry,
             "final_sql": prepared_sql,
         }
-    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
-    return {
-        "query_columns": columns,
-        "query_rows": visible_rows,
-        "query_error": "",
-        "final_sql": prepared_sql,
-        "result_scope": build_result_scope(
-            prepared_sql,
-            fetched_row_count=len(rows),
-            displayed_row_count=len(visible_rows),
-        ),
-    }
+    return _executed_query_state(prepared_sql, columns, rows)
 
 
 def direct_answer(state: Text2SQLState) -> dict:
@@ -5872,18 +5874,7 @@ def run_query(state: Text2SQLState) -> dict:
             "retry_count": retry,
             "final_sql": prepared_sql,
         }
-    visible_rows = rows[:_DISPLAY_ROW_LIMIT]
-    return {
-        "query_columns": columns,
-        "query_rows": visible_rows,
-        "query_error": "",
-        "final_sql": prepared_sql,
-        "result_scope": build_result_scope(
-            prepared_sql,
-            fetched_row_count=len(rows),
-            displayed_row_count=len(visible_rows),
-        ),
-    }
+    return _executed_query_state(prepared_sql, columns, rows)
 
 
 def _markdown_cell(value: object, max_length: int = 80) -> str:
@@ -5891,13 +5882,46 @@ def _markdown_cell(value: object, max_length: int = 80) -> str:
     return text if len(text) <= max_length else text[: max_length - 1] + "…"
 
 
-def _deterministic_result_answer(columns: list, rows: list[tuple], implicit_time_basis: str = "") -> str:
-    """Render a truthful result summary when the answer model is unavailable."""
+def _total_row_count(state: Text2SQLState) -> int | None:
+    """원본 결과의 전체 건수. 조회 한도에 걸려 세지 못했으면 None."""
+    scope = state.get("result_scope") or {}
+    total = scope.get("total_row_count")
+    if isinstance(total, int):
+        return total
+    if "total_row_count" in scope:
+        return None
+    # 건수를 기록하지 않은 예전 결과. 화면 한도 아래면 잘릴 수 없으므로 그대로 전체다.
+    rows = state.get("query_rows") or []
+    return len(rows) if len(rows) < _DISPLAY_ROW_LIMIT else None
+
+
+def _known_row_floor(state: Text2SQLState) -> int:
+    """전체 건수를 세지 못했을 때 "N건 이상"의 근거가 되는 최소 건수."""
+    scope = state.get("result_scope") or {}
+    return max(len(state.get("query_rows") or []), int(scope.get("fetched_row_count") or 0))
+
+
+def _row_count_label(total_row_count: int | None, known_row_floor: int) -> str:
+    return f"{total_row_count:,}건" if total_row_count is not None else f"{known_row_floor:,}건 이상"
+
+
+def _deterministic_result_answer(
+    columns: list,
+    rows: list[tuple],
+    implicit_time_basis: str = "",
+    total_row_count: int | None = None,
+    known_row_floor: int = 0,
+) -> str:
+    """Render a truthful result summary when the answer model is unavailable.
+
+    total_row_count=None 은 조회 한도에 잘려 전체 건수를 세지 못한 경우다.
+    """
     # 답변 모델이 없을 때의 대체 답변도 질문 커버리지를 보여줘야 한다. 컬럼 6개·
     # 3행만 내면 "무엇을 조회했는지" 는 알아도 "무엇이 나왔는지" 는 안 보인다.
+    known_row_floor = max(known_row_floor, len(rows))
     visible_columns = [str(column) for column in columns[:10]]
     preview_rows = rows[:10]
-    lines = ["### 핵심 요약", f"- 조회 결과: {len(rows):,}건"]
+    lines = ["### 핵심 요약", f"- 조회 결과: {_row_count_label(total_row_count, known_row_floor)}"]
     if implicit_time_basis:
         lines.append(f"- 조회 기준: {implicit_time_basis}")
     if len(columns) > len(visible_columns):
@@ -5915,10 +5939,13 @@ def _deterministic_result_answer(columns: list, rows: list[tuple], implicit_time
             cells = [row[index] if index < len(row) else None for index in range(len(visible_columns))]
             lines.append("| " + " | ".join(_markdown_cell(value) for value in cells) + " |")
         if len(rows) > len(preview_rows):
-            lines.append(
-                f"\n상위 {len(preview_rows)}건을 표시했습니다. "
-                f"전체 {len(rows):,}건은 결과 표에서 확인할 수 있습니다."
+            total_label = _row_count_label(total_row_count, known_row_floor)
+            where = (
+                f"전체 {total_label}은 결과 표에서 확인할 수 있습니다."
+                if total_row_count == len(rows)
+                else f"전체 {total_label} 중 결과 표에는 상위 {len(rows):,}행이 담겨 있습니다."
             )
+            lines.append(f"\n상위 {len(preview_rows)}건을 표시했습니다. {where}")
     return "\n".join(lines)
 
 
@@ -5965,16 +5992,36 @@ def generate_answer(state: Text2SQLState) -> dict:
         lines.append("- 기간을 넓히거나 이름·업종 등의 검색어를 줄여서 다시 시도해 보세요.")
         return {"answer": "\n".join(lines)}
     implicit_time_basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
-    fallback_answer = _deterministic_result_answer(columns, rows, implicit_time_basis)
+    total_row_count = _total_row_count(state)
+    known_row_floor = _known_row_floor(state)
+    fallback_answer = _deterministic_result_answer(
+        columns, rows, implicit_time_basis, total_row_count, known_row_floor
+    )
     if state.get("question_type") == "direct_sql":
         return {"answer": fallback_answer}
     result_text = " | ".join(columns) + "\n" + "-" * 40 + "\n"
     for row in rows[:20]:
         result_text += " | ".join(_mask_business_numbers_for_llm(v) for v in row) + "\n"
     if len(rows) > 20:
-        result_text += f"\n... 외 {len(rows) - 20}건 더 있음"
+        result_text += f"\n... 외 {len(rows) - 20}행 더 있음(프롬프트에 담긴 행만 기준)"
     source_label = _get_source_label(state)
-    summary_text = _result_summary(columns, rows)
+    summary_text = _result_summary(columns, rows, total_row_count=total_row_count)
+    # 프롬프트에 담기는 행은 상위 20행, state에 남은 행도 최대 100행이다. 이 숫자를
+    # 전체 건수로 착각하면 "100건"짜리 답변이 나가므로 원본 건수를 따로 알려 준다.
+    prompt_row_count = min(len(rows), 20)
+    total_row_label = _row_count_label(total_row_count, known_row_floor)
+    if total_row_count is None:
+        row_scope_note = (
+            f"조회 한도에 걸려 전체 건수를 세지 못했습니다. "
+            f'건수·개수는 "{total_row_label}"으로만 쓰세요.'
+        )
+    elif total_row_count > prompt_row_count:
+        row_scope_note = (
+            f"전체 {total_row_count:,}건이며, 아래 쿼리 결과에는 상위 {prompt_row_count:,}행만 담았습니다. "
+            f"건수·개수는 {total_row_count:,}건으로 답하세요."
+        )
+    else:
+        row_scope_note = f"전체 {total_row_count:,}건이 모두 아래 쿼리 결과에 있습니다."
     prompt = f"""당신은 KB카드 기업영업 데이터 분석가입니다.
 사용자의 질문과 SQL 쿼리 결과를 바탕으로 짧고 직관적인 한국어 답변을 작성하세요.
 
@@ -5984,8 +6031,11 @@ def generate_answer(state: Text2SQLState) -> dict:
 ## 실행된 SQL ({source_label})
 {_mask_business_numbers_for_llm(sql[:4000])}
 
-## 쿼리 결과 ({len(rows)}건)
+## 쿼리 결과 (전체 {total_row_label})
 {result_text}
+
+## 결과 범위
+{row_scope_note}
 
 ## 계산 요약
 {_mask_business_numbers_for_llm(summary_text)}
@@ -6005,7 +6055,8 @@ def generate_answer(state: Text2SQLState) -> dict:
 
 ### 주요 데이터
 쿼리 결과를 표로 최대 10행까지 보여주세요. 컬럼은 결과에 있는 것을 그대로 쓰고,
-행이 더 있으면 표 아래에 "외 N건"으로 적습니다. 결과가 1행이면 이 절은 생략합니다.
+행이 더 있으면 표 아래에 "전체 {total_row_label} 중 상위 N행"으로 적습니다.
+결과가 1행이면 이 절은 생략합니다.
 
 ### 해석
 - 데이터에서 바로 확인되는 내용을 2~4개 bullet로 작성하세요.
@@ -6020,6 +6071,8 @@ def generate_answer(state: Text2SQLState) -> dict:
 6. 계산 요약의 row_count, 합계, 평균, 최소, 최대를 우선 활용하세요.
 7. 기준시점 안내가 있으면 핵심 요약 또는 해석에 "조회 기준"으로 반드시 명시하세요.
 8. 결과 컬럼 중 질문과 직접 관련된 것은 요약이나 표에서 최소 한 번은 드러내세요.
+9. 건수·개수는 "결과 범위"에 적힌 전체 건수({total_row_label})로만 답하세요.
+   위에 담긴 행 수나 표에 쓴 행 수를 전체 건수처럼 말하면 안 됩니다.
 
 답변:"""
     try:
