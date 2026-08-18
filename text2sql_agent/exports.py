@@ -115,7 +115,9 @@ def prepare_export_result(result: dict) -> dict:
 
     columns, rows, error = execute_sql(sql, **execute_kwargs)
     if error:
-        raise RuntimeError("다운로드용 전체 데이터를 조회하지 못했습니다.") from None
+        # 원인을 버리면 서버 로그에도 "조회 실패"만 남아 다운로드 오류를 추적할 수 없다.
+        # 사용자에게 나가는 문구는 호출 측(web_service)이 따로 정한다.
+        raise RuntimeError(f"다운로드용 전체 데이터를 조회하지 못했습니다: {error}") from None
 
     if str(result.get("followup_mode") or "") in {"transform", "transform_visualization"}:
         from .followup_ops import apply_local_transform

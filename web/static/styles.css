@@ -545,6 +545,102 @@ button:disabled {
   color: var(--text);
 }
 
+/* 기본 :disabled 는 결과가 없을 때의 모습이라 활성과 같게 두고 있다. 그래서 생성 중
+   표시는 따로 필요하다. 움직이는 요소는 아래 진행 카드의 바 하나로 몰고, 버튼은
+   "이 형식이 돌고 있다"만 색으로 알린다. */
+.export-grid.busy button {
+  opacity: 0.4;
+}
+
+.export-grid.busy button.busy {
+  opacity: 1;
+  background: var(--accent-soft-bg);
+  border-color: var(--accent);
+}
+
+.export-progress {
+  margin-top: 8px;
+  padding: 10px 11px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft-bg);
+  border: 1px solid var(--accent-soft-line);
+}
+
+.export-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.export-progress-title {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 800;
+}
+
+.export-progress-time {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 800;
+  /* 초가 바뀔 때 폭이 흔들리지 않아야 타이머로 읽힌다. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* 남은 시간을 알 수 없으므로 퍼센트를 만들어 내지 않고 무한 진행 바로 둔다. */
+.export-progress-track {
+  position: relative;
+  overflow: hidden;
+  height: 3px;
+  margin: 9px 0 8px;
+  border-radius: 999px;
+  background: var(--line-soft);
+}
+
+.export-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 34%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: export-progress-slide 1.3s ease-in-out infinite;
+}
+
+@keyframes export-progress-slide {
+  from { transform: translateX(-105%); }
+  to { transform: translateX(400%); }
+}
+
+.export-progress-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.export-progress.is-error {
+  background: var(--danger-soft-bg);
+  border-color: var(--danger-soft-line);
+}
+
+.export-progress.is-error .export-progress-title {
+  color: var(--red);
+}
+
+.export-progress.is-error .export-progress-track {
+  display: none;
+}
+
+/* 전역 reduced-motion 규칙이 애니메이션을 끄면 바가 화면 밖에서 멈춘다. 그 경우엔
+   정적인 막대로 보이게 둔다. */
+@media (prefers-reduced-motion: reduce) {
+  .export-progress-fill {
+    width: 100%;
+    transform: none;
+    opacity: 0.55;
+  }
+}
+
 .download-link {
   display: block;
   padding: 9px 11px;

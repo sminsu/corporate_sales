@@ -90,6 +90,14 @@
                   <button data-export="excel" type="button" disabled>Excel</button>
                   <button data-export="text" type="button" disabled>TXT</button>
                 </div>
+                <div id="exportStatus" class="export-progress hidden" role="status" aria-live="polite">
+                  <div class="export-progress-head">
+                    <span id="exportProgressTitle" class="export-progress-title"></span>
+                    <span id="exportProgressTime" class="export-progress-time"></span>
+                  </div>
+                  <div class="export-progress-track"><div class="export-progress-fill"></div></div>
+                  <p id="exportProgressNote" class="export-progress-note"></p>
+                </div>
                 <div id="downloadList" class="download-list"></div>
               </section>
             </div>
@@ -508,6 +516,10 @@ const tableMeta = $("#tableMeta");
 const sourceLabel = $("#sourceLabel");
 const resultBadges = $("#resultBadges");
 const downloadList = $("#downloadList");
+const exportStatus = $("#exportStatus");
+const exportProgressTitle = $("#exportProgressTitle");
+const exportProgressTime = $("#exportProgressTime");
+const exportProgressNote = $("#exportProgressNote");
 const excelBox = $("#excelBox");
 const toast = $("#toast");
 const progressPanel = $("#progressPanel");
@@ -1475,6 +1487,8 @@ function resetResultPanels() {
   suggestionList.innerHTML = "";
   followupBox.classList.add("hidden");
   downloadList.innerHTML = "";
+  exportStatus.classList.add("hidden");
+  exportStatus.classList.remove("is-error");
   copyTableBtn.disabled = true;
   copySqlBtn.disabled = true;
   setInspectorHasData(false);
@@ -3296,10 +3310,67 @@ activateInspectorTab($(".tab.active"));
 
 tableCatalogSearch?.addEventListener("input", renderTableCatalog);
 
-$$("[data-export]").forEach((button) => {
+// 다운로드는 저장된 SQL을 전체 행으로 다시 조회한다. 44만건이면 분 단위로 걸리는데
+// 비활성 버튼이 활성과 똑같이 보여서 "아무 일도 안 일어난다"로 읽혔다. 진행 중임을
+// 버튼·상태줄·경과시간으로 계속 보여주고, 그 동안 다른 형식 클릭은 막는다.
+const exportButtons = $$("[data-export]");
+const exportGrid = $(".export-grid");
+let exportTicker = 0;
+
+function elapsedClock(seconds) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function exportScaleLabel() {
+  const total = state.lastResultSummary?.totalRowCount;
+  return Number.isFinite(total) && total > 0 ? ` · 전체 ${total.toLocaleString("ko-KR")}건` : "";
+}
+
+function startExportProgress(button) {
+  const label = button.textContent.trim();
+  const startedAt = Date.now();
+  exportButtons.forEach((item) => {
+    item.disabled = true;
+    item.classList.toggle("busy", item === button);
+  });
+  exportGrid?.classList.add("busy");
+  exportStatus.classList.remove("is-error");
+  exportProgressTitle.textContent = `${label} 보고서 생성 중`;
+  exportProgressNote.textContent =
+    `전체 데이터를 다시 조회하는 중입니다${exportScaleLabel()} · 완료되면 자동으로 내려받습니다.`;
+  const render = () => {
+    exportProgressTime.textContent = elapsedClock(Math.floor((Date.now() - startedAt) / 1000));
+  };
+  render();
+  exportStatus.classList.remove("hidden");
+  window.clearInterval(exportTicker);
+  exportTicker = window.setInterval(render, 1000);
+  return label;
+}
+
+function stopExportProgress(errorMessage) {
+  window.clearInterval(exportTicker);
+  exportTicker = 0;
+  exportButtons.forEach((item) => {
+    item.disabled = false;
+    item.classList.remove("busy");
+  });
+  exportGrid?.classList.remove("busy");
+  if (!errorMessage) {
+    exportStatus.classList.add("hidden");
+    return;
+  }
+  // 토스트는 사라지므로 실패 사유는 카드에 남긴다.
+  exportStatus.classList.add("is-error");
+  exportProgressTime.textContent = "";
+  exportProgressNote.textContent = errorMessage;
+}
+
+exportButtons.forEach((button) => {
   button.addEventListener("click", async () => {
-    if (!state.lastResultId) return;
-    button.disabled = true;
+    if (!state.lastResultId || exportTicker) return;
+    const label = startExportProgress(button);
+    showToast(`${label} 보고서를 만들고 있습니다${exportScaleLabel()}. 완료되면 자동으로 내려받습니다.`);
     try {
       const data = await api("api/export", {
         method: "POST",
@@ -3310,11 +3381,12 @@ $$("[data-export]").forEach((button) => {
       });
       renderDownloads(data.files);
       triggerDownloads(data.files);
+      stopExportProgress();
       showToast("보고서가 생성되었습니다.");
     } catch (error) {
+      exportProgressTitle.textContent = `${label} 보고서 생성 실패`;
+      stopExportProgress(error.message);
       showToast(error.message);
-    } finally {
-      button.disabled = false;
     }
   });
 });

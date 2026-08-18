@@ -3257,21 +3257,13 @@ def legacy_followup_stream(
     )
 
 
-@app.post("/api/export")
-def export_result(
-    req: ExportRequest,
-    x_user_id: str | None = Header(None, alias="X-User-ID"),
-):
-    user_id = _request_user_id(x_user_id)
-    result = _SESSION_STORE.get_result(req.result_id, user_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
-    fmt = req.format.lower().strip()
-    if fmt in {"all", "excel", "xlsx", "csv", "text", "txt"}:
-        try:
-            result = agent.prepare_export_result(result)
-        except RuntimeError:
-            raise HTTPException(status_code=500, detail="다운로드용 전체 데이터를 조회하지 못했습니다.") from None
+_EXPORT_FORMATS = {"all", "word", "docx", "excel", "xlsx", "text", "txt"}
+_EXPORT_FULL_RELOAD_FORMATS = {"all", "excel", "xlsx", "text", "txt"}
+
+
+def _export_files(fmt: str, result: dict[str, Any], user_id: str) -> list[dict[str, str]]:
+    if fmt in _EXPORT_FULL_RELOAD_FORMATS:
+        result = agent.prepare_export_result(result)
     files: list[dict[str, str]] = []
     if fmt == "all":
         paths = agent.export_all(result)
@@ -3280,6 +3272,10 @@ def export_result(
             if registered:
                 registered["kind"] = kind
                 files.append(registered)
+            else:
+                # export_all 은 실패를 경로 문자열로 돌려준다. 그대로 버리면 "전체"
+                # 다운로드가 조용히 일부 형식만 내려주고 성공으로 보인다.
+                _stream_log(logging.ERROR, "export_failed", export_format=kind, export_detail=path)
     elif fmt in {"word", "docx"}:
         registered = _register_file(agent.export_to_word(result), user_id=user_id)
         if registered:
@@ -3296,8 +3292,30 @@ def export_result(
         if registered:
             registered["kind"] = "excel"
             files.append(registered)
-    else:
+    return files
+
+
+@app.post("/api/export")
+def export_result(
+    req: ExportRequest,
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+):
+    user_id = _request_user_id(x_user_id)
+    result = _SESSION_STORE.get_result(req.result_id, user_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+    fmt = req.format.lower().strip()
+    if fmt not in _EXPORT_FORMATS:
         raise HTTPException(status_code=400, detail="지원하지 않는 export 형식입니다.")
+    try:
+        files = _export_files(fmt, result, user_id)
+    except RuntimeError:
+        _stream_log(logging.ERROR, "export_query_failed", exc_info=True, export_format=fmt)
+        raise HTTPException(status_code=500, detail="다운로드용 전체 데이터를 조회하지 못했습니다.") from None
+    except Exception:
+        # 어떤 형식이 왜 실패했는지 남지 않으면 사용자는 "다운로드 에러"만 보고 온다.
+        _stream_log(logging.ERROR, "export_failed", exc_info=True, export_format=fmt)
+        raise HTTPException(status_code=500, detail=f"{fmt} 보고서를 생성하지 못했습니다.") from None
     if not files:
         raise HTTPException(status_code=404, detail="생성된 파일이 없습니다.")
     return {"files": files}
