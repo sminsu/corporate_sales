@@ -5949,14 +5949,25 @@ def _deterministic_result_answer(
     return "\n".join(lines)
 
 
-def _mask_business_numbers_for_llm(value: object) -> str:
-    """Keep request-scope identifiers out of answer-generation prompts."""
+_BUSINESS_NUMBER_RE = re.compile(r"(?<!\d)(?:\d{3}\s*-\s*\d{2}\s*-\s*\d{5}|\d{10})(?!\d)")
 
-    return re.sub(
-        r"(?<!\d)(?:\d{3}\s*-\s*\d{2}\s*-\s*\d{5}|\d{10})(?!\d)",
-        "[사업자등록번호]",
-        str(value or ""),
-    )
+
+def _mask_business_numbers_for_llm(text: str) -> str:
+    """Keep the uploaded managed-company scope out of answer-generation prompts.
+
+    질문과 SQL에는 사용자가 올린 관리기업 목록이 요청 범위 VALUES CTE 로 들어간다.
+    가려야 하는 건 그 "요청 범위"이지 조회 결과가 아니다. 조회 결과의 사업자등록번호는
+    사용자가 요청해서 받은 데이터이므로 가리면 답변의 "주요 데이터" 표가
+    [사업자등록번호]로 채워진다. 저장·로깅 경계의 PII 마스킹은 pii.py 가 담당한다.
+    """
+
+    return _BUSINESS_NUMBER_RE.sub("[사업자등록번호]", str(text or ""))
+
+
+def _result_cell_for_llm(value: object) -> str:
+    """0 은 "값 없음"이 아니다. falsy 값을 빈칸으로 바꾸면 모델이 그대로 옮겨 적는다."""
+
+    return "" if value is None else str(value)
 
 
 def _loaded_period_notes(sql: str) -> list[str]:
@@ -6001,7 +6012,7 @@ def generate_answer(state: Text2SQLState) -> dict:
         return {"answer": fallback_answer}
     result_text = " | ".join(columns) + "\n" + "-" * 40 + "\n"
     for row in rows[:20]:
-        result_text += " | ".join(_mask_business_numbers_for_llm(v) for v in row) + "\n"
+        result_text += " | ".join(_result_cell_for_llm(v) for v in row) + "\n"
     if len(rows) > 20:
         result_text += f"\n... 외 {len(rows) - 20}행 더 있음(프롬프트에 담긴 행만 기준)"
     source_label = _get_source_label(state)
@@ -6038,7 +6049,7 @@ def generate_answer(state: Text2SQLState) -> dict:
 {row_scope_note}
 
 ## 계산 요약
-{_mask_business_numbers_for_llm(summary_text)}
+{summary_text}
 
 ## 기준시점 안내
 {implicit_time_basis or "(사용자 질문 또는 SQL에서 별도 기준시점 안내 없음)"}
