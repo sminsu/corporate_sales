@@ -3290,11 +3290,6 @@ def export_result(
         if registered:
             registered["kind"] = "text"
             files.append(registered)
-    elif fmt == "csv":
-        registered = _register_file(agent.export_to_csv(result), user_id=user_id)
-        if registered:
-            registered["kind"] = "csv"
-            files.append(registered)
     elif fmt in {"excel", "xlsx"}:
         excel_path = result.get("bad_debt_excel_path", "") or agent.export_to_excel(result)
         registered = _register_file(excel_path, user_id=user_id)

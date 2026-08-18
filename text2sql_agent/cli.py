@@ -6,7 +6,6 @@ from decimal import Decimal
 from .config import BAD_DEBT_OUTPUT_DIR, LLM_BASE_URL, LLM_MODEL
 from .exports import (
     export_all,
-    export_to_csv,
     export_to_excel,
     export_to_text,
     export_to_word,
@@ -43,7 +42,7 @@ def print_result_table(columns: list[str], rows: list[tuple], max_rows: int = 20
         print(f"\n  ... 외 {len(rows) - max_rows}건")
 
 
-EXPORT_COMMANDS = {"저장", "export", "보고서", "word", "docx", "excel", "xlsx", "text", "txt", "csv", "내보내기", "파일"}
+EXPORT_COMMANDS = {"저장", "export", "보고서", "word", "docx", "excel", "xlsx", "text", "txt", "내보내기", "파일"}
 
 
 def _parse_export_format(cmd: str) -> str | None:
@@ -54,8 +53,6 @@ def _parse_export_format(cmd: str) -> str | None:
         return "excel"
     elif cmd_lower in ("text", "txt"):
         return "text"
-    elif cmd_lower == "csv":
-        return "csv"
     elif cmd_lower in ("저장", "export", "보고서", "내보내기", "파일"):
         return "all"
     return None
@@ -102,7 +99,7 @@ def main():
                 fmt = "all"
             print("\n보고서 생성 중...")
             try:
-                export_result = prepare_export_result(last_result) if fmt in {"all", "excel", "csv", "text"} else last_result
+                export_result = prepare_export_result(last_result) if fmt in {"all", "excel", "text"} else last_result
                 if fmt == "all":
                     paths = export_all(export_result)
                     print("\n[보고서 저장 완료]")
@@ -117,9 +114,6 @@ def main():
                 elif fmt == "text":
                     path = export_to_text(export_result)
                     print(f"\n[Text 저장 완료] {path}")
-                elif fmt == "csv":
-                    path = export_to_csv(export_result)
-                    print(f"\n[CSV 저장 완료] {path}")
             except ImportError:
                 print("python-docx 패키지가 필요합니다: pip install python-docx")
             except Exception as e:

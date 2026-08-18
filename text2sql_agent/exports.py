@@ -609,21 +609,6 @@ def export_to_text(result: dict) -> str:
     return str(filepath)
 
 
-def export_to_csv(result: dict) -> str:
-    _ensure_report_dir()
-    question = result.get("question", "조회결과")
-    filepath = REPORT_DIR / _make_filename(question, "csv")
-    raw_columns, raw_rows = _raw_result_columns_and_rows(result)
-    columns = [str(column) for column in raw_columns]
-    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        if columns:
-            writer.writerow(columns)
-        for row in raw_rows:
-            writer.writerow(_row_values(row, raw_columns))
-    return str(filepath)
-
-
 def export_all(result: dict) -> dict[str, str]:
     paths = {}
     try:

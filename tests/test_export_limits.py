@@ -70,6 +70,6 @@ def test_web_data_export_does_not_fall_back_to_preview_on_reload_error() -> None
         patch.object(web_service.agent, "prepare_export_result", side_effect=RuntimeError),
         pytest.raises(web_service.HTTPException) as error,
     ):
-        web_service.export_result(web_service.ExportRequest(result_id="r", format="csv"), x_user_id="u")
+        web_service.export_result(web_service.ExportRequest(result_id="r", format="excel"), x_user_id="u")
 
     assert error.value.status_code == 500

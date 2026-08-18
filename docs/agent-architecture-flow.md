@@ -16,7 +16,7 @@
 | 지식 계층 | Semantic Layer, Verified Query, Tool registry, Safe Join, 업무 메트릭·용어 |
 | 업무 데이터 계층 | PostgreSQL 또는 Amazon Athena를 통한 읽기 전용 조회 |
 | 상태 계층 | PostgreSQL Session Store, 선택적 Redis cache, 개발용 memory store |
-| 전달·운영 계층 | 후속 질문, 차트, Word/Excel/CSV/TXT export, 구조화 로그, health check |
+| 전달·운영 계층 | 후속 질문, 차트, Word/Excel/TXT export, 구조화 로그, health check |
 
 주요 업무 범위는 다음 6개 canonical domain으로 나뉜다.
 
@@ -125,7 +125,7 @@ flowchart LR
 | DB adapter | 단일 read-only query 검증, PostgreSQL/Athena 실행, 행·시간 제한 | `text2sql_agent/db.py` |
 | Session Store | 세션, 메시지, continuation, 결과, 파일 token, 저장 쿼리 | `text2sql_agent/session_store.py` |
 | Follow-up | 기존 결과 로컬 처리와 SQL 재조회 사이의 선택 | `text2sql_agent/followup_ops.py`, `web_service.py` |
-| Export | 저장 SQL 재실행, 로컬 변환 재적용, Word/Excel/CSV/TXT 생성 | `text2sql_agent/exports.py`, `web_service.py` |
+| Export | 저장 SQL 재실행, 로컬 변환 재적용, Word/Excel/TXT 생성 | `text2sql_agent/exports.py`, `web_service.py` |
 
 ## 3. HTTP · SSE 요청 Flow
 
@@ -434,7 +434,7 @@ flowchart LR
     PG -.-> REDIS["Redis<br/>선택적 cache"]
 
     API --> RESULT["저장된 result_id · final SQL"]
-    RESULT -->|"Excel · CSV · TXT · all"| RERUN["read-only SQL 재실행"]
+    RESULT -->|"Excel · TXT · all"| RERUN["read-only SQL 재실행"]
     RESULT --> LOCAL["후속 local transform 재적용"]
     RERUN --> LOCAL
     LOCAL --> FILE["reports/ · output/ 파일 생성"]
