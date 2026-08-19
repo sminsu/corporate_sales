@@ -230,3 +230,164 @@ def test_frontend_history_keeps_the_original_question() -> None:
     source = (Path(__file__).parents[1] / "web" / "static" / "index.html").read_text(encoding="utf-8")
 
     assert source.count("const originalQuestion = data.original_question || data.question") == 2
+
+
+def _failed_base_result() -> dict:
+    return {
+        "question": "2026년 4월 A기업 카드 이용금액 알려줘",
+        "final_sql": "SELECT 이용금액 FROM 기업카드이용 WHERE 기준년월 = '202604'",
+        "selected_domain": "법인카드",
+        "selected_tables": ["기업카드이용"],
+        "answer": "",
+        "error_message": "SQL 실행에 실패했습니다.",
+        "query_columns": [],
+        "query_rows": [],
+        "analysis_history": [],
+    }
+
+
+def _run_followup_stream(base_result: dict, question: str, stream_graph):
+    captured: dict = {}
+
+    def capture_payload(result, *_args, **_kwargs):
+        captured["final_result"] = result
+        return {"answer": result.get("answer", ""), "columns": [], "rows": []}
+
+    request = web_service.FollowupRequest(result_id="previous", question=question)
+    session = {"id": "session-1", "user_id": "user-1", "messages": []}
+    with (
+        patch.object(web_service._SESSION_STORE, "get_result", return_value=base_result),
+        patch.object(
+            web_service,
+            "_resolve_followup_context",
+            return_value={
+                "relation": "existing_result",
+                "source_strategy": "current_result",
+                "resolved_question": question,
+                "reason": "test",
+                "used_llm": False,
+            },
+        ),
+        patch.object(web_service, "_stream_graph", side_effect=stream_graph),
+        patch.object(web_service, "_result_payload", side_effect=capture_payload),
+        patch.object(web_service, "_finalize_assistant_message", side_effect=lambda _session, data, _message_id: data),
+        patch.object(web_service.agent, "create_trace_context", return_value={}),
+        patch.object(web_service.agent, "observability_context", return_value=nullcontext()),
+        patch.object(web_service.agent, "emit_execution_log"),
+    ):
+        return list(web_service._stream_followup(request, session, 1)), captured
+
+
+def test_followup_after_a_failed_turn_reruns_sql_with_the_inherited_scope() -> None:
+    base_result = _failed_base_result()
+
+    def fake_stream_graph(_request, state, **_kwargs):
+        yield "generate_answer", {
+            **state,
+            "answer": "2026년 4월 A기업 이용금액입니다.",
+            "final_sql": "SELECT 이용금액 FROM 기업카드이용 WHERE 기준년월 = '202604'",
+            "query_columns": ["이용금액"],
+            "query_rows": [(1_000,)],
+        }
+
+    chunks, captured = _run_followup_stream(base_result, "이 결과 3줄로 정리해줘", fake_stream_graph)
+
+    assert not any(chunk.startswith("event: error") for chunk in chunks)
+    assert any("직전 조회가 실패해" in chunk for chunk in chunks)
+    final_result = captured["final_result"]
+    assert final_result["followup_mode"] == "rewrite_sql"
+    assert final_result["followup_route"]["reason"] == "previous_turn_failed_requires_sql"
+    assert final_result["selected_tables"] == ["기업카드이용"]
+    assert final_result["selected_domain"] == "법인카드"
+
+
+def test_followup_on_an_empty_but_successful_result_still_refuses_local_analysis() -> None:
+    base_result = {**_failed_base_result(), "error_message": "", "answer": "조회 결과가 없습니다."}
+
+    def unreachable_graph(*_args, **_kwargs):
+        raise AssertionError("SQL graph must not run")
+        yield
+
+    chunks, captured = _run_followup_stream(base_result, "이 결과 3줄로 정리해줘", unreachable_graph)
+
+    assert any("후속 분석에 사용할 조회 데이터가 없습니다" in chunk for chunk in chunks)
+    assert "final_result" not in captured
+
+
+def _session_with_dropped_result() -> dict:
+    return {
+        "id": "session-1",
+        "user_id": "user-1",
+        "messages": [
+            {"role": "user", "text": "2026년 4월 A기업 카드 이용금액 알려줘"},
+            {
+                "role": "assistant",
+                "text": "2026년 4월 A기업 이용금액은 1,000원입니다.",
+                "result_id": "dropped",
+                "sql": "SELECT 이용금액 FROM 기업카드이용 WHERE 기준년월 = '202604'",
+                "columns": ["기준년월", "이용금액"],
+                "rows": [["202604", 1_000]],
+                "row_count": 1,
+                "query_frame": {"version": 1, "entities": [{"column": "기업명", "value": "A기업"}]},
+                "result_meta": {
+                    "selected_domain": "법인카드",
+                    "planned_data_sources": ["기업카드이용"],
+                    "selected_tool": "",
+                },
+            },
+        ],
+    }
+
+
+def test_dropped_result_is_rebuilt_from_the_stored_conversation() -> None:
+    base_result = web_service._result_from_session_message(_session_with_dropped_result(), "dropped")
+
+    assert base_result is not None
+    assert base_result["question"] == "2026년 4월 A기업 카드 이용금액 알려줘"
+    assert base_result["final_sql"].startswith("SELECT 이용금액")
+    assert base_result["query_columns"] == ["기준년월", "이용금액"]
+    assert base_result["query_rows"] == [["202604", 1_000]]
+    assert base_result["selected_tables"] == ["기업카드이용"]
+    assert base_result["selected_domain"] == "법인카드"
+    assert base_result["query_frame"]["entities"] == [{"column": "기업명", "value": "A기업"}]
+    assert [turn["question"] for turn in base_result["analysis_history"]] == [
+        "2026년 4월 A기업 카드 이용금액 알려줘"
+    ]
+    assert web_service._result_from_session_message(_session_with_dropped_result(), "other") is None
+
+
+def test_followup_continues_after_the_result_cache_evicted_the_base_result() -> None:
+    session = _session_with_dropped_result()
+    captured: dict = {}
+
+    def capture_payload(result, *_args, **_kwargs):
+        captured["final_result"] = result
+        return {"answer": result.get("answer", ""), "columns": [], "rows": []}
+
+    request = web_service.FollowupRequest(result_id="dropped", question="이 결과 3줄로 정리해줘")
+    with (
+        patch.object(web_service._SESSION_STORE, "get_result", return_value=None),
+        patch.object(
+            web_service,
+            "_resolve_followup_context",
+            return_value={
+                "relation": "existing_result",
+                "source_strategy": "current_result",
+                "resolved_question": request.question,
+                "reason": "test",
+                "used_llm": False,
+            },
+        ),
+        patch.object(web_service, "_stream_graph", side_effect=AssertionError("SQL graph must not run")),
+        patch.object(web_service, "_followup_analysis", return_value="핵심만 정리했습니다."),
+        patch.object(web_service, "_result_payload", side_effect=capture_payload),
+        patch.object(web_service, "_finalize_assistant_message", side_effect=lambda _session, data, _message_id: data),
+        patch.object(web_service.agent, "create_trace_context", return_value={}),
+        patch.object(web_service.agent, "observability_context", return_value=nullcontext()),
+        patch.object(web_service.agent, "emit_execution_log"),
+    ):
+        chunks = list(web_service._stream_followup(request, session, 1))
+
+    assert not any(chunk.startswith("event: error") for chunk in chunks)
+    assert any("보관 기간을 지나" in chunk for chunk in chunks)
+    assert captured["final_result"]["answer"] == "핵심만 정리했습니다."

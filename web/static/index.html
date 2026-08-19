@@ -256,6 +256,10 @@
 
         <!-- 입력 컴포저 -->
         <section id="queryPanel" class="composer">
+          <div id="composerContext" class="composer-context hidden">
+            <span id="composerContextLabel" class="composer-context-label"></span>
+            <button id="newQueryBtn" class="composer-context-toggle" type="button"></button>
+          </div>
           <div class="composer-bar">
             <span class="composer-marker" aria-hidden="true">›</span>
             <label class="sr-only" for="questionInput">데이터 조회 질문</label>
@@ -393,6 +397,7 @@ const state = {
   continuation: null,
   lastResultId: null,
   canFollowup: false,
+  newQueryOverride: false,
   pendingQuestion: "",
   conversation: [],
   isBusy: false,
@@ -554,6 +559,9 @@ const suggestionList = $("#suggestionList");
 const threadBody = $(".thread-body");
 const heroExamples = $("#heroExamples");
 const userGuideDialog = $("#userGuideDialog");
+const composerContext = $("#composerContext");
+const composerContextLabel = $("#composerContextLabel");
+const newQueryBtn = $("#newQueryBtn");
 const promptCoach = $("#promptCoach");
 const promptCoachMessage = $("#promptCoachMessage");
 const copyTableBtn = $("#copyTableBtn");
@@ -1047,8 +1055,22 @@ function restoreCancelledDraft(request) {
   showToast("요청을 취소했습니다. 질문을 수정해 다시 실행할 수 있습니다.");
 }
 
+function renderComposerContext() {
+  if (!composerContext) return;
+  const followupMode = canUseFollowupMode();
+  composerContext.classList.toggle("hidden", !followupMode);
+  if (!followupMode) return;
+  composerContext.classList.toggle("new-query", state.newQueryOverride);
+  composerContextLabel.textContent = state.newQueryOverride
+    ? "이 질문은 이전 조건을 이어받지 않고 새로 조회합니다."
+    : "직전 결과의 대상·기간·조건을 이어받아 분석합니다.";
+  newQueryBtn.textContent = state.newQueryOverride ? "이어서 분석" : "새 질문으로";
+  newQueryBtn.disabled = state.isBusy;
+}
+
 function syncQueryModeUi() {
   queryPanel.classList.toggle("hidden", Boolean(state.continuation));
+  renderComposerContext();
   if (state.continuation) {
     updatePromptCoach();
     return;
@@ -1881,6 +1903,7 @@ function resetSessionDraft() {
   state.sessionId = null;
   state.lastResultId = "";
   state.canFollowup = false;
+  state.newQueryOverride = false;
   state.recommendedQuestions = [];
   state.continuation = null;
   state.pendingQuestion = "";
@@ -2024,6 +2047,7 @@ async function loadSession(sessionId) {
   state.sessionId = data.session.id;
   state.lastResultId = data.session.last_result_id || "";
   state.canFollowup = Boolean(state.lastResultId);
+  state.newQueryOverride = false;
   state.continuation = null;
   state.pendingQuestion = "";
   state.conversation = (data.messages || []).map((message) => ({
@@ -2032,6 +2056,7 @@ async function loadSession(sessionId) {
     status: message.status,
     missing_params: message.missing_params,
     continuation: message.continuation,
+    followup_route: message.followup_route,
   }));
   const pendingMessage = [...state.conversation].reverse().find((message) => message.status === "requires_params" && message.continuation);
   if (pendingMessage) {
@@ -2076,6 +2101,7 @@ function renderMissingParams(data) {
       status: message.status,
       missing_params: message.missing_params,
       continuation: message.continuation,
+      followup_route: message.followup_route,
     }));
   } else {
     settlePendingUserMessage(state.activeRequest?.question || state.pendingQuestion);
@@ -2604,6 +2630,7 @@ function rebuildConversationFromResult(data) {
       status: message.status,
       missing_params: message.missing_params,
       continuation: message.continuation,
+      followup_route: message.followup_route,
     }));
   }
   const messages = [];
@@ -2618,6 +2645,28 @@ function rebuildConversationFromResult(data) {
   return messages;
 }
 
+const CONTEXT_RELATION_LABELS = {
+  existing_result: "현재 결과를 이어서 처리",
+  refine_query: "이전 조건을 이어받은 조회",
+  new_query: "이전 조건과 분리된 새 조회",
+};
+
+function interpretationHtml(message, askedText, index) {
+  const route = message.followup_route || {};
+  const resolved = String(route.resolved_question || "").trim();
+  const asked = String(askedText || "").trim();
+  if (!resolved || resolved.replace(/\s+/g, "") === asked.replace(/\s+/g, "")) return "";
+  const relation = CONTEXT_RELATION_LABELS[route.context_relation] || "";
+  return `
+    <div class="message-interpretation">
+      <span class="interpretation-label">이렇게 이해했습니다</span>
+      <span class="interpretation-text">${escapeHtml(resolved)}</span>
+      ${relation ? `<span class="interpretation-relation">${escapeHtml(relation)}</span>` : ""}
+      <button class="interpretation-edit" type="button" data-refine-message="${index}">질문 고치기</button>
+    </div>
+  `;
+}
+
 function renderConversation() {
   if (!state.conversation.length) {
     answerBox.innerHTML = "";
@@ -2625,9 +2674,13 @@ function renderConversation() {
   }
 
   let turn = 0;
+  let askedText = "";
   answerBox.innerHTML = state.conversation
     .map((message, index) => {
-      if (message.role === "user") turn += 1;
+      if (message.role === "user") {
+        turn += 1;
+        askedText = message.text || "";
+      }
       const turnLabel = turn ? ` ${turn}` : "";
       const label =
         message.role === "user"
@@ -2639,7 +2692,7 @@ function renderConversation() {
               : `분석 답변${turnLabel}`;
       const content =
         message.role === "assistant"
-          ? `${renderAnswerHtml(message.text || "응답이 없습니다.")}`
+          ? `${interpretationHtml(message, askedText, index)}${renderAnswerHtml(message.text || "응답이 없습니다.")}`
           : `<p>${escapeHtml(message.text || "")}</p>`;
       return `
         <div class="conversation-message ${escapeHtml(message.role)} ${escapeHtml(message.status || "")}">
@@ -2800,8 +2853,10 @@ function renderResult(data, context = {}) {
   state.failedRequest = null;
   state.lastResultId = data.result_id;
   state.canFollowup = Boolean(
-    data.result_id && !data.error && (data.rows?.length || data.sql || data.selected_tool || data.matched_query_name),
+    data.result_id
+      && (data.rows?.length || data.sql || data.selected_tool || data.matched_query_name || data.selected_tables?.length),
   );
+  state.newQueryOverride = false;
   state.recommendedQuestions = normalizedQuestions(data.suggestions).slice(0, 3);
   if (data.session_id) state.sessionId = data.session_id;
   state.continuation = null;
@@ -2830,7 +2885,11 @@ function renderResult(data, context = {}) {
     if (!settlePendingUserMessage(context.question)) {
       state.conversation.push({ role: "user", text: context.question });
     }
-    state.conversation.push({ role: "assistant", text: data.answer || "응답이 없습니다." });
+    state.conversation.push({
+      role: "assistant",
+      text: data.answer || "응답이 없습니다.",
+      followup_route: data.followup_route,
+    });
   } else {
     state.conversation = rebuildConversationFromResult(data);
   }
@@ -2932,9 +2991,21 @@ async function submitFollowup(question, options = {}) {
       settlePendingUserMessage(followupQuestion);
       renderConversation();
       const message = friendlyErrorMessage(error, "후속 질문 처리 중 오류가 발생했습니다.");
+      const lostBaseResult = message.includes("이전 결과를 찾을 수 없습니다");
       state.failedRequest = { kind: "followup", question: followupQuestion };
-      state.retryAction = () => submitFollowup(followupQuestion, options);
-      showInlineError(message, "후속 질문 처리 오류", { appendMessage: true });
+      if (lostBaseResult) {
+        // 이어받을 결과가 사라진 뒤에는 후속으로 재시도해도 같은 오류만 반복된다.
+        state.canFollowup = false;
+        state.retryAction = () => submitQuestion({ question: followupQuestion, session_id: state.sessionId });
+        syncQueryModeUi();
+      } else {
+        state.retryAction = () => submitFollowup(followupQuestion, options);
+      }
+      showInlineError(
+        lostBaseResult ? `${message} 다시 시도하면 새 질문으로 조회합니다.` : message,
+        "후속 질문 처리 오류",
+        { appendMessage: true },
+      );
       showToast(message);
     }
   } finally {
@@ -3039,11 +3110,12 @@ function handleSubmit() {
       params: { _natural_input: question },
       continuation: state.continuation,
     });
-  } else if (state.lastResultId && state.canFollowup) {
+  } else if (state.lastResultId && state.canFollowup && !state.newQueryOverride) {
     state.pendingQuestion = question;
     submitFollowup(question, { restoreTarget: "composer" });
   } else {
     state.pendingQuestion = question;
+    state.newQueryOverride = false;
     submitQuestion({ question, session_id: state.sessionId });
   }
 }
@@ -3096,7 +3168,24 @@ function showUserGuide() {
 
 $$("[data-user-guide]").forEach((button) => button.addEventListener("click", showUserGuide));
 
+newQueryBtn.addEventListener("click", () => {
+  if (state.isBusy) return;
+  state.newQueryOverride = !state.newQueryOverride;
+  syncQueryModeUi();
+  questionInput.focus();
+});
+
 answerBox.addEventListener("click", (event) => {
+  const refineButton = event.target.closest("[data-refine-message]");
+  if (refineButton) {
+    const message = state.conversation[Number(refineButton.dataset.refineMessage)];
+    const resolved = String(message?.followup_route?.resolved_question || "").trim();
+    if (!resolved) return;
+    state.newQueryOverride = true;
+    syncQueryModeUi();
+    chooseExample(resolved);
+    return;
+  }
   const copyButton = event.target.closest("[data-copy-message]");
   if (!copyButton) return;
   const message = state.conversation[Number(copyButton.dataset.copyMessage)];

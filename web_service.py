@@ -1728,6 +1728,70 @@ def _last_result_payload(session: dict[str, Any], top_k: int = 10) -> dict[str, 
     return _jsonable(data)
 
 
+def _result_from_session_message(session: dict[str, Any], result_id: str) -> dict[str, Any] | None:
+    """Rebuild a follow-up base from stored messages when the result cache dropped it.
+
+    Results are cached far more aggressively than sessions, so a long conversation
+    outlives its own rows.  Every assistant message already keeps the SQL, columns,
+    rows and query frame it was rendered from, which is enough to keep answering.
+    """
+
+    messages = list(session.get("messages", []))
+    index = next(
+        (
+            position
+            for position in reversed(range(len(messages)))
+            if messages[position].get("role") == "assistant"
+            and messages[position].get("result_id") == result_id
+        ),
+        None,
+    )
+    if index is None:
+        return None
+
+    history: list[dict[str, Any]] = []
+    asked = ""
+    for message in messages[: index + 1]:
+        if message.get("role") == "user":
+            asked = str(message.get("text") or "")
+        elif message.get("role") == "assistant" and asked:
+            history.append(
+                {
+                    "question": asked,
+                    "answer": str(message.get("text") or ""),
+                    "mode": str(message.get("followup_mode") or ""),
+                    "sql": str(message.get("sql") or ""),
+                    "row_count": int(message.get("row_count") or 0),
+                }
+            )
+            asked = ""
+
+    message = messages[index]
+    meta = message.get("result_meta") or {}
+    route = message.get("followup_route") or {}
+    original_question = str(message.get("original_question") or "") or (history[0]["question"] if history else "")
+    return {
+        "question": str(route.get("resolved_question") or "") or (history[-1]["question"] if history else ""),
+        "original_question": original_question,
+        "answer": str(message.get("text") or ""),
+        "original_answer": history[0]["answer"] if history else str(message.get("text") or ""),
+        "final_sql": str(message.get("sql") or ""),
+        "query_columns": list(message.get("columns") or []),
+        "query_rows": list(message.get("rows") or []),
+        "query_frame": message.get("query_frame") or {},
+        "result_scope": message.get("result_scope") or {},
+        "selected_domain": str(meta.get("selected_domain") or ""),
+        "selected_tables": list(meta.get("planned_data_sources") or meta.get("data_sources") or []),
+        "selected_tool": str(meta.get("selected_tool") or ""),
+        "matched_query_name": str(meta.get("matched_query_name") or ""),
+        "error_message": str(message.get("error") or ""),
+        "followup_mode": str(message.get("followup_mode") or ""),
+        "followup_route": route,
+        "analysis_history": history,
+        "chart": message.get("chart"),
+    }
+
+
 def _progress_payload(node_name: str, req: CompatibleQueryRequest, result: dict[str, Any]) -> dict[str, Any]:
     phase, title, message = NODE_LABELS.get(node_name, ("processing", node_name, f"{node_name} 단계를 처리하고 있습니다."))
     return {
@@ -2618,11 +2682,20 @@ def _stream_followup(
         return
 
     base_result = _SESSION_STORE.get_result(req.result_id, session.get("user_id"))
+    recovered = False
+    if not base_result:
+        base_result = _result_from_session_message(session, req.result_id)
+        recovered = bool(base_result)
     if not base_result:
         yield _sse("error", {"detail": "이전 결과를 찾을 수 없습니다."})
         return
 
-    yield _sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과와 대화 이력을 불러왔습니다.", "query": req.question})
+    start_message = (
+        "이전 조회 결과가 보관 기간을 지나 대화 기록에 저장된 조건과 표시 결과로 이어서 처리합니다."
+        if recovered
+        else "이전 결과와 대화 이력을 불러왔습니다."
+    )
+    yield _sse("progress", {"step": "start", "title": "요청 접수", "message": start_message, "query": req.question})
     try:
         base_frame = ensure_query_frame(base_result)
         yield _sse(
@@ -2669,13 +2742,29 @@ def _stream_followup(
         if (
             not base_result.get("query_columns") or not base_result.get("query_rows")
         ) and not followup_plan["requires_sql"]:
-            yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
-            return
+            if not (base_result.get("error_message") or base_result.get("query_error")):
+                yield _sse("error", {"detail": "후속 분석에 사용할 조회 데이터가 없습니다."})
+                return
+            # 직전 턴이 실패해 재가공할 행이 없다. 여기서 대화를 끊으면 사용자가
+            # 이어받은 대상·기간·지표를 처음부터 다시 적어야 하므로, 실패한 턴이
+            # 남긴 조회 상태를 그대로 물려받아 SQL을 다시 만든다.
+            reusable_source = bool(base_result.get("selected_tables") or base_result.get("final_sql"))
+            base_mode = "rewrite_sql" if reusable_source else "new_sql"
+            intent = f"{base_mode}_visualization" if followup_plan["visualize"] else base_mode
+            followup_plan = {
+                **followup_plan,
+                "mode": intent,
+                "requires_sql": True,
+                "route_reason": "previous_turn_failed_requires_sql",
+            }
+            route_progress = {**route_progress, "followup_mode": intent, "requires_sql": True}
 
         if followup_plan["requires_sql"]:
             sql_intent = "new_sql" if intent.startswith("new_sql") else "rewrite_sql"
             wants_chart = bool(followup_plan["visualize"])
-            if followup_plan.get("route_reason") == "incomplete_result_requires_sql":
+            if followup_plan.get("route_reason") == "previous_turn_failed_requires_sql":
+                route_message = "직전 조회가 실패해 분석할 결과가 없으므로, 이어받은 조건으로 SQL을 다시 만들어 실행합니다."
+            elif followup_plan.get("route_reason") == "incomplete_result_requires_sql":
                 route_message = "직전 결과가 일부 범위이므로 정확한 상위 N·집계를 위해 SQL을 다시 실행합니다."
             else:
                 route_message = "후속 요청에 새 데이터가 필요해 도메인과 테이블을 다시 선택합니다." if sql_intent == "new_sql" else "기간·대상·조회 조건이 달라져 기존 SQL을 재작성합니다."
@@ -3197,9 +3286,9 @@ def legacy_followup_stream(
 ):
     user_id = _request_user_id(x_user_id)
     agent_name = _request_agent_name(x_agent_name)
-    if not _SESSION_STORE.get_result(req.result_id, user_id):
-        raise HTTPException(status_code=404, detail="이전 결과를 찾을 수 없습니다.")
     session = _get_or_create_session(req.session_id, user_id, agent_name)
+    if not _SESSION_STORE.get_result(req.result_id, user_id) and not _result_from_session_message(session, req.result_id):
+        raise HTTPException(status_code=404, detail="이전 결과를 찾을 수 없습니다.")
     message_id = _message_id()
     return StreamingResponse(
         _observed_sse_stream(

@@ -3244,6 +3244,113 @@ summary:focus-visible,
   display: none;
 }
 
+/* 컴포저 위 멀티턴 상태 */
+.composer-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 6px 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.composer-context::before {
+  content: "\21B3";
+  color: var(--mint);
+  font-family: var(--mono);
+}
+
+.composer-context.new-query::before {
+  color: var(--accent);
+}
+
+.composer-context-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-context.new-query .composer-context-label {
+  color: var(--text);
+}
+
+.composer-context-toggle {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  transition: border-color 0.13s ease, color 0.13s ease;
+}
+
+.composer-context-toggle:hover:not(:disabled) {
+  border-color: var(--mint);
+  color: var(--text);
+}
+
+.composer-context-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* 후속 질문을 어떻게 복원했는지 보여 주는 줄 */
+.message-interpretation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.interpretation-label {
+  font-weight: 700;
+  color: var(--mint);
+}
+
+.interpretation-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.interpretation-relation {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  border: 1px solid var(--badge-line);
+  color: var(--badge-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.interpretation-edit {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  transition: border-color 0.13s ease, color 0.13s ease;
+}
+
+.interpretation-edit:hover {
+  border-color: var(--mint);
+  color: var(--text);
+}
+
 /* ░░░░ RESPONSIVE ░░░░ */
 @media (max-width: 1240px) {
   .app,

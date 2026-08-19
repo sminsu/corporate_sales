@@ -119,9 +119,12 @@ def test_completed_query_keeps_composer_in_followup_flow() -> None:
         "async function submitFollowup", 1
     )[0]
 
-    assert "else if (state.lastResultId && state.canFollowup)" in submit_handler
+    assert "else if (state.lastResultId && state.canFollowup && !state.newQueryOverride)" in submit_handler
     assert "submitFollowup(question" in submit_handler
-    assert "data.result_id && !data.error && (data.rows?.length || data.sql" in render_result
+    # 실패한 턴도 대상·기간·테이블을 남기므로 후속 흐름을 끊지 않는다.
+    assert "data.result_id && !data.error &&" not in render_result
+    assert "data.rows?.length || data.sql || data.selected_tool" in render_result
+    assert "data.selected_tables?.length" in render_result
     assert "syncQueryModeUi()" in render_result
     assert 'id="submitBtn"' not in source
     assert 'event.key === "Enter" && !event.shiftKey' in source
@@ -164,10 +167,56 @@ def test_followup_errors_are_appended_to_the_conversation() -> None:
 
     assert "state.pendingQuestion = followupQuestion;" in followup
     assert 'showInlineError(message, "모델 연결 오류", { appendMessage: true });' in followup
-    assert 'showInlineError(message, "후속 질문 처리 오류", { appendMessage: true });' in followup
+    assert '"후속 질문 처리 오류",\n        { appendMessage: true },' in followup
 
 
 def test_error_panel_is_rendered_below_the_conversation_result() -> None:
     source = INDEX_HTML.read_text(encoding="utf-8")
 
     assert source.index('id="resultPanel"') < source.index('id="errorPanel"') < source.index('id="queryPanel"')
+
+
+def test_composer_offers_a_one_click_switch_back_to_a_new_query() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    css = (INDEX_HTML.parent / "styles.css").read_text(encoding="utf-8")
+    render_context = source.split("function renderComposerContext() {", 1)[1].split(
+        "function syncQueryModeUi", 1
+    )[0]
+
+    assert 'id="composerContext"' in source
+    assert 'id="newQueryBtn"' in source
+    assert "canUseFollowupMode()" in render_context
+    assert "직전 결과의 대상·기간·조건을 이어받아 분석합니다." in render_context
+    assert "이 질문은 이전 조건을 이어받지 않고 새로 조회합니다." in render_context
+    assert "state.newQueryOverride = !state.newQueryOverride" in source
+    assert ".composer-context {" in css
+
+
+def test_followup_answer_shows_how_the_question_was_understood() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    css = (INDEX_HTML.parent / "styles.css").read_text(encoding="utf-8")
+    interpretation = source.split("function interpretationHtml(", 1)[1].split(
+        "function renderConversation", 1
+    )[0]
+
+    assert "route.resolved_question" in interpretation
+    assert "이렇게 이해했습니다" in interpretation
+    assert 'data-refine-message="${index}"' in interpretation
+    # 사용자가 그대로 적은 질문에는 해석 줄을 붙이지 않는다.
+    assert 'resolved.replace(/\\s+/g, "") === asked.replace(/\\s+/g, "")' in interpretation
+    assert "followup_route: message.followup_route" in source
+    assert "followup_route: data.followup_route" in source
+    assert 'const refineButton = event.target.closest("[data-refine-message]")' in source
+    assert ".message-interpretation {" in css
+
+
+def test_lost_base_result_retries_as_a_new_query_instead_of_a_followup() -> None:
+    source = INDEX_HTML.read_text(encoding="utf-8")
+    submit_followup = source.split("async function submitFollowup(", 1)[1].split(
+        "async function submitQuestion(", 1
+    )[0]
+
+    assert 'message.includes("이전 결과를 찾을 수 없습니다")' in submit_followup
+    assert "state.canFollowup = false" in submit_followup
+    assert "state.retryAction = () => submitQuestion({ question: followupQuestion" in submit_followup
+    assert "다시 시도하면 새 질문으로 조회합니다." in submit_followup

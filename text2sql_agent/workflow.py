@@ -2230,12 +2230,58 @@ def _ensure_archive_month_joins(sql: str, archive_aliases: list[str]) -> str:
     return rewritten
 
 
+def _restore_master_from_archive(sql: str, archive_table: str) -> str:
+    """마스터 속성 질문에 월 스냅샷으로 생성된 SQL 을 마스터로 되돌린다.
+
+    테이블 선택은 tbdaadt01 로 고정했는데 SQL 생성은 프롬프트의 다른 맥락(검증된
+    질의·조인 그래프)에서 tmdaa5d01 을 그대로 베껴 왔다. 둘이 어긋나면 스냅샷에
+    없는 "기준년월일" 이 붙어 스키마 검증에서 끊긴다.
+
+    아카이브가 월 팩트와 기준년월로 묶여 있으면 되돌릴 때 그 조인이 깨지므로
+    그때는 손대지 않는다. 마스터에는 기준년월이 없다.
+    """
+    aliases = _table_aliases(sql, archive_table)
+    if not aliases:
+        return sql
+    other_aliases = [
+        str(binding["alias"])
+        for binding in _sql_table_bindings(sql)
+        if binding["table"] != archive_table
+    ]
+    for alias, _ in aliases:
+        if any(
+            _has_alias_column_equality(sql, alias, other, "기준년월")
+            for other in other_aliases
+        ):
+            return sql
+
+    restored = _replace_physical_table(sql, archive_table, _TBDAADT01_TABLE)
+    for alias, explicit_alias in aliases:
+        qualifier = (
+            rf'"?{re.escape(alias)}"?\s*\.\s*'
+            if explicit_alias
+            else rf'(?:"?{re.escape(alias)}"?\s*\.\s*)?'
+        )
+        restored = re.sub(
+            rf'(?P<qualifier>{qualifier})"?기준년월일?"?(?![0-9A-Za-z_가-힣])',
+            lambda match: f'{match.group("qualifier")}"{_TBDAADT01_TIME_COLUMN}"',
+            restored,
+        )
+    return restored
+
+
 def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
     """Route bounded merchant-master periods to their declared physical source."""
-    if _TBDAADT01_TABLE not in _extract_schema_tables(sql):
-        return sql
     cadence, start, end = _tbdaadt01_time_route(question)
     if not cadence:
+        return sql
+    policy = accumulation_policy_for(_TBDAADT01_TABLE) or {}
+    historical_source = policy.get("historical_source")
+    if cadence == "master" and isinstance(historical_source, dict):
+        sql = _restore_master_from_archive(
+            sql, str(historical_source.get("table") or "").lower()
+        )
+    if _TBDAADT01_TABLE not in _extract_schema_tables(sql):
         return sql
     if cadence == "master":
         # 마스터가 요청한 달을 들고 있을 리 없다. 최신 가용일 1건으로 좁혀 가맹점당
@@ -2243,8 +2289,6 @@ def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
         # _implicit_time_basis_note() 가 답변에서 밝힌다.
         start = end = _latest_available_day(_TBDAADT01_TABLE)
 
-    policy = accumulation_policy_for(_TBDAADT01_TABLE) or {}
-    historical_source = policy.get("historical_source")
     if cadence == "monthly" and not isinstance(historical_source, dict):
         return sql
 

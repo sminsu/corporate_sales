@@ -484,6 +484,45 @@ def loaded_window(start: str, end: str):
         yield
 
 
+def test_generated_snapshot_sql_is_restored_to_the_master_with_its_own_time_column() -> None:
+    """선택은 tbdaadt01 인데 SQL 은 tmdaa5d01 로 나오면 검증에서 끊긴다.
+
+    스냅샷에는 "기준년월일" 이 없어서 스키마 검증이 "없는 컬럼" 으로 막았다.
+    되돌릴 때 시간축도 마스터의 실적기준년월일로 바꿔야 한다.
+    """
+    sql = (
+        'SELECT m."가맹점번호", m."가맹점명", m."주소표시구분코드"\n'
+        "FROM card_system.tmdaa5d01 m\n"
+        "WHERE m.\"기준년월일\" = '20260531' "
+        "AND LOWER(m.\"가맹점명\") LIKE LOWER('%한신포차%')"
+    )
+
+    with frozen_clock(), latest_loaded_day("20260819"):
+        routed = workflow._apply_tbdaadt01_historical_source(MASTER_ADDRESS_QUESTION, sql)
+
+    assert "tmdaa5d01" not in routed
+    assert "card_system.tbdaadt01" in routed
+    assert "기준년월일\" = '20260531'" not in routed
+    assert '"실적기준년월일" = \'20260819\'' in routed
+    assert not schema._validate_sql_against_schema(routed, ["tbdaadt01"])
+
+
+def test_snapshot_sql_joined_to_a_monthly_fact_is_left_alone() -> None:
+    """마스터에는 기준년월이 없다. 조인을 끊으면서까지 되돌리지 않는다."""
+    sql = (
+        'SELECT m."가맹점번호"\n'
+        "FROM card_system.tmdaa5d01 m "
+        'JOIN card_system.tmdaa5e11 f ON m."가맹점번호" = f."가맹점번호" '
+        'AND m."기준년월" = f."기준년월"\n'
+        "WHERE m.\"기준년월\" = '202605'"
+    )
+
+    with frozen_clock(), latest_loaded_day("20260819"):
+        routed = workflow._apply_tbdaadt01_historical_source(MASTER_ADDRESS_QUESTION, sql)
+
+    assert routed == sql
+
+
 def test_llm_chosen_month_snapshot_is_routed_back_to_the_merchant_master(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
