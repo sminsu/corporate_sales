@@ -33,20 +33,19 @@ def test_historical_composition_seeds_use_month_safe_merchant_paths() -> None:
     ]
 
 
-def test_period_core_cases_resolve_source_table_policy_per_question() -> None:
+def test_core_semantic_specs_follow_the_routed_corporate_archive() -> None:
+    cases = _core_cases()
     policy_cases = {
         "corporate_limit_status_at_month",
         "named_corporate_limit_status_at_month",
         "corporate_card_low_limit_utilization",
     }
 
-    for case in _core_cases():
+    for case in cases:
         if case["source"]["id"] in policy_cases:
             assert case["expected_tables"] == ["tmdaa1d12"]
 
-
-def test_core_semantic_specs_use_the_same_routed_corporate_archive() -> None:
-    for case in _core_cases():
+    for case in cases:
         answer = case["expected_sql"]
         if not isinstance(answer, dict) or answer.get("kind") == "verified_query":
             continue

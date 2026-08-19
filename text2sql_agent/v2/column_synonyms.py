@@ -33,6 +33,16 @@ _SEPARATOR_RE = re.compile(r"[^0-9A-Za-z가-힣_]+")
 _PARTICLE = r"(?:으로|에서|에게|의|은|는|이|가|을|를|에|로|와|과|도|만|별|인)"
 _PARTICLES = rf"(?:{_PARTICLE})*"
 
+# 용언 활용과 예정 표현. 질문은 컬럼을 명사로만 부르지 않는다.
+#   해지년월일         → "2026년 7월에 해지된 기업카드"
+#   카드만료년월일      → "4분기에 만료 예정인 기업카드"
+#   평일24시간운영여부   → "평일 24시간 운영하는 가맹점"
+# 조사만 허용하던 lookahead 는 이 어미에서 전부 끊겼다. 어미 뒤에 다시 조사가
+# 붙으므로("예정" + "인") 어미를 조사보다 앞에 둔다. 어미는 뒤따르는 글자가
+# 어절 경계여야 하는 조건을 그대로 통과해야 해서, '카드' 가 '카드론' 에
+# 걸리지 않는 성질은 유지된다.
+_PREDICATE_TAIL = r"(?:되는|된|하는|한다|한|할|함|예정)?"
+
 # 컬럼명 접미사. 긴 것부터 벗겨야 '구분코드' 가 '코드' 로 먼저 잘리지 않는다.
 # 벗긴 중간 단계도 질문 표면형이 되므로 단계마다 후보로 남긴다.
 _SUFFIX_CHAIN: tuple[tuple[str, ...], ...] = (
@@ -120,6 +130,23 @@ _MIN_SYNONYM_LENGTH = 3
 _ENTITY_PREFIXES: tuple[str, ...] = ("가맹점", "기업고객", "기업", "회원", "고객", "카드", "상품", "부점")
 _MIN_BOOLEAN_STEM_LENGTH = 2
 
+# 날짜 컬럼도 여부 컬럼과 같다. 질문은 시점을 사건으로 부른다.
+#   카드신규발급년월일 → "7월에 신규 발급된 기업카드 좌수"
+#   해지년월일        → "7월에 해지된 기업카드 좌수"
+#   카드만료년월일     → "4분기에 만료 예정인 기업카드 좌수"
+# 스키마의 날짜 컬럼 81개 중 78개가 동의어를 하나도 갖고 있지 않았다. 접미사를
+# 벗기면 2글자 사건명("해지", "만료")만 남으므로 최소 길이를 따로 둔다.
+_DATE_SUFFIXES: tuple[str, ...] = ("년월일", "년월", "일자", "일시")
+_MIN_DATE_STEM_LENGTH = 2
+
+# 표기 수식어. 질문은 이걸 떼고 부른다: 한글상품명 → "카드 상품명별로".
+_NAME_MODIFIER_PREFIXES: tuple[str, ...] = ("한글", "영문")
+
+# 접미사를 벗긴 어간은 2글자여도 업무 용어다: 국가코드 → "국가별",
+# 한글시도명 → "시도별". 3글자 하한에 걸려 통째로 버려지던 어간이 17개였고,
+# 뜻이 사라지는 토막은 _TOO_GENERIC 이 이미 걸러낸다.
+_MIN_STEM_LENGTH = 2
+
 
 def compact(text: str) -> str:
     """구분자를 없앤 비교용 표현."""
@@ -130,17 +157,14 @@ def compact(text: str) -> str:
 def _phrase_pattern(needle: str) -> re.Pattern[str]:
     """글자 사이마다 구분자를 허용하는 매칭 패턴.
 
-    패턴을 캐시하지 않으면 안 된다. 구분자 클래스 [^0-9A-Za-z가-힣_] 는 한글 음절
-    11,172자를 포함해서 re 의 charset 최적화가 컴파일당 5ms 쯤 걸린다. 테이블 랭킹은
-    질문 하나에 컬럼·동의어 6,000여 개를 대조하고(v2 가 동의어 3,243개를 유도했다)
-    서로 다른 패턴이 3,000개를 넘어 re 내부 캐시(512개)가 계속 밀려난다. 캐시 없이는
-    _rule_rank_tables() 한 번이 18초였다.
+    테이블 랭킹은 질문 하나에 컬럼·동의어 수천 개를 대조하므로 패턴을 캐시한다.
+    정규식 단어 문자 범주는 ASCII 식별자와 한글을 모두 처리하면서, 큰 한글 문자 범위를
+    매 패턴마다 최적화하던 명시적 문자 클래스보다 컴파일이 훨씬 빠르다.
     """
-    separator = r"[^0-9A-Za-z가-힣_]*"
+    separator = r"\W*"
     body = separator.join(re.escape(char) for char in needle)
     return re.compile(
-        rf"(?<![0-9A-Za-z가-힣_]){body}"
-        rf"(?={separator}{_PARTICLES}(?:[^0-9A-Za-z가-힣_]|$))",
+        rf"(?<!\w){body}(?={separator}{_PREDICATE_TAIL}{_PARTICLES}(?:\W|$))",
         flags=re.IGNORECASE,
     )
 
@@ -217,6 +241,42 @@ def _boolean_variants(column: str) -> list[str]:
     return [term for term in variants if term not in _TOO_GENERIC]
 
 
+def _date_variants(column: str) -> list[str]:
+    """날짜 컬럼의 사건 표면형.
+
+    엔티티 접두사까지 떼야 질문의 어순과 만난다. "신규 발급된 기업카드" 는
+    '카드신규발급' 이 아니라 '신규발급' 으로만 잡힌다.
+    """
+    suffix = next((item for item in _DATE_SUFFIXES if column.endswith(item)), "")
+    if not suffix or len(column) <= len(suffix):
+        return []
+
+    variants: list[str] = []
+
+    def offer(candidate: str) -> None:
+        if len(candidate) >= _MIN_DATE_STEM_LENGTH and candidate not in variants:
+            variants.append(candidate)
+
+    stem = column[: -len(suffix)]
+    offer(stem)
+    for prefix in _ENTITY_PREFIXES:
+        if stem.startswith(prefix) and len(stem) > len(prefix):
+            offer(stem[len(prefix) :])
+            break
+
+    return [term for term in variants if term not in _TOO_GENERIC]
+
+
+def _name_modifier_variants(column: str) -> list[str]:
+    """표기 수식어를 뗀 이름 컬럼: 한글상품명 → 상품명."""
+    if not column.endswith("명"):
+        return []
+    for prefix in _NAME_MODIFIER_PREFIXES:
+        if column.startswith(prefix) and len(column) > len(prefix) + 1:
+            return [column[len(prefix) :]]
+    return []
+
+
 def _space_variants(term: str) -> list[str]:
     """한글↔영숫자 경계와 복합어 경계에 공백을 넣은 변형."""
     variants: list[str] = []
@@ -276,11 +336,17 @@ def derive_column_synonyms(name: str, existing: object = None) -> list[str]:
         derived.append(term)
 
     bases = _strip_suffixes(column)
+    for term in _name_modifier_variants(column):
+        add(term)
+        bases = [*bases, term, *_strip_suffixes(term)]
     for base in bases:
-        add(base)
+        add(base, min_length=_MIN_STEM_LENGTH)
 
     for term in _boolean_variants(column):
         add(term, min_length=_MIN_BOOLEAN_STEM_LENGTH)
+
+    for term in _date_variants(column):
+        add(term, min_length=_MIN_DATE_STEM_LENGTH)
 
     # 질문은 분류 단위를 생략하고 부르기도 한다: CA한도등급코드 → "CA한도별",
     # 통합한도등급코드 → "통합한도 기준으로". 접미사를 벗긴 뒤 경계 어휘까지

@@ -4,7 +4,7 @@ import ast
 import json
 import re
 from calendar import monthrange
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 import sqlparse
@@ -981,6 +981,8 @@ def _time_resolution_instruction(question: str, table_names: list[str] | None = 
         return f"""17. 날짜 해석 ({_current_date_context()}):
     - 사용자가 명시한 월/기간/상대시점만 날짜 조건으로 반영합니다.
     - "2605 기준" 같은 YYMM 축약은 2000년대 YYYYMM인 "202605"로 해석합니다.
+    - "N분기"는 3개월 구간입니다. 1분기 01~03, 2분기 04~06, 3분기 07~09, 4분기 10~12이며 연도가 없으면 올해, "작년 N분기"는 전년입니다.
+    - 연도 없는 "N월"은 아직 오지 않은 달로 넘기지 않고 가장 최근에 지나간 그 달로, "작년 N월"은 전년 그 달로 해석합니다.
     - 기간 길이가 없는 단독 "최근", "최근 기준", "이번달", "이번 월"은 현재월 1개월 기준으로 해석합니다.
     - 이때 기준년월 컬럼은 "{current_ym}" 조건을 사용합니다.
     - 이때 기준년월일/실적기준년월일 컬럼은 SUBSTR(일자컬럼, 1, 6) = "{current_ym}" 범위 안의 최신 기준일을 사용합니다.
@@ -1036,11 +1038,36 @@ def _extract_unrequested_time_literals(question: str, sql: str) -> list[str]:
     return sorted(literal_hits)
 
 
+def _merchant_master_period_note(start_ym: str, end_ym: str) -> str:
+    """요청한 달을 마스터로 답할 때 붙일 기준시점 안내.
+
+    "없는 달을 최신 시점으로 대신 답했다" 는 사실을 사용자가 답변에서 알아야
+    한다. 없다고 단정하는 것은 적재 범위를 실제로 읽어냈을 때뿐이다.
+    """
+    latest = _latest_available_day(_TBDAADT01_TABLE)
+    requested = start_ym if start_ym == end_ym else f"{start_ym}~{end_ym}"
+    basis = (
+        f"{_TBDAADT01_TABLE}의 최신 {_TBDAADT01_TIME_COLUMN} {latest} 기준으로 조회했습니다."
+    )
+    bounds = loaded_period_range(_TBDAADT01_TABLE)
+    if not bounds:
+        return f"요청하신 {requested} 시점 데이터는 {_TBDAADT01_TABLE}에 없을 수 있습니다. {basis}"
+    if start_ym <= bounds[1][:6] and end_ym >= bounds[0][:6]:
+        return basis
+    return (
+        f"{_TBDAADT01_TABLE}의 조회 가능 기간은 "
+        f'"{_TBDAADT01_TIME_COLUMN}" {bounds[0]} ~ {bounds[1]}이라 '
+        f"요청하신 {requested} 데이터는 없습니다. {basis}"
+    )
+
+
 def _implicit_time_basis_note(question: str, sql: str) -> str:
     sql_text = sql or ""
     used_tables = _extract_schema_tables(sql_text)
-    cadence, _, _ = _tbdaadt01_time_route(question)
+    cadence, requested_start, requested_end = _tbdaadt01_time_route(question)
     _, _, explicit_day = _extract_period_by_rule(question)
+    if cadence == "master" and _TBDAADT01_TABLE in used_tables:
+        return _merchant_master_period_note(requested_start, requested_end)
     if cadence == "monthly" and explicit_day and "tmdaa5d01" in used_tables:
         return (
             f"요청일 {explicit_day}은 tbdaadt01의 최근 10일 보관 범위 밖이므로 "
@@ -1140,6 +1167,42 @@ def _extract_half_year_ranges_by_rule(question: str) -> list[tuple[str, str]]:
     return ranges
 
 
+def _quarter_month_range(year: int, quarter: int) -> tuple[str, str]:
+    start = (quarter - 1) * 3 + 1
+    return f"{year}{start:02d}", f"{year}{start + 2:02d}"
+
+
+def _extract_quarter_period_by_rule(question: str, today: date) -> tuple[str, str]:
+    """분기 표현을 그 분기의 3개월로 읽는다.
+
+    분기는 시간표현 탐지 키워드에만 있어서 "2026년 3분기" 가 연도 전체
+    (202601~202612)로 떨어졌다. 연도가 없으면 실행연도, "작년 N분기" 는 전년이다.
+    """
+    text = question or ""
+    ranges = []
+    for match in re.finditer(
+        r"(?:(20\d{2})\s*년|(작년|지난해|전년도?))?\s*(?<!\d)([1-4])\s*분기", text
+    ):
+        year_text, last_year, quarter = match.groups()
+        year = int(year_text) if year_text else today.year - (1 if last_year else 0)
+        ranges.append(_quarter_month_range(year, int(quarter)))
+    if ranges:
+        return min(start for start, _ in ranges), max(end for _, end in ranges)
+
+    relative = re.search(r"(이번|금|당|지난|저번|직전|전)\s*분기", text)
+    if not relative:
+        return "", ""
+    quarter, year = (today.month - 1) // 3 + 1, today.year
+    if relative.group(1) not in {"이번", "금", "당"}:
+        quarter, year = (4, year - 1) if quarter == 1 else (quarter - 1, year)
+    return _quarter_month_range(year, quarter)
+
+
+def _recent_ym_for_month(month: int, today: date) -> str:
+    """연도 없는 "N월"은 미래로 넘기지 않고 가장 최근에 지나간 그 달로 읽는다."""
+    return f"{today.year - (0 if month <= today.month else 1)}{month:02d}"
+
+
 def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     """Return ``(start_ym, end_ym, explicit_yyyymmdd)`` from Korean date text."""
     text = question or ""
@@ -1166,7 +1229,7 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
             return explicit_day[:6], explicit_day[:6], explicit_day
 
     inherited_year_range = re.search(
-        r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(?:부터|에서|~|～|-)\s*"
+        r"(20\d{2})\s*년\s*(\d{1,2})\s*월?\s*(?:부터|에서|~|～|-)\s*"
         r"(\d{1,2})\s*월(?:\s*까지)?",
         text,
     )
@@ -1180,6 +1243,10 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     half_year_ranges = _extract_half_year_ranges_by_rule(text)
     if half_year_ranges:
         return half_year_ranges[0][0], half_year_ranges[-1][1], explicit_day
+
+    quarter_start, quarter_end = _extract_quarter_period_by_rule(text, business_today)
+    if quarter_start:
+        return quarter_start, quarter_end, explicit_day
 
     months = [
         f"{match.group(1)}{int(match.group(2)):02d}"
@@ -1201,6 +1268,29 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     if months:
         return months[0], months[-1], explicit_day
 
+    relative_year_months = [
+        f"{business_today.year - (0 if word in ('올해', '금년') else 1)}{int(month):02d}"
+        for word, month in re.findall(r"(작년|지난해|전년도?|올해|금년)\s*(\d{1,2})\s*월", text)
+        if 1 <= int(month) <= 12
+    ]
+    if relative_year_months:
+        return min(relative_year_months), max(relative_year_months), explicit_day
+
+    bare_range = re.search(
+        r"(?<![\d,A-Za-z])(\d{1,2})\s*월\s*(?:부터|에서|~|～|-)\s*(\d{1,2})\s*월(?:\s*까지)?",
+        text,
+    )
+    if bare_range:
+        start_month, end_month = int(bare_range.group(1)), int(bare_range.group(2))
+        if 1 <= start_month <= 12 and 1 <= end_month <= 12:
+            end = _recent_ym_for_month(end_month, business_today)
+            start_year = int(end[:4]) - (0 if start_month <= end_month else 1)
+            return f"{start_year}{start_month:02d}", end, explicit_day
+    bare_month = re.search(r"(?<![\d,A-Za-z])(\d{1,2})\s*월", text)
+    if bare_month and 1 <= int(bare_month.group(1)) <= 12:
+        ym = _recent_ym_for_month(int(bare_month.group(1)), business_today)
+        return ym, ym, explicit_day
+
     if re.search(r"어제|전일", text):
         explicit_day = previous_day_ymd(business_today)
         return explicit_day[:6], explicit_day[:6], explicit_day
@@ -1218,19 +1308,9 @@ def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
             if half_year.group(2) == "상반기"
             else (f"{year}07", f"{year}12", explicit_day)
         )
-    recent = re.search(r"(?:최근|지난)\s*(\d+)\s*(?:개월|달)", text)
-    if recent:
-        span = max(1, min(int(recent.group(1)), 120))
-        return _months_back_ym(current, span - 1), current, explicit_day
-    recent_years = re.search(
-        r"(?:최근|지난)\s*(\d{1,2}|일)\s*년(?:\s*(?:이내|내|간|동안))?",
-        text,
-    )
-    if recent_years:
-        raw_years = recent_years.group(1)
-        years = 1 if raw_years == "일" else int(raw_years)
-        span = max(1, min(years * 12, 120))
-        return _months_back_ym(current, span - 1), current, explicit_day
+    recent_months = _extract_recent_period_months_by_rule(text)
+    if recent_months is not None:
+        return _months_back_ym(current, recent_months - 1), current, explicit_day
     year_match = re.search(r"(20\d{2})\s*년", text)
     if year_match:
         year = year_match.group(1)
@@ -1328,7 +1408,12 @@ _RECENT_CLOSURE_PERIOD_PATTERN = (
 
 
 def _extract_recent_period_months_by_rule(question: str) -> int | None:
-    """Return the explicit relative period as months for closure queries."""
+    """Return the explicit relative period as months.
+
+    "최근 반년" 은 "최근 6개월" 과 같은 기간 표현이다. 이 함수가 유일한 해석
+    지점이어야 한다 — _extract_period_by_rule 이 자기 정규식을 따로 들고 있던
+    동안 "반" 을 숫자로 못 읽어 반년이 현재월 1개월로 좁혀졌다.
+    """
     text = question or ""
     month_match = re.search(
         r"(?:최근|지난)\s*(\d{1,3})\s*(?:개월|달)\s*(?:이내|내|간|동안)?",
@@ -1976,21 +2061,42 @@ def _replace_physical_table(sql: str, source_table: str, target_table: str) -> s
     return rewritten
 
 
+def _merchant_master_attribute_question(question: str) -> bool:
+    """월 스냅샷으로 바꾸면 사용자가 지목한 테이블만 사라지는 질문인지.
+
+    tmdaa5d01 은 "그 달에 어떤 가맹점이 어떤 상태였나" 를 세기 위한 월 스냅샷이다.
+    주소·기본정보처럼 마스터 한 곳만 가리키는 semantic attribute 를 물었을 때는
+    집계할 지표가 없어 스냅샷으로 돌려도 답이 달라지지 않는다. 대신 tbdaadt01 이
+    후보에서 통째로 빠져서 "요청한 달이 마스터에 있느냐" 는 것조차 답할 수 없다.
+    """
+    return any(
+        {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+            for mapping in attribute.get("source_mappings", [])
+            if mapping.get("table")
+        }
+        == {_TBDAADT01_TABLE}
+        for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6)
+    )
+
+
 def _recent_merchant_time_route(question: str) -> tuple[str, str, str]:
-    """Return ``(daily|monthly, start, end)`` for a recent merchant source."""
+    """Return ``(daily|monthly|master, start, end)`` for a recent merchant source."""
     start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
     if explicit_day:
         recent_start, recent_end = recent_window_ymd(today=kst_today())
         if recent_start <= explicit_day <= recent_end:
             return "daily", explicit_day, explicit_day
-        return "monthly", explicit_day[:6], explicit_day[:6]
+        bounded = "master" if _merchant_master_attribute_question(question) else "monthly"
+        return bounded, explicit_day[:6], explicit_day[:6]
 
     explicit_month = bool(
         _has_historical_period_expression(question)
         or re.search(r"이번\s*(?:달|월)", question or "")
     )
     if explicit_month and start_ym and end_ym:
-        return "monthly", start_ym, end_ym
+        bounded = "master" if _merchant_master_attribute_question(question) else "monthly"
+        return bounded, start_ym, end_ym
     return "", "", ""
 
 
@@ -2131,6 +2237,11 @@ def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
     cadence, start, end = _tbdaadt01_time_route(question)
     if not cadence:
         return sql
+    if cadence == "master":
+        # 마스터가 요청한 달을 들고 있을 리 없다. 최신 가용일 1건으로 좁혀 가맹점당
+        # 보관일수만큼 행이 불어나는 것을 막고, 요청한 달이 없다는 사실은
+        # _implicit_time_basis_note() 가 답변에서 밝힌다.
+        start = end = _latest_available_day(_TBDAADT01_TABLE)
 
     policy = accumulation_policy_for(_TBDAADT01_TABLE) or {}
     historical_source = policy.get("historical_source")

@@ -383,6 +383,81 @@ def apply_recent_merchant_semantic_overrides(schema: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 6-1. 가맹점 주소 속성
+#
+# "한신포차 가맹점 도로명 주소" 는 어떤 매처에도 걸리지 않았다. 스키마에
+# 도로명주소라는 컬럼이 없고(주소 본문은 가맹점상세주소, 표기 방식은
+# 주소표시구분코드다) 주소 계열 컬럼에 동의어가 하나도 없어서다. 질문이 남긴
+# 유일한 단서가 "가맹점주"(merchant_owner) 였고, 그 속성은 마스터·일별·월별
+# 스냅샷 4개를 동점으로 올린다. 그래서 주소 컬럼이 아예 없는 tmdaaus01 까지
+# 후보가 됐다. 주소를 마스터 한 곳으로만 매핑되는 속성으로 선언한다.
+# ---------------------------------------------------------------------------
+MERCHANT_ADDRESS_ATTRIBUTE = {
+    "name": "merchant_address",
+    "korean_name": "가맹점 주소",
+    "domains": ["merchant_sales", "corporate_sales_targeting"],
+    "business_definition": (
+        "가맹점 사업장의 소재지 주소. 도로명·지번 표기는 주소표시구분코드가 구분하며, "
+        "주소 본문(가맹점상세주소)은 민감 컬럼이라 우편번호·도로명 번호 체계까지만 조회한다"
+    ),
+    "aliases": [
+        "가맹점 주소",
+        "가맹점주소",
+        "도로명 주소",
+        "도로명주소",
+        "지번 주소",
+        "지번주소",
+        "사업장 주소",
+        "사업장주소",
+        "가맹점 소재지",
+        "가맹점소재지",
+    ],
+    "source_mappings": [
+        {
+            "entity": "merchant",
+            "table": "tbdaadt01",
+            "columns": [
+                "주소표시구분코드",
+                "우편번호",
+                "도로명우편번호",
+                "도로명우편읍면번호",
+                "도로명구역번호",
+                "도로명건물본번호",
+                "도로명건물부번호",
+                "도로명지하구분코드",
+            ],
+        }
+    ],
+    "semantic_cautions": [
+        "도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소인데 민감 컬럼이라 조회할 수 없으므로 SELECT 에 넣지 않는다.",
+        "도로명 주소를 물으면 조회 가능한 주소표시구분코드·우편번호·도로명 번호 컬럼을 내보내고, 주소 문장을 만들어 내지 않는다.",
+    ],
+}
+
+
+def apply_merchant_address_semantics(schema: dict) -> int:
+    """Give 가맹점 주소 one master-only attribute instead of no attribute at all."""
+    attributes = schema.get("semantic_attributes")
+    if not isinstance(attributes, list):
+        raise SystemExit("semantic_attributes 없음")
+    if any(
+        item.get("name") == MERCHANT_ADDRESS_ATTRIBUTE["name"] for item in attributes
+    ):
+        raise SystemExit(f"이미 있는 속성: {MERCHANT_ADDRESS_ATTRIBUTE['name']}")
+
+    anchor = next(
+        (
+            position
+            for position, item in enumerate(attributes)
+            if item.get("name") == "merchant_owner"
+        ),
+        len(attributes) - 1,
+    )
+    attributes.insert(anchor + 1, deepcopy(MERCHANT_ADDRESS_ATTRIBUTE))
+    return 1
+
+
+# ---------------------------------------------------------------------------
 # 7. 전일 적재 테이블을 참조하는 지표·계약·질의 교정
 # ---------------------------------------------------------------------------
 KST_PREVIOUS_DAY_SQL = (
@@ -1111,6 +1186,15 @@ def apply_sql_contract(schema: dict) -> dict:
         time_resolution["tmdaa1d12 과거 월"] = (
             "기준년월(YYYYMM)로 조회하고 고객×월 최신 기준년월일 1건"
         )
+        time_resolution["N분기·이번 분기·지난 분기"] = (
+            "1분기 01~03, 2분기 04~06, 3분기 07~09, 4분기 10~12."
+            " 연도가 없으면 실행연도, 작년 N분기는 전년"
+        )
+        time_resolution["연도 없는 M월"] = (
+            "아직 오지 않은 달로 넘기지 않고 가장 최근에 지나간 그 달"
+            " (예: 실행 9월에 12월 → 전년 12월)"
+        )
+        time_resolution["작년 M월·전년 M월"] = "전년도 그 달"
 
     # output_contract 를 evidence_order 앞으로 옮겨 프롬프트 맨 위에 오게 한다.
     order = [
@@ -1164,6 +1248,7 @@ def main() -> None:
     accumulation_policy_count = apply_accumulation_policies(schema)
     time_axis_count = apply_time_axis_fixes(schema)
     recent_merchant_semantic_count = apply_recent_merchant_semantic_overrides(schema)
+    merchant_address_count = apply_merchant_address_semantics(schema)
     previous_day_semantic_count = apply_previous_day_semantic_overrides(schema)
     corporate_customer_semantic_count = apply_corporate_customer_semantic_overrides(schema)
     identity_count = apply_customer_member_identity_overrides(schema)
@@ -1183,6 +1268,7 @@ def main() -> None:
             f"프롬프트 렌더 한도({PROMPT_LIST_RENDER_LIMIT}개)를 넘겨 잘리던 규칙 리스트를 정리했다.",
             "테이블 적재 주기와 기간 조회 컬럼을 grain과 별도 정책으로 추가했다.",
             "최근 10일 이전 가맹점 조회는 월 스냅샷으로 전환하고 월+가맹점번호로 조인하도록 교정했다.",
+            "가맹점 주소를 가맹점기본(tbdaadt01) 한 곳만 가리키는 semantic attribute 로 선언했다.",
             "전일 적재 테이블의 지표·계약·질의 참조를 KST D-1 기준으로 통일했다.",
             "기업고객 현재 상태는 tbdaa1d12 KST D-1, 명시한 과거 월은 tmdaa1d12 기준년월, 현재+이력 질의는 두 소스를 함께 사용하도록 분리했다.",
             "tbmaisd06 의 물리 시간축은 유지하고 연 단위 적재 조회 컬럼을 정책으로 분리했으며, 기업영업 스코프 필터를 기본값으로 못 박았다.",
@@ -1216,6 +1302,7 @@ def main() -> None:
     print(f"  accumulation policies: {accumulation_policy_count} tables")
     print(f"  time axis fixes      : {time_axis_count} tables")
     print(f"  recent merchant semantics: {recent_merchant_semantic_count} entries")
+    print(f"  merchant address semantics: {merchant_address_count} entries")
     print(f"  previous-day semantics: {previous_day_semantic_count} entries")
     print(f"  corporate customer semantics: {corporate_customer_semantic_count} entries")
     print(f"  customer/member identity: {identity_count} entries")

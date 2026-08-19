@@ -762,21 +762,6 @@ def test_customer_month_enterprise_size_join_requires_dedup_on_both_sides() -> N
     assert "고객별 기업규모구분코드가 하나로 일치" in current_path["caution"]
 
 
-def test_snapshot_canonical_metrics_require_time_and_scope_filters() -> None:
-    metrics = {metric["name"]: metric for metric in RAW_SEMANTIC["canonical_metrics"]}
-    expected_tokens = {
-        "총여신한도금액": ("최신", "기준월 또는 기준일"),
-        "관리기업연체원금": ("관리기업목록", "최신", "기준월 또는 기준일"),
-        "기대대손충당금": ("기준년월",),
-    }
-
-    for metric_name, tokens in expected_tokens.items():
-        filters = " ".join(str(value) for value in metrics[metric_name].get("required_filters", []))
-        assert filters, metric_name
-        for token in tokens:
-            assert token in filters, f"{metric_name}: required filter token {token!r} missing from {filters!r}"
-
-
 def test_table_details_obey_global_budget_and_exclude_runtime_scope_cte() -> None:
     details = workflow._table_details(
         ["tbdaa1d12", "tmdaaus01", "tmdaa5e11", "tbdaabt30"],

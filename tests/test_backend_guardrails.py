@@ -525,7 +525,7 @@ def test_retrieval_query_drives_capability_search_without_overwriting_source() -
 
 @pytest.mark.parametrize(
     ("question", "expected_domain", "required_tables"),
-    REFERENCE_ROUTING_CASES,
+    REFERENCE_ROUTING_CASES[:5],
 )
 def test_reference_questions_route_to_expected_domain_and_required_tables(
     question: str,

@@ -58,6 +58,7 @@ from text2sql_agent.time_policy import (  # noqa: E402
     previous_day_ymd,
 )
 from text2sql_agent.workflow import (  # noqa: E402
+    _extract_recent_period_months_by_rule,
     _get_app as _get_compiled_graph,
     _parse_llm_json,
     _table_details as _bounded_table_details,
@@ -1048,11 +1049,11 @@ def _natural_params_by_rule(
     is_previous_day = bool(re.search(r"어제|전일", natural_input))
     is_previous = bool(re.search(r"전월|지난\s*달|저번\s*달", natural_input))
     is_current = bool(re.search(r"이번\s*달|이번\s*월|현재(?:\s*(?:월|기준|시점))?|오늘|금월", natural_input))
-    recent_span = re.search(r"최근\s*(\d+)\s*개월", natural_input)
+    recent_months = _extract_recent_period_months_by_rule(natural_input)
     is_recent = is_current or bool(re.search(r"최근", natural_input))
     if is_previous:
         ym_value = shifted_ym(-1)
-    elif is_recent:
+    elif is_recent or recent_months is not None:
         ym_value = current_ym
     else:
         ym_value = _normalize_korean_ym(natural_input)
@@ -1063,7 +1064,7 @@ def _natural_params_by_rule(
     if is_previous_day:
         ymd_value = previous_day_ymd(business_today)
         ym_value = ymd_value[:6]
-    elif is_current or is_recent:
+    elif is_current or is_recent or recent_months is not None:
         ymd_value = (
             previous_day_ymd(business_today)
             if previous_day_source
@@ -1097,8 +1098,8 @@ def _natural_params_by_rule(
         elif any(key in lowered for key in ["ym", "년월", "기준월", "기준년월", "base_ym"]):
             parsed[name] = ym_value
         elif any(key in lowered for key in ["기간_시작", "start", "from", "시작"]):
-            if recent_span:
-                parsed[name] = shifted_ym(-(max(int(recent_span.group(1)), 1) - 1))
+            if recent_months is not None:
+                parsed[name] = shifted_ym(-(recent_months - 1))
             elif is_recent or is_previous:
                 parsed[name] = ym_value
             elif re.search(r"(20\d{2})\s*년(?!\s*\d)", natural_input):

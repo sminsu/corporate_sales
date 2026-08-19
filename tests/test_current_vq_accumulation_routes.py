@@ -56,7 +56,9 @@ def test_current_managed_delinquency_needs_only_scope_and_uses_d1() -> None:
     assert rendered["extracted_params"]["기준년월"] == workflow._current_ym()
     assert workflow._extract_schema_tables(sql) == {"tbdaa1d12"}
     assert "DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'ASIA/SEOUL')" in sql
-    assert workflow._rule_rank_tables(question) == ["tbdaa1d12"]
+    # 후보 목록의 길이가 아니라 1순위가 계약이다. "연체 발생한" 이 연체발생년월일을
+    # 가진 테이블들에도 걸리게 된 뒤로 후보는 늘었지만 1순위는 그대로다.
+    assert workflow._rule_rank_tables(question)[0] == "tbdaa1d12"
     assert not workflow._availability_policy_issues(question, sql)
 
 
@@ -70,7 +72,7 @@ def test_historical_managed_delinquency_stays_monthly() -> None:
     assert selected["matched_query_name"] == "managed_company_delinquency"
     assert rendered["extracted_params"]["기준년월"] == "202604"
     assert workflow._extract_schema_tables(rendered["final_sql"]) == {"tmdaa1d12"}
-    assert workflow._rule_rank_tables(question) == ["tmdaa1d12"]
+    assert workflow._rule_rank_tables(question)[0] == "tmdaa1d12"
 
 
 def test_current_target_industry_uses_d1_population_and_mtd_with_monthly_history() -> None:

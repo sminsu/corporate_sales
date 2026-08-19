@@ -97,6 +97,57 @@ def test_matcher_respects_word_boundary(question: str, phrase: str) -> None:
     assert not phrase_in_text(question, phrase)
 
 
+@pytest.mark.parametrize(
+    ("column", "expected"),
+    [
+        # 날짜 컬럼은 시점이 아니라 사건으로 불린다. 스키마의 날짜 컬럼 81개 중
+        # 78개가 동의어를 하나도 갖고 있지 않아 질문과 만날 방법이 없었다.
+        ("카드신규발급년월일", "신규발급"),
+        ("해지년월일", "해지"),
+        ("카드만료년월일", "만료"),
+        ("연체발생년월일", "연체발생"),
+        # 표기 수식어는 떼고 부른다.
+        ("한글상품명", "상품명"),
+        ("한글시도명", "시도명"),
+        # 접미사를 벗긴 2글자 어간도 업무 용어다.
+        ("국가코드", "국가"),
+        ("한글시도명", "시도"),
+        ("업종구분코드", "업종"),
+    ],
+)
+def test_derives_event_name_and_short_stem_surface_forms(column: str, expected: str) -> None:
+    assert expected in derive_column_synonyms(column)
+
+
+@pytest.mark.parametrize(
+    ("question", "phrase"),
+    [
+        # 질문은 컬럼을 서술어로 부른다. 조사만 허용하던 lookahead 는 여기서 끊겼다.
+        ("2026년 7월에 신규 발급된 기업카드 좌수를 알려줘", "신규발급"),
+        ("2026년 7월에 해지된 기업카드 좌수를 알려줘", "해지"),
+        ("2026년 4분기에 만료 예정인 기업카드 좌수", "만료"),
+        ("평일 24시간 운영하는 가맹점이 몇 개인지 알려줘", "평일24시간운영"),
+        ("현재 유효한 기업카드를 보유한 회원 수", "유효"),
+        ("2025년 9월 국가별 해외매출건수를 보여줘", "국가"),
+    ],
+)
+def test_matcher_follows_predicate_endings(question: str, phrase: str) -> None:
+    assert phrase_in_text(question, phrase)
+
+
+@pytest.mark.parametrize(
+    ("question", "phrase"),
+    [
+        # 용언 어미를 허용해도 어절 경계는 그대로다.
+        ("카드론 잔액을 보여줘", "카드"),
+        ("해지환급금을 알려줘", "해지"),
+        ("만료일자를 알려줘", "만료"),
+    ],
+)
+def test_predicate_endings_do_not_cross_word_boundaries(question: str, phrase: str) -> None:
+    assert not phrase_in_text(question, phrase)
+
+
 def test_matcher_handles_empty_input() -> None:
     assert not phrase_in_text("질문", "")
     assert not phrase_in_text("", "가맹점상태구분")

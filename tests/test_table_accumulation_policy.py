@@ -466,6 +466,81 @@ def test_explicit_daily_and_month_range_choose_the_declared_merchant_source() ->
     assert 'm."기준년월" BETWEEN \'202510\' AND \'202512\'' in month_range
 
 
+MASTER_ADDRESS_QUESTION = "한신포차 가맹점주 가맹점 도로명 주소 2026년 5월 기준으로 알려줘"
+
+# 주소 본문(가맹점상세주소)은 민감 컬럼이라 조회 대상이 아니다. 답할 수 있는 것은
+# 표기 구분과 우편번호·도로명 번호 체계까지다.
+MASTER_ADDRESS_SQL = """
+SELECT m."가맹점번호", m."가맹점명", m."주소표시구분코드", m."우편번호", m."도로명건물본번호"
+FROM card_system.tbdaadt01 m
+WHERE LOWER(m."가맹점명") LIKE LOWER('%한신포차%')
+"""
+
+
+@contextlib.contextmanager
+def loaded_window(start: str, end: str):
+    """적재된 구간 전체를 고정한다. 요청한 달이 그 밖인지 판단할 때 쓴다."""
+    with patch.object(workflow, "loaded_period_range", return_value=(start, end)):
+        yield
+
+
+def test_master_attribute_question_keeps_the_merchant_master_for_a_past_month() -> None:
+    """주소는 마스터 한 곳만 가리키는 속성이다. 월 스냅샷으로 돌리면 답할 곳이 없다.
+
+    질문이 남긴 단서가 "가맹점주"(merchant_owner) 뿐이던 동안에는 마스터·일별·월별
+    스냅샷 4개가 동점이었고, 월 라우팅이 그중 마스터만 걷어내 tmdaa5d01 이 1순위였다.
+    """
+    with frozen_clock():
+        selected = workflow._rule_rank_tables(MASTER_ADDRESS_QUESTION)
+
+    assert selected[0] == "tbdaadt01"
+
+
+def test_master_attribute_sql_is_pinned_to_the_latest_loaded_day() -> None:
+    """마스터는 보관일수만큼 가맹점당 행이 늘어난다. 최신 가용일 1건으로 좁힌다."""
+    with frozen_clock(), loaded_window("20260803", "20260812"):
+        routed = workflow._apply_tbdaadt01_historical_source(
+            MASTER_ADDRESS_QUESTION, MASTER_ADDRESS_SQL
+        )
+
+    assert "tmdaa5d01" not in routed
+    assert 'm."실적기준년월일" = \'20260812\'' in routed
+    assert not schema._validate_sql_against_schema(
+        routed, sorted(workflow._extract_schema_tables(routed))
+    )
+
+
+def test_master_attribute_answer_says_the_requested_month_is_missing() -> None:
+    with frozen_clock(), loaded_window("20260803", "20260812"):
+        note = workflow._implicit_time_basis_note(
+            MASTER_ADDRESS_QUESTION, MASTER_ADDRESS_SQL
+        )
+
+    assert "202605 데이터는 없습니다" in note
+    assert "20260803 ~ 20260812" in note
+    assert "20260812 기준으로 조회했습니다" in note
+
+
+def test_master_attribute_answer_does_not_claim_a_gap_it_did_not_read() -> None:
+    """적재 범위를 못 읽었으면 "없다" 고 단정하지 않는다."""
+    with frozen_clock(), no_period_range():
+        note = workflow._implicit_time_basis_note(
+            MASTER_ADDRESS_QUESTION, MASTER_ADDRESS_SQL
+        )
+
+    assert "없을 수 있습니다" in note
+    assert "데이터는 없습니다" not in note
+
+
+def test_counting_the_same_past_month_still_routes_to_the_monthly_snapshot() -> None:
+    """마스터 예외는 속성 조회에만 준다. 그 달의 모수를 세는 질문은 스냅샷이 답한다."""
+    with frozen_clock():
+        selected = workflow._rule_rank_tables("2026년 5월 한신포차 가맹점 수")
+
+    assert "tmdaa5d01" in selected
+    assert "tbdaadt01" not in selected
+
+
 def test_historical_vq_capability_is_routed_before_parameter_application() -> None:
     question = "2025년 12월 도미노 브랜드 가맹점 수 몇 개야"
     with patch.object(workflow, "kst_today", return_value=date(2026, 8, 12)):

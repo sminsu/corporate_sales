@@ -70,6 +70,7 @@ semantic_layer_metadata:
   - 프롬프트 렌더 한도(12개)를 넘겨 잘리던 규칙 리스트를 정리했다.
   - 테이블 적재 주기와 기간 조회 컬럼을 grain과 별도 정책으로 추가했다.
   - 최근 10일 이전 가맹점 조회는 월 스냅샷으로 전환하고 월+가맹점번호로 조인하도록 교정했다.
+  - 가맹점 주소를 가맹점기본(tbdaadt01) 한 곳만 가리키는 semantic attribute 로 선언했다.
   - 전일 적재 테이블의 지표·계약·질의 참조를 KST D-1 기준으로 통일했다.
   - 기업고객 현재 상태는 tbdaa1d12 KST D-1, 명시한 과거 월은 tmdaa1d12 기준년월, 현재+이력 질의는 두 소스를 함께 사용하도록 분리했다.
   - tbmaisd06 의 물리 시간축은 유지하고 연 단위 적재 조회 컬럼을 정책으로 분리했으며, 기업영업 스코프 필터를 기본값으로 못 박았다.
@@ -132,6 +133,8 @@ tables:
   - name: 법인명
     data_type: VARCHAR
     description: 자연인이 아닌 법에 의하여 권리 또는 능력이 부여된 사단 또는 재단등 법인체의 명
+    synonyms:
+    - 법인
   - name: 표준산업분류코드
     data_type: VARCHAR
     description: 사업체가 주로 수행하는 산업활동을 그 유사성에 따라 체계적으로 분류한 것
@@ -595,6 +598,8 @@ tables:
     description: 해당 법인 스타클럽 그룹최고고객을 관리하기 위한 기준년월일이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 그룹최고고객관리기준
   - name: 결제일
     data_type: VARCHAR
     description: 해당 기업고객의 카드 결제일을 나타낸다. / 회원기본(TBDAAAT03) 결제일 데이터 값과 동일하게 셋팅된다.
@@ -605,37 +610,55 @@ tables:
     description: 최근 기업총한도(사업자한도)를 변경한 년월일을 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최근한도변경
   - name: 가맹점신규년월일
     data_type: VARCHAR
     description: 위 대표가맹점번호 기준의 데이터이다. / 가맹점이 신규로 등록된 년월일을 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점신규
+    - 신규
   - name: 가맹점재가입년월일
     data_type: VARCHAR
     description: 위 대표가맹점번호 기준의 데이터이다. / 가맹점이 재가입된일자를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점재가입
+    - 재가입
   - name: 가맹점해지년월일
     data_type: VARCHAR
     description: 위 대표가맹점번호 기준의 데이터이다. / 당사 가맹점의 해지처리된 일자를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점해지
+    - 해지
   - name: 가맹점최종가입년월일
     data_type: VARCHAR
     description: 위 대표가맹점번호 기준의 데이터이다. / 가맹점의 신규가입년월일, 재가입년월일 중 가장최근에 가입한 년월일를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종가입
+    - 최종가입
   - name: 그룹신용등급확정년월일
     data_type: VARCHAR
     description: 기업이 소속된 그룹의 신용평가모델에 의한 신용등급이 확정된 일자를 나타낸다. / 그룹 CRS단일신용평가최종등급 기준의 데이터이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 그룹신용등급확정
   - name: 그룹신용등급유효년월일
     data_type: VARCHAR
     description: 기업이 소속된 그룹의 신용평가모델에 의해 산출된 신용등급이 유효한 일자를 나타낸다. / 그룹 CRS단일신용평가최종등급 기준의 데이터이다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 그룹신용등급유효
   table_kind: daily_snapshot
   source_definition: 1. 매일 기준으로 데이터를 집계하여 관리한다. 2. TBDAAAT01(고객기본) 기준으로 개인기업구분코드 '2'(기업)인 경우 모수로 잡고 데이터를 생성한다. 3. 고객식별자, 고객고유번호 기준으로 대표 1건으로 관리한다 * 고객관리번호 오름차순 기준으로 첫번째에 해당하는 값 셋팅
   source_metadata:
@@ -733,6 +756,8 @@ tables:
     data_type: VARCHAR
     physical_data_type: VARCHAR2(50)
     description: 자연인이 아닌 법에 의하여 권리 또는 능력이 부여된 사단 또는 재단등 법인체의 명
+    synonyms:
+    - 법인
   - name: 표준산업분류코드
     data_type: VARCHAR
     physical_data_type: VARCHAR2(5)
@@ -1275,6 +1300,8 @@ tables:
     description: 해당 법인 스타클럽 그룹최고고객을 관리하기 위한 기준년월일이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 그룹최고고객관리기준
   - name: 결제일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(2)
@@ -1287,36 +1314,52 @@ tables:
     description: 최근 기업총한도(사업자한도)를 변경한 년월일을 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최근한도변경
   - name: 가맹점신규년월일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(8)
     description: 위 대표가맹점번호 기준의 데이터이다. / 가맹점이 신규로 등록된 년월일을 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점신규
+    - 신규
   - name: 가맹점재가입년월일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(8)
     description: 위 대표가맹점번호 기준의 데이터이다. / 가맹점이 재가입된일자를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점재가입
+    - 재가입
   - name: 가맹점해지년월일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(8)
     description: 위 대표가맹점번호 기준의 데이터이다. / 당사 가맹점의 해지처리된 일자를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점해지
+    - 해지
   - name: 가맹점최종가입년월일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(8)
     description: 위 대표가맹점번호 기준의 데이터이다. / 가맹점의 신규가입년월일, 재가입년월일 중 가장최근에 가입한 년월일를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종가입
+    - 최종가입
   - name: 그룹신용등급확정년월일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(8)
     description: 기업이 소속된 그룹의 신용평가모델에 의한 신용등급이 확정된 일자를 나타낸다. / 그룹 CRS단일신용평가최종등급 기준의 데이터이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 그룹신용등급확정
   - name: 그룹신용등급유효년월일
     data_type: VARCHAR
     physical_data_type: VARCHAR2(8)
@@ -1324,6 +1367,8 @@ tables:
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 그룹신용등급유효
   table_kind: monthly_snapshot
   source_definition: "DAA기업고객기본(TBDAA1D12)의 매월 말 데이터를 적재한다. TBDAAAT01(고객기본)에서 개인기업구분코드 '2'(기업)를 모집단으로 삼고, 원천의 고객식별자·고객고유번호 기준 대표 1건은 고객관리번호 오름차순 첫 값을 사용한다. 고객고유번호 자체는 이 월 테이블의 조회 가능 컬럼에 포함되지 않는다."
   entity_occurrence_rules:
@@ -1574,6 +1619,7 @@ tables:
     description: 개인고객의 남녀 성별 구분이다.
     synonyms:
     - 성별구분
+    - 성별
     - 성별 구분
   - name: 양력음력구분코드
     data_type: VARCHAR
@@ -1615,6 +1661,7 @@ tables:
     description: 고객이 가지고 있는 취미를 구분하는코드(등산,수영 등)
     synonyms:
     - 취미구분
+    - 취미
     - 취미 구분
   - name: 카드국가코드
     data_type: VARCHAR
@@ -1631,6 +1678,8 @@ tables:
   - name: 직장명
     data_type: VARCHAR
     description: 고객이 현재 소속되어 있는 직장의 명칭
+    synonyms:
+    - 직장
   - name: 직장부서명
     data_type: VARCHAR
     description: 고객의 직장 부서명
@@ -1641,6 +1690,7 @@ tables:
     description: 고객이 현재 종사하고 있는 직업의 구분코드
     synonyms:
     - 직업구분
+    - 직업
     - 직업 구분
   - name: 직업유형구분코드
     data_type: VARCHAR
@@ -1684,6 +1734,7 @@ tables:
     codebook_ref: customer_industry_classification
     synonyms:
     - 업종구분
+    - 업종
     - 업종 구분
   - name: 본사구분코드
     data_type: VARCHAR
@@ -1691,6 +1742,7 @@ tables:
     codebook_ref: head_office_classification
     synonyms:
     - 본사구분
+    - 본사
     - 본사 구분
   - name: 기업형태구분코드
     data_type: VARCHAR
@@ -1950,37 +2002,51 @@ tables:
     description: 해당 테이블의 데이터를 적재하는 기준이 되는 일자 정보로 사용되는 일자정보(기준년월일)를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 실적기준
   - name: 등록년월일
     data_type: VARCHAR
     description: 해당테이블에 데이터가 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 최초등록년월일
     data_type: VARCHAR
     description: 국민카드에 고객으로 처음 등록한 일자(년월일)
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초등록
   - name: 사망년월일
     data_type: VARCHAR
     description: 사망한 기준이 되는 년/월/일이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 사망
   - name: 사망해제년월일
     data_type: VARCHAR
     description: 사망으로 등록된이후 사망 상태가 해제된 년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 사망해제
   - name: 기념년월일
     data_type: VARCHAR
     description: 생일,기일,결혼기념일 등의 고객별 기념일을 년월일로 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 기념
   - name: 결혼기념년월일
     data_type: VARCHAR
     description: 고객의 결혼기념에 해당하는 일자이다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 결혼기념
   table_kind: master
   source_definition: "1. KB국민카드와 신규계약 생성, 가맹점생성,기업고객의 부서단위 생성및 관련정보변경시 고객기본정보(주소,연락처,취미 등)를 관리하는 엔티티 <특이사항> : ASIS는 고객식별자 '6'번대를 개인사업자, '7','8'은 법인(법인사업자)로 판단했으나 TOBE는 개인사업자가 '6'번대 이후로 발번될수있어서 고객유형분류구분코드로 판단 필요함 ※ 아래 ASIS 판단기준을 TOBE형태로 변경필요 (1) 개인:SUBSTR(고객식별자, 1, 1) < '6' -> 고객유형분류구분코드 = '1' (2) 개인사업자:SUBSTR(고객식별자, 1, 1) ='6' -> 고객유형분류구분코드 = '2 (3) 법인(사업자):SUBSTR(고객식별자,1,1) IN ('7','8') -> 고객유형분류구분코드 NOT IN ('1','2') (4) 개인(사업자):SUBSTR(고객식별자,1,1) < '7' -> 고객유형분류구분코드 IN ('1','2')"
   source_metadata:
@@ -2244,6 +2310,8 @@ tables:
   - name: 지로코드
     data_type: VARCHAR
     description: "금융결제원에서 대한민국에 소재하는 금융기관의 각 본지점에 부여하는 번호 ※결제계좌의 최초 청구일련번호에 대한 지로코드를 세팅함 · 이원화회원일경우 결제단위구분에서 KB/신용/일반 중 MIN(청구번호일련번호)"
+    synonyms:
+    - 지로
   - name: 청구지주소구분코드
     data_type: VARCHAR
     description: "자택, 직장,이메일 등 청구지 주소를 구분하는 코드 ※청구단위정보의 최초 청구번호에 대한 청구지주소구분코드를 세팅함 · 이원화회원일경우 결제단위구분에서 KB/신용/일반 중 MIN(청구번호)"
@@ -2479,66 +2547,103 @@ tables:
     description: 해당 테이블의 데이터를 적재하는 기준이 되는 일자 정보로 사용되는 일자정보(기준년월일)를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 실적기준
   - name: 회원원장최초생성년월일
     data_type: VARCHAR
     description: 회원기본 원장을 최초로 생성한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원원장최초생성
+    - 원장최초생성
   - name: 회원최초신규발급년월일
     data_type: VARCHAR
     description: 회원이 최초로 카드를 신규발급한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원최초신규발급
+    - 최초신규발급
   - name: 회원신용카드만료년월일
     data_type: VARCHAR
     description: 회원별 소지한 신용카드가 모두 만료되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 회원신용카드만료
+    - 신용카드만료
   - name: 회원신용카드해지년월일
     data_type: VARCHAR
     description: 회원이 소지한 신용카드가 모두 해지되는 최종년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원신용카드해지
+    - 신용카드해지
   - name: 회원신용카드실제만료년월일
     data_type: VARCHAR
     description: 회원이 소지한 신용카드가 모두 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 회원신용카드실제만료
+    - 신용카드실제만료
   - name: 회원체크카드만료년월일
     data_type: VARCHAR
     description: 회원이 소지한 체크카드가 모두 만료되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 회원체크카드만료
+    - 체크카드만료
   - name: 회원체크카드해지년월일
     data_type: VARCHAR
     description: 회원이 소지한 체크카드가 모두 해지되는 최종년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원체크카드해지
+    - 체크카드해지
   - name: 회원체크카드실제만료년월일
     data_type: VARCHAR
     description: 회원이 소지한 체크카드가 모두 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 회원체크카드실제만료
+    - 체크카드실제만료
   - name: 회원전체카드만료년월일
     data_type: VARCHAR
     description: 회원이 소지한 신용카드/체크카드 등 전체 카드가 만료되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 회원전체카드만료
+    - 전체카드만료
   - name: 회원전체카드해지년월일
     data_type: VARCHAR
     description: 회원이 소지한 신용카드/체크카드 등 전체카드가 모두 해지되는 최종년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원전체카드해지
+    - 전체카드해지
   - name: 회원전체카드실제만료년월일
     data_type: VARCHAR
     description: 회원이 소지한 전체카드(신용카드/ 체크카드/신용카드+체크카드)가 모두 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 회원전체카드실제만료
+    - 전체카드실제만료
   - name: 결제일변경후최초결제년월일
     data_type: VARCHAR
     description: 결제일을 변경한 이후에 최초로 청구되는 결제년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 결제일변경후최초결제
   - name: 결제일
     data_type: VARCHAR
     description: "회원이 사용한 카드대금이 매월 결제되는 일 ※청구단위정보의 최초 청구번호에 대한 결제일을 세팅함 · 이원화회원일경우 결제단위구분에서 KB/신용/일반 중 MIN(청구번호)"
@@ -2698,6 +2803,8 @@ tables:
   - name: 제휴코드
     data_type: VARCHAR
     description: 상품코드의 마지막 5자리로 정의, 상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고, 코드로 표기하고자 함
+    synonyms:
+    - 제휴
   - name: 카드브랜드구분코드
     data_type: VARCHAR
     description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
@@ -2858,6 +2965,8 @@ tables:
   - name: 지로코드
     data_type: VARCHAR
     description: 금융결제원에서 대한민국에 소재하는 금융기관의 각 본지점에 부여하는 번호
+    synonyms:
+    - 지로
   - name: 회수방법구분코드
     data_type: VARCHAR
     description: 결제 대금 회수방법구분코드
@@ -3180,6 +3289,8 @@ tables:
     description: 해당 테이블의 데이터를 적재하는 기준이 되는 일자 정보로 사용되는 일자정보(기준년월일)를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 실적기준
   - name: 결제일
     data_type: VARCHAR
     description: 회원이 사용한 카드대금이 매월 결제되는 일
@@ -3190,52 +3301,76 @@ tables:
     description: 카드가 신규로 발급된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드신규발급
+    - 신규발급
   - name: 최종카드발급년월일
     data_type: VARCHAR
     description: 상품에 해당하는 카드가 최종 카드발급 접수된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최종카드발급
   - name: 등록년월일
     data_type: VARCHAR
     description: 해당테이블에 데이터가 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 카드만료년월일
     data_type: VARCHAR
     description: 카드 유효기간의 종료일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 카드만료
+    - 만료
   - name: 이전카드만료년월일
     data_type: VARCHAR
     description: 카드가 해지및 갱신으로인해 만료년월이 변경될경우 변경되기 이전의 만료년월일을 말함
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 이전카드만료
   - name: 실제카드만료년월일
     data_type: VARCHAR
     description: 카드가 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 실제카드만료
   - name: 해지년월일
     data_type: VARCHAR
     description: 회원의 카드가 해지된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 해지
   - name: 신청서접수년월일
     data_type: VARCHAR
     description: 카드신청 또는 카드한도의 신청서 정보를 접수 처리(온라인,배치)한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신청서접수
   - name: 카드교부년월일
     data_type: VARCHAR
     description: 해당카드를 발급받고 영업점에서 교부한 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드교부
+    - 교부
   - name: 카드반송년월일
     data_type: VARCHAR
     description: 고객이 카드 실물을 반송한 일자이다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드반송
+    - 반송
   table_kind: master
   source_definition: "1. 상품처리계 GAG카드기본(TBGAGCD01) 전체대상 기준으로 카드결제단위,결제계좌정보,상품정보등의 추가정보를 추출하여 관리하는 엔티티 <특이사항> (1) 결제단위 관련항목의 관리기준변경 :ASIS 는 제휴체크카드의 경우에 회원이 여러업체(우체국,증권,농협은행등)의 카드를 가지고있어도 하나의 청구로 관리되었는데 TOBE는 제휴업체별로 청구가 분리됨에 따라 그에 해당되는 결제단위의 값이 분리됨 ( ※ 관련항목 : 청구번호, 회수방법구분코드, 결제기관구분코드,지로코드,계좌번호 등등) (2) 한도관련 관리기준변경 : ASIS 의 THKBACD00(신용카드기본) 에 있는 한도중 '3'(기업카드별)한도만 TOBE의 TBGACHD02(GAC기업신용한도기본) 로 이관되었고 THKBAHD00(가족회원한도기본) 가 TBGACHD01(GAC개인신용한도기본) 으로 이관되었음 따라서 TOBE의 TBDAAAT05(DAA카드정보기본) 에서 한도 세팅은 카드별,가족한도일경우만 세팅됨"
   source_metadata:
@@ -3300,6 +3435,7 @@ tables:
     physical_data_type: VARCHAR2(88)
     description: 고객의 영문명칭을 관리
     synonyms:
+    - 고객명
     - 영문고객
   - name: 세대주명
     data_type: VARCHAR
@@ -3360,6 +3496,8 @@ tables:
     description: 해당 테이블의 데이터를 적재하는 기준이 되는 일자 정보로 사용되는 일자정보(기준년월일)를 나타낸다.
     format: YYYYMMDD
     role: snapshot_date
+    synonyms:
+    - 실적기준
   table_kind: restricted_current_state
   data_classification: restricted_personal_information
   restricted_columns:
@@ -3498,12 +3636,16 @@ tables:
     description: 대상 업무를 처리한 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 처리
   - name: 해제년월일
     data_type: VARCHAR
     description: 정상거래에 대해서 해제거래를 발생한 일자 정보를 관리함
 
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 해제
   table_kind: event_fact
   source_definition: 1. 카드상세에서 카드처리내역이 변경된 카드상세 내역을 관리한다. 2. 카드기능유형구분코드에서 '0', '2', '5', '9'로 시작코드로 변경된 정보를 등록한다. - 001(MS재기록), 002(거래정지교부카드캐리어인자), 004(비대면본인확인완료), 201(도난분실즉발거절), 501(앤디카드플레이어신청), 902(BC미교부카드인수) 등
   source_metadata:
@@ -3687,17 +3829,24 @@ tables:
     description: 거래정지를 등재한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 거래정지등재
   - name: 거래정지해제년월일
     data_type: VARCHAR
     description: 거래정지등재건이 거래정지해제된 일자
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 거래정지해제
   - name: 카드만료년월일
     data_type: VARCHAR
     description: 카드 유효기간의 종료일
 
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 카드만료
+    - 만료
   table_kind: event_fact
   source_definition: 1. TCDAAAT53[DAA일변동거래정지기본] 엔티티 정보 관리
   source_metadata:
@@ -3906,6 +4055,8 @@ tables:
   - name: 국가코드
     data_type: VARCHAR
     description: 국가를 구분하는 코드
+    synonyms:
+    - 국가
   - name: MCC업종코드
     data_type: VARCHAR
     description: MCC업종코드를 의미한다.
@@ -3961,7 +4112,9 @@ tables:
     data_type: VARCHAR
     description: 영문으로 표현된 도시 이름
     synonyms:
+    - 도시명
     - 영문도시
+    - 도시
   - name: 승인번호
     data_type: VARCHAR
     description: 국내 신용카드사(KB국민카드 포함) 들이 승인 시 생성하는 8자리 관리번호
@@ -4004,17 +4157,23 @@ tables:
     description: 실적을 산출한 날짜 - 컨트롤엠 ODATE을 입력한다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 실적기준
   - name: 전표매입년월일
     data_type: VARCHAR
     description: 카드전표의 매입이 발생한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 전표매입
   - name: 전표매출년월일
     data_type: VARCHAR
     description: 카드전표의 매출년월일
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 전표매출
   table_kind: transaction_fact
   source_definition: 1. INBOUND/OUTBOUND국제매입전표기본내역을 관리한다. (신용,체크,NTT) 2. 해외 브랜드와 송/수신 전문 기준의 현지거래내역 및 가맹점 정보를 관리한다.
   source_metadata:
@@ -4236,6 +4395,8 @@ tables:
   - name: 통화코드
     data_type: VARCHAR
     description: 통화코드를 관리하는 속성
+    synonyms:
+    - 통화
   - name: CA채널구분코드
     data_type: VARCHAR
     description: 단기카드대출(현금서비스) 거래가 발생한 채널(자동화기기, 인터넷 등)에 대한 코드 정보이다.
@@ -4540,6 +4701,7 @@ tables:
     description: 직업정보를 구분하는 코드이다.
     synonyms:
     - 직업구분
+    - 직업
     - 직업 구분
   - name: 선취후취구분코드
     data_type: VARCHAR
@@ -4880,36 +5042,51 @@ tables:
     description: 카드전표의 매입이 발생한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 전표매입
   - name: 매출전표접수년월일
     data_type: VARCHAR
     description: "접수기관(VAN, RF교통기관, 직라인 등)으로부터 일괄매입DATA를 전송받아 원장에 반영하는 일자 / 가맹점으로부터 매출전표를 접수후 영업점에서 온라인 매입을 등록한 일자"
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 매출전표접수
   - name: 전표매출년월일
     data_type: VARCHAR
     description: MFX_KB카드전표입력내역의 카드전표의 매출년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 전표매출
   - name: 취소년월일
     data_type: VARCHAR
     description: 국내 또는 해외 현지에서 취소가 발생한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 취소
   - name: 가맹점대금지급예정년월일
     data_type: VARCHAR
     description: 매출전표 매입처리시 가맹점지급주기에 따라 확정되는 가맹점에 대금을 지급할 예정일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점대금지급예정
+    - 대금지급예정
   - name: 대금지급년월일
     data_type: VARCHAR
     description: 가맹점에 실제 대금지급이 이루어진 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 대금지급
   - name: 기산년월일
     data_type: VARCHAR
     description: 거래에 기준이 되는 년/월/일이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 기산
   - name: 결제일
     data_type: VARCHAR
     description: 사용한카드의 결제일이다.
@@ -4947,27 +5124,38 @@ tables:
     data_type: VARCHAR
     description: 부점에 부여된 고유번호
     required: true
+    synonyms:
+    - 부점
   - name: 은행코드
     data_type: VARCHAR
     description: 해당부점에 해당하는 은행코드를 관리하는 속성이다
+    synonyms:
+    - 은행
   - name: 한글부점명
     data_type: VARCHAR
     description: 당사(KB국민카드) 또는 KB국민은행 부점코드의 한글명
     synonyms:
+    - 부점명
     - 한글부점
+    - 부점
     - 한글 부점
   - name: 한글약어부점명
     data_type: VARCHAR
     description: 한글 약어 부점코드의 명칭
     synonyms:
+    - 약어부점명
     - 한글약어부점
+    - 약어부점
     - 한글약어
     - 한글약어 부점
+    - 약어 부점
   - name: 영문부점명
     data_type: VARCHAR
     description: 부점의 영문명을 관리하는 속성이다
     synonyms:
+    - 부점명
     - 영문부점
+    - 부점
     - 영문 부점
   - name: 우편번호
     data_type: VARCHAR
@@ -4984,6 +5172,7 @@ tables:
     codebook_ref: branch_classification
     synonyms:
     - 부점구분
+    - 부점
     - 부점 구분
   - name: 출장소모점부점코드
     data_type: VARCHAR
@@ -5206,9 +5395,12 @@ tables:
     data_type: VARCHAR
     description: "부점한글명이 20자리를 초과 화는 경우 이 필드를 사용한다.2.KB은행에서 사용하는 필드금결원의 부점한글명이 20Byte에서 30Byte로 확장됨."
     synonyms:
+    - 확장부점명
     - 한글확장부점
+    - 확장부점
     - 한글확장
     - 한글확장 부점
+    - 확장 부점
   - name: 부점이메일주소
     data_type: VARCHAR
     description: 금결원 전문 변경에 따른 이메일주소 변경
@@ -5226,42 +5418,63 @@ tables:
     required: true
     format: YYYYMMDD
     role: effective_from
+    synonyms:
+    - 적용시작
   - name: 적용종료년월일
     data_type: VARCHAR
     description: 부점코드의 적용종료년월일 를 관리하는 속성이다
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 적용종료
   - name: 부점개점년월일
     data_type: VARCHAR
     description: 해당부점의 개점일자를 관리하는 속성이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 부점개점
+    - 개점
   - name: 부점폐쇄년월일
     data_type: VARCHAR
     description: 해당부점의 폐쇄일자를 관리하는 속성이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 부점폐쇄
+    - 폐쇄
   - name: 부점외환개시년월일
     data_type: VARCHAR
     description: 해당 부점의 외환개시년월일을 관리하기 위한 속성이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 부점외환개시
+    - 외환개시
   - name: 부점외환종료년월일
     data_type: VARCHAR
     description: 해당 부점의 외환종료년월일을 관리하기 위한 속성이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 부점외환종료
+    - 외환종료
   - name: 부점장휴대폰변경년월일
     data_type: VARCHAR
     description: 부점의 부점장 휴대폰번호 변경한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 부점장휴대폰변경
+    - 장휴대폰변경
   - name: 내부통제자휴대폰변경년월일
     data_type: VARCHAR
     description: KB카드,KB은행 부점의 내부통제자직원번호의 휴대폰번호의 변경한 년월일
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 내부통제자휴대폰변경
   table_kind: effective_dated_master
   source_definition: 1. 상품처리계로부터 전달받은 테이블(TBGCBBR01) 정보 2. 부점 기본 (전 업무가 사용하는 정보 및 각 컬럼별 Owner가 명확한 경우도) 정보를 관리하는 엔티티이다. 3. 은행으로부터 수보한 부점정보파일을 적재한다. 4. 변경내용 파일로 생성하여 각 배포 서버에 배포한다.
   source_metadata:
@@ -5288,11 +5501,13 @@ tables:
     data_type: VARCHAR
     description: KB카드에서 취급하는 상품을 한글로 정의한 상품명을 의미한다.
     synonyms:
+    - 상품명
     - 한글상품
   - name: 영문상품명
     data_type: VARCHAR
     description: KB카드에서 취급하는 상품을 영어로 정의한 상품명을 의미한다.
     synonyms:
+    - 상품명
     - 영문상품
   - name: 상품대분류구분코드
     data_type: VARCHAR
@@ -5447,17 +5662,25 @@ tables:
     description: 상품을 판매하기 시작한 년월일을 관리한다
     format: YYYYMMDD
     role: effective_from
+    synonyms:
+    - 상품판매시작
+    - 판매시작
   - name: 상품판매종료년월일
     data_type: VARCHAR
     description: 상품을 판매종료한 년월일을 관리한다
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 상품판매종료
+    - 판매종료
   - name: 해제년월일
     data_type: VARCHAR
     description: 정상거래에 대해서 해제거래를 발생한 일자 정보를 관리함
 
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 해제
   table_kind: master
   source_definition: 1. 상품처리계로부터 전달받은 뷰테이블 정보 [카드상품기본]VIEW는 카드상품에 대한 기본적인 개괄 정보를 관리한다.
   source_metadata:
@@ -5915,11 +6138,15 @@ tables:
     description: 가맹점 업종 코드을 해제한 년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 해제
   - name: 업종코드적용년월일
     data_type: VARCHAR
     description: 업종코드를 적용한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 업종코드적용
   - name: 대금지급주기지정일1
     data_type: VARCHAR
     description: "가맹점에게 신판 판매대금을 지급하는 일자. 전표매입일 기준이 아닌 특정일임. 매달 15일, 20일 등. 특이한 업종인 경우 지정일을 3개까지 지정가능하며 그중 첫번째 지정일임"
@@ -5961,6 +6188,8 @@ tables:
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초등록
   table_kind: effective_dated_code_master
   source_definition: 1. 상품처리계로부터 전달받은 테이블(TBGDBC018) 정보 2. 각 가맹점의 업종을 유형별로 분류하여 각 업종별 가맹점수수료율, 할부가능여부, 정산에 필요한 요율 등을 코드로 관리한다.
   source_metadata:
@@ -6027,11 +6256,13 @@ tables:
     data_type: VARCHAR
     description: 가맹점명에 대한 영문명칭
     synonyms:
+    - 가맹점명
     - 영문가맹점
   - name: 한글가맹점명
     data_type: VARCHAR
     description: 일반적인 가맹점명외에 영문도 한글로 변환한 가맹점명
     synonyms:
+    - 가맹점명
     - 한글가맹점
   - name: 가맹점업종코드
     data_type: VARCHAR
@@ -6588,61 +6819,92 @@ tables:
     description: 해당 테이블의 데이터를 적재하는 기준이 되는 일자 정보로 사용되는 일자정보(기준년월일)를 나타낸다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 실적기준
   - name: 최초심사방문년월일
     data_type: VARCHAR
     description: 가맹점에 대한 최초 심사 방문 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초심사방문
   - name: 등록년월일
     data_type: VARCHAR
     description: 해당테이블에 데이터가 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 가맹점신규년월일
     data_type: VARCHAR
     description: 가맹점이 신규로 등록된 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점신규
+    - 신규
   - name: 가맹점재가입년월일
     data_type: VARCHAR
     description: 가맹점이 재가입된일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점재가입
+    - 재가입
   - name: 가맹점해지년월일
     data_type: VARCHAR
     description: 당사 가맹점의 해지처리된 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점해지
+    - 해지
   - name: 가맹점최종가입년월일
     data_type: VARCHAR
     description: 가맹점의 신규가입년월일, 재가입년월일 중 가장최근에 가입한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종가입
+    - 최종가입
   - name: 가맹점거래정지등재년월일
     data_type: VARCHAR
     description: 가맹점이 거래정지가맹점으로 등재된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점거래정지등재
+    - 거래정지등재
   - name: 가맹점최초승인년월일
     data_type: VARCHAR
     description: 가맹점에서 최초 승인한 년월일 (상품처리계에 해당 내역을 전송)
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최초승인
+    - 최초승인
   - name: 가맹점최종매입년월일
     data_type: VARCHAR
     description: 가맹점 매입기준 최종 매입이 발생한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종매입
+    - 최종매입
   - name: 공동망특약요청년월일
     data_type: VARCHAR
     description: 공동망 가맹점 당사특약체결시 강제처리 요청일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 공동망특약요청
   - name: 공동망특약해제년월일
     data_type: VARCHAR
     description: 공동망 특약체결이 해제된 년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 공동망특약해제
   - name: 대금지급주기지정일1
     data_type: VARCHAR
     description: 가맹점에게 신판 판매대금을 지급하는 일자. 전표매입일 기준이 아닌 특정일임. 매달 15일, 20일 등
@@ -6710,6 +6972,8 @@ tables:
   - name: 지점명
     data_type: VARCHAR
     description: 해당 가맹점에 대한 지점명을 나타낸다. / 가맹점명내 ~점, ~센터로 끝날 경우, 해당 부분을 추출하여 관리한다.
+    synonyms:
+    - 지점
   - name: 사업자등록번호
     data_type: VARCHAR
     description: 개인기업 또는 법인의 사업자등록증번호
@@ -6877,12 +7141,16 @@ tables:
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 한글 시도명을 나타낸다.
     synonyms:
+    - 시도명
     - 한글시도
+    - 시도
   - name: 한글시군구명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 한글 시군구명을 나타낸다.
     synonyms:
+    - 시군구명
     - 한글시군구
+    - 시군구
   - name: 법정동명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 법정동명을 나타낸다. (법률로 지정된 구역 단위의 명)
@@ -7359,6 +7627,8 @@ tables:
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 거래정지등재
   table_kind: monthly_snapshot
   source_definition: 1.DCC회원거래정지기본(TBDCCAD02)의 월말일시점 데이터를 생성 관리한다.
   source_metadata:
@@ -7544,27 +7814,38 @@ tables:
     description: 연체채권 상각 후 특수채권 편입된 년월일을 의미한다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 특수채권편입기준
   - name: 최초연체발생년월일
     data_type: VARCHAR
     description: 최초로 연체가 발생한 년월일 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초연체발생
   - name: 연체발생년월일
     data_type: VARCHAR
     description: 연체발생한 년월일 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 연체발생
   - name: 회원최초신규발급년월일
     data_type: VARCHAR
     description: 회원이 최초로 카드를 신규발급한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원최초신규발급
+    - 최초신규발급
   - name: 전월말최초연체발생년월일
     data_type: VARCHAR
     description: 전월말 시점의 최초연체발생년월일
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 전월말최초연체발생
   table_kind: event_fact
   source_definition: 특채편입내역
   source_metadata:
@@ -7692,12 +7973,16 @@ tables:
     description: 대출 계약이 발생한 신규년월일 값 (yyyymmdd)
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 대출신규
   - name: 대출만기년월일
     data_type: VARCHAR
     description: 대출계좌의만기일자를관리한다
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 대출만기
   table_kind: monthly_aggregate
   source_definition: '원천테이블 : MEW대손충당금산출보정월명세기본 테이블 1:1 적재 충당금산출대상자산별로해당하는충당금산출방법(집합평가,개별평가,기타평가)을이용하여산출된최종충당금산출정보를관리한다'
   source_metadata:
@@ -7832,6 +8117,8 @@ tables:
   - name: 제휴코드
     data_type: VARCHAR
     description: 상품코드의 마지막 5자리로 정의, 상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고, 코드로 표기하고자 함
+    synonyms:
+    - 제휴
   - name: 카드브랜드구분코드
     data_type: VARCHAR
     description: "카드브랜드구분코드 1:로칼(국민) 2:마스터 3:비자 4:JCB 5:UPI&글로벌 6:아맥스"
@@ -7992,6 +8279,8 @@ tables:
   - name: 지로코드
     data_type: VARCHAR
     description: 금융결제원에서 대한민국에 소재하는 금융기관의 각 본지점에 부여하는 번호
+    synonyms:
+    - 지로
   - name: 회수방법구분코드
     data_type: VARCHAR
     description: 결제 대금 회수방법구분코드
@@ -8326,52 +8615,76 @@ tables:
     description: 카드가 신규로 발급된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드신규발급
+    - 신규발급
   - name: 최종카드발급년월일
     data_type: VARCHAR
     description: 상품에 해당하는 카드가 최종 카드발급 접수된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최종카드발급
   - name: 등록년월일
     data_type: VARCHAR
     description: 해당테이블에 데이터가 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 카드만료년월일
     data_type: VARCHAR
     description: 카드 유효기간의 종료일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 카드만료
+    - 만료
   - name: 이전카드만료년월일
     data_type: VARCHAR
     description: 카드가 해지및 갱신으로인해 만료년월이 변경될경우 변경되기 이전의 만료년월일을 말함
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 이전카드만료
   - name: 실제카드만료년월일
     data_type: VARCHAR
     description: 카드가 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 실제카드만료
   - name: 해지년월일
     data_type: VARCHAR
     description: 회원의 카드가 해지된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 해지
   - name: 신청서접수년월일
     data_type: VARCHAR
     description: 카드신청 또는 카드한도의 신청서 정보를 접수 처리(온라인,배치)한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신청서접수
   - name: 카드교부년월일
     data_type: VARCHAR
     description: 해당카드를 발급받고 영업점에서 교부한 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드교부
+    - 교부
   - name: 카드반송년월일
     data_type: VARCHAR
     description: 고객이 카드 실물을 반송한 일자이다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드반송
+    - 반송
   table_kind: daily_snapshot
   source_definition: 1. DAA카드정보기본 의 일 스냅샷 정보 엔티티
   source_metadata:
@@ -8551,6 +8864,8 @@ tables:
   - name: 제휴코드
     data_type: VARCHAR
     description: 상품코드의 마지막 5자리로 정의,상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고 코드로 표기하고자 함
+    synonyms:
+    - 제휴
   - name: 관리부점코드
     data_type: VARCHAR
     description: 고객이나 채권,가맹점 등을 관리하는 부점코드
@@ -8720,6 +9035,7 @@ tables:
     description: 고객의 직업을 구분하는 직업구분코드
     synonyms:
     - 직업구분
+    - 직업
     - 직업 구분
   - name: 모집인소속부점코드
     data_type: VARCHAR
@@ -8805,42 +9121,59 @@ tables:
     required: true
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최종카드발급
   - name: 카드만료년월일
     data_type: VARCHAR
     description: 카드 유효기간의 종료일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 카드만료
+    - 만료
   - name: 이전카드만료년월일
     data_type: VARCHAR
     description: 카드가 해지및 갱신으로인해 만료년월이 변경될경우 변경되기 이전의 만료년월일을 말함
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 이전카드만료
   - name: 실제카드만료년월일
     data_type: VARCHAR
     description: 카드가 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 실제카드만료
   - name: 신규년월일
     data_type: VARCHAR
     description: 신규된 일자의 년월일을 관리한다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신규
   - name: 해지년월일
     data_type: VARCHAR
     description: 회원이 카드를 해지한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 해지
   - name: 신청서접수년월일
     data_type: VARCHAR
     description: 카드신청 또는 카드한도의 신청서 정보를 접수 처리(온라인,배치)한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신청서접수
   - name: 유류구매카드발급년월일
     data_type: VARCHAR
     description: 유류구매카드를 발급한 년월일을 관리한다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 유류구매카드발급
   table_kind: daily_snapshot
   source_definition: 1. DAA카드모집최초회원정보 테이블의 일별 스냅샷 테이블로 해당 기준년월일의 시점정보를 적재하는 엔티티이다.추후 재작업 및 과거 시점정보 확인에 필요한 엔티티로 TOBE에 신규로 생성하는 엔티티이다.
   source_metadata:
@@ -9020,6 +9353,8 @@ tables:
   - name: 제휴코드
     data_type: VARCHAR
     description: 상품코드의 마지막 5자리로 정의,상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고 코드로 표기하고자 함
+    synonyms:
+    - 제휴
   - name: 관리부점코드
     data_type: VARCHAR
     description: 고객이나 채권,가맹점 등을 관리하는 부점코드
@@ -9110,6 +9445,7 @@ tables:
     description: 고객의 직업을 구분하는 직업구분코드
     synonyms:
     - 직업구분
+    - 직업
     - 직업 구분
   - name: 모집인소속부점코드
     data_type: VARCHAR
@@ -9161,42 +9497,59 @@ tables:
     required: true
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최종카드발급
   - name: 카드만료년월일
     data_type: VARCHAR
     description: 카드 유효기간의 종료일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 카드만료
+    - 만료
   - name: 이전카드만료년월일
     data_type: VARCHAR
     description: 카드가 해지및 갱신으로인해 만료년월이 변경될경우 변경되기 이전의 만료년월일을 말함
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 이전카드만료
   - name: 실제카드만료년월일
     data_type: VARCHAR
     description: 카드가 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 실제카드만료
   - name: 신규년월일
     data_type: VARCHAR
     description: 신규된 일자의 년월일을 관리한다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신규
   - name: 해지년월일
     data_type: VARCHAR
     description: 회원이 카드를 해지한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 해지
   - name: 신청서접수년월일
     data_type: VARCHAR
     description: 카드신청 또는 카드한도의 신청서 정보를 접수 처리(온라인,배치)한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신청서접수
   - name: 유류구매카드발급년월일
     data_type: VARCHAR
     description: 유류구매카드를 발급한 년월일을 관리한다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 유류구매카드발급
   table_kind: daily_snapshot
   source_definition: 1. DAA카드모집기타실적집계 테이블의 일별 스냅샷 테이블로 해당 기준년월일의 시점정보를 적재하는 엔티티이다.추후 재작업 및 과거 시점정보 확인에 필요한 엔티티로 TOBE에 신규로 생성하는 엔티티이다.
   source_metadata:
@@ -9428,6 +9781,8 @@ tables:
   - name: 제휴코드
     data_type: VARCHAR
     description: 상품코드의 마지막 5자리로 정의, 상품코드를 그대로 사용함으로 별도 목록성 테이블은 관리하지 않고, 코드로 표기하고자 함
+    synonyms:
+    - 제휴
   - name: 구매회원제휴코드
     data_type: VARCHAR
     description: 구매카드 소지일 경우 제휴코드 제일큰값
@@ -9663,16 +10018,22 @@ tables:
     description: 신용카드(KB카드,BC카드)에 대해 연체가 발생한 년월일 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신용카드연체발생
   - name: 최초연체발생년월일
     data_type: VARCHAR
     description: 최초로 연체가 발생한 년월일 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초연체발생
   - name: 연체발생년월일
     data_type: VARCHAR
     description: 연체발생한 년월일 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 연체발생
   - name: 결제일
     data_type: VARCHAR
     description: 카드대금 및 대출이자에 대한 지정된 결제일
@@ -9683,22 +10044,32 @@ tables:
     description: 카드가 신규로 발급된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드신규발급
+    - 신규발급
   - name: 회원신규가입년월일
     data_type: VARCHAR
     description: 회원의 신규 가입일자를 관리하는 속성
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원신규가입
+    - 신규가입
   - name: 최종청구년월일
     data_type: VARCHAR
     description: 최종으로 회원에게 청구한 기준일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최종청구
   - name: 연체기준년월일
     data_type: VARCHAR
     description: 연체를 판단하는 기준이 되는 년월일
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 연체기준
   table_kind: daily_snapshot
   source_definition: '1. DAA일채권카드실적집계 테이블 데이터를 기초로 각종 연체정보(연체일수,연체회차,연체원금,연체료 등)을 계산하여 구축 관리한다. - 해당월 수보된 청구회수의 총괄전표명세를 집계 하여 카드별 연체 정보를 최종 산출한다. 2. ASIS 원장성 테이블에서 TOBE 이력관리 테이블로 변경 - ASIS : TSTAFLA01(최종 마트) , TSTAFLA04(최종 마트 구축전 전일 이미지 백업) - TOBE : TDDAA3L01 (일별 이력관리:기준년월일)'
   source_metadata:
@@ -9900,6 +10271,7 @@ tables:
     description: MFX월고객정보기본시점정보의개인고객의 남녀 성별 구분이다.
     synonyms:
     - 성별구분
+    - 성별
     - 성별 구분
   - name: 양력음력구분코드
     data_type: VARCHAR
@@ -9957,6 +10329,7 @@ tables:
     codebook_ref: customer_industry_classification
     synonyms:
     - 업종구분
+    - 업종
     - 업종 구분
   - name: 연소득구분코드
     data_type: VARCHAR
@@ -9971,6 +10344,7 @@ tables:
     codebook_ref: head_office_classification
     synonyms:
     - 본사구분
+    - 본사
     - 본사 구분
   - name: 자택전화사용가능여부
     data_type: VARCHAR
@@ -9993,6 +10367,7 @@ tables:
     description: 고객이 가지고 있는 취미를 구분하는코드(등산,수영 등)
     synonyms:
     - 취미구분
+    - 취미
     - 취미 구분
   - name: 직장전화사용가능여부
     data_type: VARCHAR
@@ -10013,6 +10388,8 @@ tables:
   - name: 직장명
     data_type: VARCHAR
     description: 고객이 현재 소속되어 있는 직장의 명칭
+    synonyms:
+    - 직장
   - name: 자택주소표시구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의고객의 자택주소의 주소를 보여줄때 일반주소 또는 도로명주소로 표시할지의 구분코드
@@ -10036,6 +10413,7 @@ tables:
     description: 고객이 현재 종사하고 있는 직업의 구분코드
     synonyms:
     - 직업구분
+    - 직업
     - 직업 구분
   - name: 자택우편번호
     data_type: VARCHAR
@@ -10283,32 +10661,44 @@ tables:
     description: MFX월고객정보기본시점정보의해당테이블에 데이터가 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 최초등록년월일
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의국민카드에 고객으로 처음 등록한 일자(년월일)
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초등록
   - name: 사망년월일
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의 사망한 기준이 되는 년/월/일이다
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 사망
   - name: 사망해제년월일
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의사망으로 등록된이후 사망 상태가 해제된 년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 사망해제
   - name: 기념년월일
     data_type: VARCHAR
     description: 생일,기일,결혼기념일 등의 고객별 기념일을 년월일로 관리
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 기념
   - name: 결혼기념년월일
     data_type: VARCHAR
     description: 고객의 결혼기념에 해당하는 일자이다.
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 결혼기념
   table_kind: monthly_snapshot
   source_definition: 1. DAA일고객정보기본시점정보 의 매월말 자료를 적재하는 스냅샷 정보 엔티티
   source_metadata:
@@ -10803,6 +11193,7 @@ tables:
     description: 고객의 직업을 구분하는 직업구분코드
     synonyms:
     - 직업구분
+    - 직업
     - 직업 구분
   - name: 결제정보이원화구분코드
     data_type: VARCHAR
@@ -11763,46 +12154,68 @@ tables:
     description: MFX월카드통합실적집계의 카드 유효기간의 종료일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 카드만료
+    - 만료
   - name: 실제카드만료년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드가 실제만료(만료년월이 적용 되었거나 해지년월이 적용)되는 최종년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 실제카드만료
   - name: 이전카드만료년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드가 해지및 갱신으로인해 만료년월이 변경될경우 변경되기 이전의 만료년월일을 말함
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 이전카드만료
   - name: 카드신규발급년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드가 신규로 발급된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드신규발급
+    - 신규발급
   - name: 최종카드발급년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 상품에 해당하는 카드가 최종 카드발급 접수된 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최종카드발급
   - name: 카드교부년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 해당카드를 발급받고 영업점에서 교부한 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드교부
+    - 교부
   - name: 카드반송년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 고객이 카드 실물을 반송한 일자이다.
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 카드반송
+    - 반송
   - name: 해지년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드가 해지된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 해지
   - name: 신청서접수년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드신청 또는 카드한도의 신청서 정보를 접수 처리(온라인,배치)한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 신청서접수
   - name: 결제일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드대금납부 결제일
@@ -11813,12 +12226,17 @@ tables:
     description: MFX월카드통합실적집계의 회원이 최초로 카드를 신규발급한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원최초신규발급
+    - 최초신규발급
   - name: 연체발생년월일
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 연체발생한 년월일 관리
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 연체발생
   table_kind: monthly_aggregate
   source_definition: 1. 월회원정보기본시점정보을 기준으로 월카드연간청구실적집계, 월카드연간청구실적집계 데이터를 카드구분키번호, 회원일련번호별로 기준년월의 회원정보, 카드이용실적, 카드청구실적 데이터 정보를 생성하고 관리한다. - 금월청구건수, 금월청구금액, 금월이용합계건수,금월이용합계금액 등
   source_metadata:
@@ -11890,11 +12308,13 @@ tables:
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점명에 대한 영문명칭
     synonyms:
+    - 가맹점명
     - 영문가맹점
   - name: 한글가맹점명
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의일반적인 가맹점명외에 영문도 한글로 변환한 가맹점명
     synonyms:
+    - 가맹점명
     - 한글가맹점
   - name: 가맹점업종코드
     data_type: VARCHAR
@@ -12458,56 +12878,85 @@ tables:
     description: MFX월가맹점정보기본시점정보의가맹점에 대한 최초 심사 방문 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 최초심사방문
   - name: 등록년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의해당테이블에 데이터가 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 가맹점신규년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점이 신규로 등록된 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점신규
+    - 신규
   - name: 가맹점재가입년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점이 재가입된일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점재가입
+    - 재가입
   - name: 가맹점해지년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의당사 가맹점의 해지처리된 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점해지
+    - 해지
   - name: 가맹점최종가입년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점의 신규가입년월일, 재가입년월일 중 가장최근에 가입한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종가입
+    - 최종가입
   - name: 가맹점거래정지등재년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점이 거래정지가맹점으로 등재된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점거래정지등재
+    - 거래정지등재
   - name: 가맹점최초승인년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점에서 최초 승인한 년월일(상품처리계에 해당 내역을 전송)
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최초승인
+    - 최초승인
   - name: 가맹점최종매입년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점 매입기준 최종 매입이 발생한 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종매입
+    - 최종매입
   - name: 공동망특약요청년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의공동망 가맹점 당사특약체결시 강제처리 요청일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 공동망특약요청
   - name: 공동망특약해제년월일
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의공동망 특약체결이 해제된 년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 공동망특약해제
   - name: 대금지급주기지정일1
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점에게 신판 판매대금을 지급하는 일자. 전표매입일 기준이 아닌 특정일임. 매달 15일, 20일 등
@@ -12661,6 +13110,7 @@ tables:
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점명에 대한 영문명칭
     synonyms:
+    - 가맹점명
     - 영문가맹점
   - name: 우편번호
     data_type: VARCHAR
@@ -13485,21 +13935,33 @@ tables:
     description: MFX월가맹점실적집계의가맹점의 신규가입년월일, 재가입년월일 중 가장최근에 가입한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종가입
+    - 최종가입
   - name: 가맹점신규년월일
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점이 신규로 등록된 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점신규
+    - 신규
   - name: 가맹점재가입년월일
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점이 재가입된일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점재가입
+    - 재가입
   - name: 가맹점해지년월일
     data_type: VARCHAR
     description: MFX월가맹점실적집계의당사 가맹점의 해지처리된 일자
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점해지
+    - 해지
   - name: 대금지급주기지정일1
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점에게 신판 판매대금을 지급하는 일자. 전표매입일 기준이 아닌 특정일임. 매달 15일, 20일 등
@@ -13526,12 +13988,18 @@ tables:
     description: MFX월가맹점실적집계의가맹점에서 최초 승인한 년월일(상품처리계에 해당 내역을 전송)
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최초승인
+    - 최초승인
   - name: 가맹점최종매입년월일
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점 매입기준 최종 매입이 발생한 일자
 
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 가맹점최종매입
+    - 최종매입
   table_kind: monthly_aggregate
   source_definition: 1. 가맹점의 전표매입, 대금지급, 미수금, 특약 등에 대해 가맹점번호별로 당월의 현황데이터에 대한 정보를 생성하고 관리한다. - 사업장등록번호, 가맹점최종가입년월일, 금년가맹점매출액, 가맹점일시불매입건수 등
   source_metadata:
@@ -13639,12 +14107,16 @@ tables:
     description: 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 등록
   - name: 해제년월일
     data_type: VARCHAR
     description: 정상거래에 대해서 해제거래를 발생한 일자 정보를 관리함
 
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 해제
   table_kind: monthly_relationship_snapshot
   source_definition: 1. 상품처리계로부터 전달받은 테이블(TBGAAA014) 정보 2. 월말에 해당 시점으로 TBDAAAA12테이블 정보의 데이터를 그대로 적재
   source_metadata:
@@ -13686,6 +14158,8 @@ tables:
   - name: 지점명
     data_type: VARCHAR
     description: 해당 가맹점에 대한 지점명을 나타낸다. / 가맹점명내 ~점, ~센터로 끝날 경우, 해당 부분을 추출하여 관리한다.
+    synonyms:
+    - 지점
   - name: 사업자등록번호
     data_type: VARCHAR
     description: 개인기업 또는 법인의 사업자등록증번호
@@ -13853,12 +14327,16 @@ tables:
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 한글 시도명을 나타낸다.
     synonyms:
+    - 시도명
     - 한글시도
+    - 시도
   - name: 한글시군구명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 한글 시군구명을 나타낸다.
     synonyms:
+    - 시군구명
     - 한글시군구
+    - 시군구
   - name: 법정동명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 법정동명을 나타낸다. (법률로 지정된 구역 단위의 명)
@@ -14287,6 +14765,8 @@ tables:
   - name: 직장명
     data_type: VARCHAR
     description: 기업고객회원의 직장명
+    synonyms:
+    - 직장
   - name: 기업회원이메일주소
     data_type: VARCHAR
     description: 기업회원의 이메일을 송수신할 수 있는 전자우편주소
@@ -14844,11 +15324,17 @@ tables:
     description: KB카드 회원에 대한 전담부서 및 직원이 등록된 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 고객전담직원등록
+    - 전담직원등록
   - name: 고객전담직원해제년월일
     data_type: VARCHAR
     description: KB카드 회원에 대한 전담부서 및 직원이 해제된 년월일
     format: YYYYMMDD
     role: effective_to
+    synonyms:
+    - 고객전담직원해제
+    - 전담직원해제
   - name: 결제일
     data_type: VARCHAR
     description: 소지하고 있는 카드의 결제일
@@ -14859,6 +15345,9 @@ tables:
     description: 회원이 최초로 카드를 신규발급한 년월일
     format: YYYYMMDD
     role: event_date
+    synonyms:
+    - 회원최초신규발급
+    - 최초신규발급
   table_kind: current_state_report
   source_definition: 1.기업회원의 부서별 기본정보와 월별, 최근1년, 전년도 실적 내역을 적재하기 위한 엔티티이다.
   source_metadata:
@@ -14942,6 +15431,9 @@ sql_generation_contract:
     최근 N년·지난 N년: 월 스냅샷/월 집계는 현재월 포함 N×12개 기준년월, 일 이벤트는 실행일에서 N년 전부터 실행일까지 양 끝을 포함
     tbdaa1d12 현재: 기준년월일 = KST 전일(D-1); 물리 기준년월 컬럼 없음
     tmdaa1d12 과거 월: 기준년월(YYYYMM)로 조회하고 고객×월 최신 기준년월일 1건
+    N분기·이번 분기·지난 분기: 1분기 01~03, 2분기 04~06, 3분기 07~09, 4분기 10~12. 연도가 없으면 실행연도, 작년 N분기는 전년
+    연도 없는 M월: '아직 오지 않은 달로 넘기지 않고 가장 최근에 지나간 그 달 (예: 실행 9월에 12월 → 전년 12월)'
+    작년 M월·전년 M월: 전년도 그 달
   result_defaults:
     list_limit: 1000000
     preview_rows: 30
@@ -15277,6 +15769,38 @@ semantic_attributes:
   semantic_cautions:
   - 가맹점주 인원은 대표고객식별자 IS NOT NULL 후 COUNT(DISTINCT 대표고객식별자)를 사용한다.
   - 가맹점주가 운영하는 기업의 매출·카드·리스크를 묻는 경우 사람 수가 아니므로 대표고객식별자로 집계하지 않는다.
+- name: merchant_address
+  korean_name: 가맹점 주소
+  domains:
+  - merchant_sales
+  - corporate_sales_targeting
+  business_definition: 가맹점 사업장의 소재지 주소. 도로명·지번 표기는 주소표시구분코드가 구분하며, 주소 본문(가맹점상세주소)은 민감 컬럼이라 우편번호·도로명 번호 체계까지만 조회한다
+  aliases:
+  - 가맹점 주소
+  - 가맹점주소
+  - 도로명 주소
+  - 도로명주소
+  - 지번 주소
+  - 지번주소
+  - 사업장 주소
+  - 사업장주소
+  - 가맹점 소재지
+  - 가맹점소재지
+  source_mappings:
+  - entity: merchant
+    table: tbdaadt01
+    columns:
+    - 주소표시구분코드
+    - 우편번호
+    - 도로명우편번호
+    - 도로명우편읍면번호
+    - 도로명구역번호
+    - 도로명건물본번호
+    - 도로명건물부번호
+    - 도로명지하구분코드
+  semantic_cautions:
+  - 도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소인데 민감 컬럼이라 조회할 수 없으므로 SELECT 에 넣지 않는다.
+  - 도로명 주소를 물으면 조회 가능한 주소표시구분코드·우편번호·도로명 번호 컬럼을 내보내고, 주소 문장을 만들어 내지 않는다.
 - name: enterprise_size
   korean_name: 기업규모
   domains: [card_usage, customer_card_portfolio]
