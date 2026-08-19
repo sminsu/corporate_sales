@@ -4472,6 +4472,15 @@ def _route_accumulation_table_names(
         if cadence == "monthly" and isinstance(historical_source, dict)
         else ""
     )
+    # 반대 방향도 같은 곳에서 처리한다. 규칙 랭킹이 마스터를 1순위로 올려도
+    # analyze_question 은 LLM 이 고른 목록을 그대로 쓰고(rule_tables 는 파싱
+    # 실패용 폴백일 뿐), "2026년 5월" 이 붙은 질문에서 LLM 은 월 스냅샷을 고른다.
+    # 치환을 한 방향으로만 두면 마스터 속성 질문이 여기서 도로 스냅샷이 된다.
+    master_archive = (
+        str(historical_source.get("table") or "").lower()
+        if cadence == "master" and isinstance(historical_source, dict)
+        else ""
+    )
     routed: list[str] = []
     historical_start, _ = _previous_day_archive_route(question)
     verified_tables: set[str] = set()
@@ -4508,6 +4517,8 @@ def _route_accumulation_table_names(
         name = str(raw_name or "").rsplit(".", 1)[-1]
         if archive_table and name.lower() == _TBDAADT01_TABLE:
             name = archive_table
+        elif master_archive and name.lower() == master_archive:
+            name = _TBDAADT01_TABLE
         elif historical_start:
             monthly_name = _PREVIOUS_DAY_ARCHIVE_TABLES.get(name.lower())
             if (
@@ -4528,6 +4539,9 @@ def _route_accumulation_table_names(
                     continue
             name = monthly_name or name
         add(name)
+    if master_archive and _TBDAADT01_TABLE not in routed:
+        # 마스터도 그 짝도 고르지 않았다면 답할 곳이 아예 없다.
+        routed.insert(0, _TBDAADT01_TABLE)
     return routed
 
 
@@ -6060,21 +6074,6 @@ def _deterministic_result_answer(
     return "\n".join(lines)
 
 
-_BUSINESS_NUMBER_RE = re.compile(r"(?<!\d)(?:\d{3}\s*-\s*\d{2}\s*-\s*\d{5}|\d{10})(?!\d)")
-
-
-def _mask_business_numbers_for_llm(text: str) -> str:
-    """Keep the uploaded managed-company scope out of answer-generation prompts.
-
-    질문과 SQL에는 사용자가 올린 관리기업 목록이 요청 범위 VALUES CTE 로 들어간다.
-    가려야 하는 건 그 "요청 범위"이지 조회 결과가 아니다. 조회 결과의 사업자등록번호는
-    사용자가 요청해서 받은 데이터이므로 가리면 답변의 "주요 데이터" 표가
-    [사업자등록번호]로 채워진다. 저장·로깅 경계의 PII 마스킹은 pii.py 가 담당한다.
-    """
-
-    return _BUSINESS_NUMBER_RE.sub("[사업자등록번호]", str(text or ""))
-
-
 def _result_cell_for_llm(value: object) -> str:
     """0 은 "값 없음"이 아니다. falsy 값을 빈칸으로 바꾸면 모델이 그대로 옮겨 적는다."""
 
@@ -6148,10 +6147,10 @@ def generate_answer(state: Text2SQLState) -> dict:
 사용자의 질문과 SQL 쿼리 결과를 바탕으로 짧고 직관적인 한국어 답변을 작성하세요.
 
 ## 사용자 질문
-{_mask_business_numbers_for_llm(question)}
+{question}
 
 ## 실행된 SQL ({source_label})
-{_mask_business_numbers_for_llm(sql[:4000])}
+{sql[:4000]}
 
 ## 쿼리 결과 (전체 {total_row_label})
 {result_text}

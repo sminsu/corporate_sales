@@ -117,6 +117,22 @@ class SessionStoreTest(unittest.TestCase):
         self.assertIsNone(store.get_result("r1", "user-a"))
         self.assertIsNone(store.get_file("t1"))
 
+    def test_postgres_message_is_masked_on_write_but_not_in_the_response(self) -> None:
+        store = PostgresSessionStore()
+        session = {"id": "sess-1", "user_id": "user-a", "title": "새 대화"}
+        cursor = Mock()
+        connection = Mock()
+        connection.cursor.return_value = cursor
+
+        with patch.object(store, "_conn", return_value=connection), patch.object(store, "_put"):
+            store.append_message(session, {"role": "user", "content": "내 번호 010-9904-0959 로 연락 줘"})
+
+        insert_params = cursor.execute.call_args_list[0].args[1]
+        self.assertEqual(insert_params[3], "내 번호 [전화번호] 로 연락 줘")
+        self.assertEqual(session["title"], "내 번호 [전화번호] 로 연락 줘")
+        # 화면으로 나가는 사본은 원문이라야 방금 보낸 질문이 그대로 보인다.
+        self.assertEqual(session["messages"][0]["content"], "내 번호 010-9904-0959 로 연락 줘")
+
 
 if __name__ == "__main__":
     unittest.main()

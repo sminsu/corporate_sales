@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from text2sql_agent.pii_masker import mask_pii
+
 
 class SessionOwnershipError(Exception):
     """Raised when a session id exists but belongs to another user."""
@@ -783,9 +785,15 @@ class PostgresSessionStore:
     def append_message(self, session: dict[str, Any], message: dict[str, Any]) -> None:
         payload = {k: _jsonable(v) for k, v in message.items() if k not in {"role", "content", "text", "created_at"} and v is not None}
         created_at = message.get("created_at") or _now_iso()
+        try:
+            stored_content = mask_pii(message.get("content", ""))
+        except Exception:
+            # 마스커가 죽어도 대화 저장까지 막지는 않는다.
+            stored_content = message.get("content", "")
+        # 제목은 마스킹한 본문에서 잘라야 40자에서 끊긴 번호가 그대로 남지 않는다.
         title = session.get("title", "새 대화")
-        if message.get("role") == "user" and title == "새 대화" and message.get("content"):
-            title = str(message.get("content", ""))[:40]
+        if message.get("role") == "user" and title == "새 대화" and stored_content:
+            title = stored_content[:40]
 
         conn = self._conn()
         try:
@@ -801,7 +809,7 @@ class PostgresSessionStore:
                     session["id"],
                     session["user_id"],
                     message.get("role", ""),
-                    message.get("content", ""),
+                    stored_content,
                     Json(payload),
                     message.get("message_id"),
                     created_at,

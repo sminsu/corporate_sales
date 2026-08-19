@@ -484,6 +484,38 @@ def loaded_window(start: str, end: str):
         yield
 
 
+def test_llm_chosen_month_snapshot_is_routed_back_to_the_merchant_master(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """규칙 랭킹이 마스터를 1순위로 올려도 analyze_question 은 LLM 목록을 그대로 쓴다.
+
+    "2026년 5월" 이 붙으면 LLM 은 월 스냅샷을 고르고, 치환이 마스터→스냅샷
+    한 방향뿐이던 동안에는 그 선택을 되돌릴 곳이 없었다.
+    """
+    monkeypatch.setattr(workflow, "_call_llm", lambda *_args, **_kwargs: "tmdaa5d01, tmdaaus01")
+
+    with frozen_clock():
+        result = workflow.analyze_question(
+            {
+                "question": MASTER_ADDRESS_QUESTION,
+                "selected_domain": "merchant_sales",
+                "domain_context": "테스트 도메인",
+                "domain_routing_trace": "테스트 라우팅",
+            }
+        )
+
+    assert result["selected_tables"][0] == "tbdaadt01"
+    assert "tmdaa5d01" not in result["selected_tables"]
+
+
+def test_month_metric_question_still_routes_the_master_to_its_snapshot() -> None:
+    """반대 방향 치환이 생겨도 월 지표 질문의 기존 라우팅은 그대로다."""
+    with frozen_clock():
+        assert workflow._route_accumulation_table_names(
+            "2026년 5월 가맹점 수를 알려줘", ["tbdaadt01"]
+        ) == ["tmdaa5d01"]
+
+
 def test_master_attribute_question_keeps_the_merchant_master_for_a_past_month() -> None:
     """주소는 마스터 한 곳만 가리키는 속성이다. 월 스냅샷으로 돌리면 답할 곳이 없다.
 

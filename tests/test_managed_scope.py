@@ -236,7 +236,7 @@ def test_verified_management_query_precedes_broader_forced_tool() -> None:
     assert selected["selected_tool"] == ""
 
 
-def test_answer_model_prompt_masks_uploaded_scope_but_keeps_queried_rows() -> None:
+def test_answer_model_prompt_passes_question_sql_and_rows_through_unmasked() -> None:
     captured: dict[str, str] = {}
 
     def fake_llm(prompt: str, **_: object) -> str:
@@ -255,12 +255,11 @@ def test_answer_model_prompt_masks_uploaded_scope_but_keeps_queried_rows() -> No
         result = workflow.generate_answer(state)
 
     assert result["answer"]
-    # 사용자가 올린 요청 범위(질문·SQL)는 가린다.
-    assert "9876543210" not in captured["prompt"]
-    assert "123-45-67890" not in captured["prompt"]
-    assert "[사업자등록번호]" in captured["prompt"]
-    # 조회해서 받은 결과 행은 그대로 넘겨야 답변 표에 번호가 찍힌다.
+    # 질문·SQL·결과 행 어디에도 마스킹을 걸지 않는다.
+    assert "123-45-67890" in captured["prompt"]
+    assert "9876543210" in captured["prompt"]
     assert "1234567890 | 테스트기업" in captured["prompt"]
+    assert "[사업자등록번호]" not in captured["prompt"]
 
 
 def test_answer_model_prompt_keeps_amounts_and_zero_values_in_result_rows() -> None:

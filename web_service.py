@@ -90,7 +90,6 @@ async def _lifespan(_: FastAPI):
     finally:
         _stream_log(logging.INFO, "service_stopping")
         agent.close_common_clients()
-        agent.close_pii_client()
         _SESSION_STORE.close()
 
 
@@ -239,18 +238,6 @@ def _stream_log(level: int, event: str, *, exc_info: bool = False, **fields: Any
         exception_trace = traceback.format_exc()
         if exception_trace and exception_trace.strip() != "NoneType: None":
             payload["exception_trace"] = exception_trace
-    sensitive_log_fields = {
-        key: payload[key]
-        for key in ("error_message", "exception_trace")
-        if payload.get(key)
-    }
-    if sensitive_log_fields:
-        try:
-            payload.update(agent.mask_pii_for_storage(sensitive_log_fields))
-        except agent.PiiMaskingError:
-            for key in sensitive_log_fields:
-                payload[key] = agent.PII_STORAGE_REDACTION
-            payload["pii_masking_failed"] = True
     payload = {key: value for key, value in payload.items() if value not in (None, "")}
     line = json.dumps(payload, ensure_ascii=False, default=str)
     try:
@@ -808,7 +795,7 @@ def _get_or_create_session(session_id: str | None, user_id: str = "ui", agent_na
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.") from exc
 
 
-def _append_message(session: dict[str, Any], role: str, content: str, **extra: Any) -> dict[str, Any]:
+def _append_message(session: dict[str, Any], role: str, content: str, **extra: Any) -> None:
     message = {
         "role": role,
         "content": content,
@@ -816,25 +803,7 @@ def _append_message(session: dict[str, Any], role: str, content: str, **extra: A
         "created_at": datetime.now().isoformat(),
     }
     message.update({k: _jsonable(v) for k, v in extra.items() if v is not None})
-    try:
-        stored_message = agent.mask_pii_for_storage(message)
-    except agent.PiiMaskingError:
-        stored_message = {
-            "role": role,
-            "content": agent.PII_STORAGE_REDACTION,
-            "text": agent.PII_STORAGE_REDACTION,
-            "created_at": message["created_at"],
-            "pii_masking_failed": True,
-        }
-    _SESSION_STORE.append_message(session, stored_message)
-    return stored_message
-
-
-def _mask_for_persistence(value: Any) -> Any | None:
-    try:
-        return agent.mask_pii_for_storage(value)
-    except agent.PiiMaskingError:
-        return None
+    _SESSION_STORE.append_message(session, message)
 
 
 def _user_message_text(question: str, params: dict[str, Any] | None = None) -> str:
@@ -1575,10 +1544,7 @@ def _result_payload(
         answer = _requires_params_answer(result)
         documents = []
         continuation = _build_continuation(result)
-        _SESSION_STORE.update_session_state(
-            session,
-            pending_continuation=_mask_for_persistence(continuation),
-        )
+        _SESSION_STORE.update_session_state(session, pending_continuation=continuation)
     elif is_blocked:
         status = "blocked"
         result_id = ""
@@ -1596,14 +1562,8 @@ def _result_payload(
             last_question=str(result.get("followup_question") or ""),
         )
         result["suggestions"] = _suggest_followups(result)
-        stored_result = _mask_for_persistence(dict(result))
-        if stored_result is None:
-            result_id = ""
-            result["pii_persistence_failed"] = True
-            _SESSION_STORE.update_session_state(session, pending_continuation=None)
-        else:
-            _SESSION_STORE.save_result(result_id, session, stored_result)
-            _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
+        _SESSION_STORE.save_result(result_id, session, dict(result))
+        _SESSION_STORE.update_session_state(session, last_result_id=result_id, pending_continuation=None)
         answer = result.get("answer", "") or result.get("error_message", "")
         documents = _documents_from_result(result, top_k, source_override)
         continuation = None
@@ -3156,13 +3116,7 @@ def save_saved_query(
     user_id = _request_user_id(x_user_id)
     agent_name = _request_agent_name(x_agent_name)
     try:
-        payload = _mask_for_persistence(_saved_query_payload(req))
-        if payload is None:
-            raise HTTPException(
-                status_code=503,
-                detail="개인정보 마스킹 서비스가 일시적으로 응답하지 않아 저장하지 않았습니다.",
-            )
-        saved_query = _SESSION_STORE.save_saved_query(user_id, agent_name, payload)
+        saved_query = _SESSION_STORE.save_saved_query(user_id, agent_name, _saved_query_payload(req))
     except SessionOwnershipError as exc:
         raise HTTPException(status_code=403, detail="다른 사용자의 저장 쿼리는 수정할 수 없습니다.") from exc
     return {"saved_query": _saved_query_summary(saved_query)}
