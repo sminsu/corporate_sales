@@ -468,10 +468,8 @@ def test_explicit_daily_and_month_range_choose_the_declared_merchant_source() ->
 
 MASTER_ADDRESS_QUESTION = "한신포차 가맹점주 가맹점 도로명 주소 2026년 5월 기준으로 알려줘"
 
-# 주소 본문(가맹점상세주소)은 민감 컬럼이라 조회 대상이 아니다. 답할 수 있는 것은
-# 표기 구분과 우편번호·도로명 번호 체계까지다.
 MASTER_ADDRESS_SQL = """
-SELECT m."가맹점번호", m."가맹점명", m."주소표시구분코드", m."우편번호", m."도로명건물본번호"
+SELECT m."가맹점번호", m."가맹점명", m."가맹점상세주소", m."주소표시구분코드"
 FROM card_system.tbdaadt01 m
 WHERE LOWER(m."가맹점명") LIKE LOWER('%한신포차%')
 """
@@ -482,6 +480,86 @@ def loaded_window(start: str, end: str):
     """적재된 구간 전체를 고정한다. 요청한 달이 그 밖인지 판단할 때 쓴다."""
     with patch.object(workflow, "loaded_period_range", return_value=(start, end)):
         yield
+
+
+def test_merchant_business_address_is_queryable_while_personal_ones_stay_blocked() -> None:
+    """'상세주소' 패턴은 개인 자택·직장 주소를 막으려는 것이다.
+
+    가맹점 상세주소는 사업장 소재지인데 함께 걸려서, "가맹점 도로명 주소"를
+    물으면 답할 컬럼이 하나도 남지 않았다.
+    """
+    tables = {item["name"]: item for item in schema.SCHEMA["tables"]}
+
+    for table_name, column in (
+        ("tbdaadt01", "가맹점상세주소"),
+        ("tmdaa5d01", "가맹점상세주소"),
+        ("tbdaacb02", "한글부점상세주소"),
+        ("tbdaacb02", "영문부점상세주소"),
+    ):
+        assert not schema._is_restricted_column(tables[table_name], column), column
+        visible = {item["name"] for item in schema._visible_columns(tables[table_name], "dimensions")}
+        assert column in visible, column
+
+    for table_name, column in (
+        ("tbdaaat18", "자택상세주소"),
+        ("tbdaaat18", "고객대표상세주소"),
+        ("tsmagcca1", "직장상세주소"),
+    ):
+        assert schema._is_restricted_column(tables[table_name], column), column
+
+
+def test_master_route_drops_same_entity_snapshots_but_keeps_monthly_facts() -> None:
+    """주소를 물었는데 주소 컬럼이 없는 tmdaaus01 이 후보로 남아 SQL 에 섞였다.
+
+    같은 엔티티의 월 스냅샷은 마스터가 답할 질문에 보탤 것이 없다. 월 팩트
+    (tmdaa5e11)는 다른 엔티티이므로 걷어내면 안 된다.
+    """
+    with frozen_clock():
+        assert workflow._route_accumulation_table_names(
+            MASTER_ADDRESS_QUESTION, ["tmdaa5d01", "tmdaaus01", "tmdaa1d12"]
+        ) == ["tbdaadt01"]
+        assert workflow._route_accumulation_table_names(
+            MASTER_ADDRESS_QUESTION, ["tbdaadt01", "tmdaa5e11", "tmdaaus01"]
+        ) == ["tbdaadt01", "tmdaa5e11"]
+        # 월 지표 질문은 스냅샷이 정답이므로 걷어내지 않는다.
+        assert workflow._route_accumulation_table_names(
+            "2026년 5월 가맹점 수를 알려줘", ["tbdaadt01", "tmdaaus01"]
+        ) == ["tmdaa5d01", "tmdaaus01"]
+
+
+def test_validation_prompt_carries_the_system_chosen_time_basis() -> None:
+    """판정 LLM 이 대체 사유를 못 보면 "기준월 불일치" 로 멀쩡한 SQL 을 떨어뜨린다."""
+    sql = (
+        'SELECT b."가맹점번호", b."우편번호" FROM card_system.tbdaadt01 b '
+        "WHERE b.\"실적기준년월일\" = '20260818' "
+        "AND LOWER(b.\"가맹점명\") LIKE LOWER('%한신포차%')"
+    )
+    prompts: list[str] = []
+
+    def capture(prompt: str, **_kwargs: object) -> str:
+        prompts.append(prompt)
+        return "VALID"
+
+    # latest_loaded_day 의 넓은 가짜 범위는 202605 를 포함해 "없습니다" 가 안 붙는다.
+    # tbdaadt01 은 최근 10일만 들고 있으므로 실제와 같은 좁은 범위를 준다.
+    with (
+        frozen_clock(),
+        patch.object(workflow, "loaded_period_range", return_value=("20260809", "20260818")),
+        patch.object(workflow, "_call_llm", capture),
+    ):
+        result = workflow.validate_sql(
+            {
+                "question": MASTER_ADDRESS_QUESTION,
+                "generated_sql": sql,
+                "selected_tables": ["tbdaadt01"],
+                "retry_count": 0,
+            }
+        )
+
+    assert result["is_valid"]
+    basis = prompts[0].split("시스템이 정한 기준시점:")[1].split("스키마 기반")[0]
+    assert "20260818" in basis
+    assert "202605" in basis
 
 
 def test_generated_snapshot_sql_is_restored_to_the_master_with_its_own_time_column() -> None:

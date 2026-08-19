@@ -60,10 +60,33 @@ def _is_semantic_table_visible(table: dict) -> bool:
     return str(table.get("semantic_visibility") or "default").lower() != "restricted"
 
 
+# '상세주소' 패턴은 개인의 자택·직장 주소를 막으려고 있다. 가맹점 사업장과 당사
+# 부점의 소재지는 같은 등급이 아닌데 패턴에 함께 걸려서, "가맹점 도로명 주소"를
+# 물으면 답할 컬럼이 하나도 남지 않았다. 테이블별 restricted_columns 는 그대로
+# 우선하므로, 특정 테이블에서 막아야 하면 거기에 적으면 된다.
+_SENSITIVE_COLUMN_EXCEPTIONS = frozenset(
+    {"가맹점상세주소", "한글부점상세주소", "영문부점상세주소"}
+)
+
+
+def _is_sensitive_column_name(column_name: object) -> bool:
+    """이름만으로 판단하는 민감 컬럼 여부.
+
+    SQL 검증도 이 패턴을 따로 참조하고 있어, 예외를 한 곳에만 넣으면 두 판정이
+    어긋난다. 이름 기준 판단은 전부 이 함수를 지난다.
+    """
+    name = str(column_name or "")
+    if name in _SENSITIVE_COLUMN_EXCEPTIONS:
+        return False
+    return bool(_SENSITIVE_COLUMN_RE.search(name))
+
+
 def _is_restricted_column(table: dict, column_name: object) -> bool:
     name = str(column_name or "")
     restricted = {str(value).lower() for value in table.get("restricted_columns", [])}
-    return name.lower() in restricted or bool(_SENSITIVE_COLUMN_RE.search(name))
+    if name.lower() in restricted:
+        return True
+    return _is_sensitive_column_name(name)
 
 
 def _visible_columns(table: dict, section: str) -> list[dict]:
@@ -1655,7 +1678,7 @@ def _validate_qualified_columns(sql: str) -> list[str]:
             continue
         seen.add(key)
         table_labels = ", ".join(sorted(candidate_tables))
-        if _SENSITIVE_COLUMN_RE.search(column_name) or any(
+        if _is_sensitive_column_name(column_name) or any(
             _is_restricted_column(known_tables.get(table_name, {}), column_name)
             for table_name in candidate_tables
         ):

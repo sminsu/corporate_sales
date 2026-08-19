@@ -4501,6 +4501,15 @@ def _contract_entity_bindings_available(question: str, contract: dict) -> bool:
     return _semantic_contract_bindings_satisfied(question, contract, bound_vq or {})
 
 
+# 적재 정책이 이미 짝을 들고 있다. 여기에 목록을 또 두면 새 짝을 등록할 때
+# 한쪽만 고쳐 두 곳이 어긋난다.
+_ARCHIVE_SNAPSHOT_TABLES = frozenset(
+    str(policy["historical_source"]["table"]).lower()
+    for policy in TABLE_ACCUMULATION_POLICIES.values()
+    if isinstance(policy.get("historical_source"), dict)
+)
+
+
 def _route_accumulation_table_names(
     question: str,
     table_names: list[str],
@@ -4583,9 +4592,14 @@ def _route_accumulation_table_names(
                     continue
             name = monthly_name or name
         add(name)
-    if master_archive and _TBDAADT01_TABLE not in routed:
-        # 마스터도 그 짝도 고르지 않았다면 답할 곳이 아예 없다.
-        routed.insert(0, _TBDAADT01_TABLE)
+    if master_archive:
+        # 같은 엔티티의 월 스냅샷은 마스터가 답할 질문에 보탤 것이 없다. 주소를
+        # 물었는데 주소 컬럼이 아예 없는 tmdaaus01 이 후보로 남아 SQL 에 섞였다.
+        # 월 "팩트"(tmdaa5e11 등)는 다른 엔티티이므로 걷어내지 않는다.
+        routed = [name for name in routed if name.lower() not in _ARCHIVE_SNAPSHOT_TABLES]
+        if _TBDAADT01_TABLE not in routed:
+            # 마스터도 그 짝도 고르지 않았다면 답할 곳이 아예 없다.
+            routed.insert(0, _TBDAADT01_TABLE)
     return routed
 
 
@@ -5980,12 +5994,16 @@ SQL:
 - 질문에 특정 시점/기간 표현이 없으면 시스템이 기준시점을 정해 조회할 수 있으며, 이것만으로 SQL을 실패 처리하지 않습니다.
 - 질문에 특정 시점/기간 표현이 없고 "소지/보유/현황/유효" 같은 스냅샷성 질문이면 데이터 최신 MAX(기준년월/기준년월일) 또는 현재 실행일 기준 유효성 조건을 사용할 수 있습니다.
 - 시스템이 정한 기준시점이 SQL에 있으면 결과 답변에서 그 기준시점을 명시하면 됩니다.
+- 아래 "시스템이 정한 기준시점"이 비어 있지 않으면, 그 기준시점은 적재 범위를 읽어 시스템이 결정한 것입니다. SQL의 기간 조건이 질문의 기간과 달라도 기준시점 불일치로 보지 말고, 그 사유가 답변에 전달되는 것으로 충분합니다.
 - N개/N건 요청은 최종 LIMIT N과 요청 방향의 ORDER BY가 모두 있어야 합니다. 최근/최신/마지막/뒤에서 N은 DESC, 하위 N은 ASC입니다. "최근 N개월"은 행 제한이 아닙니다.
 메트릭 정의:
 {_route_merchant_time_context(retrieval_question, build_metrics_summary(SCHEMA, retrieval_question, state.get('selected_domain', '')))}
 
 Semantic Query Contract:
 {_route_merchant_time_context(retrieval_question, find_relevant_semantic_query_contracts(SCHEMA, retrieval_question, state.get('selected_domain', '')))}
+
+시스템이 정한 기준시점:
+{implicit_time_basis or "(없음 - 질문의 기간을 그대로 지켜야 합니다)"}
 
 스키마 기반 사전 검증 결과:
 {chr(10).join(issues) if issues else "사전 검증 이슈 없음"}

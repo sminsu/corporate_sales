@@ -396,10 +396,7 @@ MERCHANT_ADDRESS_ATTRIBUTE = {
     "name": "merchant_address",
     "korean_name": "가맹점 주소",
     "domains": ["merchant_sales", "corporate_sales_targeting"],
-    "business_definition": (
-        "가맹점 사업장의 소재지 주소. 도로명·지번 표기는 주소표시구분코드가 구분하며, "
-        "주소 본문(가맹점상세주소)은 민감 컬럼이라 우편번호·도로명 번호 체계까지만 조회한다"
-    ),
+    "business_definition": "가맹점 사업장의 소재지 주소. 도로명·지번 표기는 주소표시구분코드가 구분한다",
     "aliases": [
         "가맹점 주소",
         "가맹점주소",
@@ -417,6 +414,7 @@ MERCHANT_ADDRESS_ATTRIBUTE = {
             "entity": "merchant",
             "table": "tbdaadt01",
             "columns": [
+                "가맹점상세주소",
                 "주소표시구분코드",
                 "우편번호",
                 "도로명우편번호",
@@ -429,8 +427,8 @@ MERCHANT_ADDRESS_ATTRIBUTE = {
         }
     ],
     "semantic_cautions": [
-        "도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소인데 민감 컬럼이라 조회할 수 없으므로 SELECT 에 넣지 않는다.",
-        "도로명 주소를 물으면 조회 가능한 주소표시구분코드·우편번호·도로명 번호 컬럼을 내보내고, 주소 문장을 만들어 내지 않는다.",
+        "도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소이고 도로명·지번 표기 여부는 주소표시구분코드로 판별한다.",
+        "도로명 주소를 물으면 가맹점상세주소를 주소표시구분코드·우편번호와 함께 내보내고, 도로명 번호 컬럼만으로 주소를 조립하지 않는다.",
     ],
 }
 
