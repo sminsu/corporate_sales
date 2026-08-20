@@ -316,17 +316,19 @@
             <h3>업무 질문 예시</h3>
             <div class="user-guide-examples">
               <article>
-                <h4>기업카드 이용 분석</h4>
+                <h4>기업영업지원 에이전트 질의</h4>
+                <p class="guide-example-scope">기업영업에 관련된 질의만 진행합니다. 카드 관련 문의나 개인영업 및 개인정보에 관한 질의에는 답변할 수 없습니다.</p>
                 <ul>
-                  <li>2025년 월별 법인카드 이용금액 합계와 전월 대비 증감률을 보여줘.</li>
-                  <li>2025년 12월 업종별 이용금액 상위 10개를 알려줘.</li>
+                  <li>한도소진율이 90% 이상인 법인 리스트 100개만 만들어줘.</li>
+                  <li>KB카드 기업카드 보유회원 중에 2026년 7월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘.</li>
                 </ul>
               </article>
               <article>
-                <h4>기업·가맹점 분석</h4>
+                <h4>가맹점 · 프랜차이즈 관련 질의</h4>
+                <p class="guide-example-scope">가맹점이나 프랜차이즈 관련 질의에 대해 답변합니다.</p>
                 <ul>
-                  <li>2025년 12월 한빛테크놀로지의 매출과 대손비용률을 분석해줘.</li>
-                  <li>최근 6개월 브랜드별 가맹점 매출 추이를 비교해줘.</li>
+                  <li>2026년 4월 꾸석지(가맹점이름)의 대손비용률 분석해줘.</li>
+                  <li>빽다방(가맹점이름) 가맹점주 중에 2026년 5월 기준으로 폐업처리된 건 몇 개야?</li>
                 </ul>
               </article>
             </div>
@@ -363,6 +365,82 @@
             <article class="user-guide-tip">
               <h4>한 번에 하나씩 묻기</h4>
               <p>첫 결과를 확인한 뒤 후속 질문으로 기간, 대상 또는 지표를 바꾸면 더 정확하게 분석할 수 있습니다.</p>
+            </article>
+          </section>
+
+          <section>
+            <h3>안내사항</h3>
+            <article class="user-guide-tip">
+              <h4>상세 데이터와 SQL은 오른쪽 상세 패널에서</h4>
+              <p>답변의 근거가 된 조회 데이터와 실행 SQL은 화면 오른쪽 위 <strong>상세</strong> 버튼을 누르면 볼 수 있습니다. <strong>데이터</strong> 탭에서 조회된 표를, <strong>SQL</strong> 탭에서 실제로 실행된 쿼리문을 확인하세요.</p>
+              <figure class="guide-figure">
+                <svg viewBox="0 0 320 136" role="img" aria-label="화면 오른쪽 위 상세 버튼을 누르면 데이터 탭과 SQL 탭이 열리는 위치를 표시한 화면 구성도">
+                  <rect x="0.75" y="0.75" width="318.5" height="134.5" rx="7" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+                  <rect x="8" y="8" width="48" height="120" rx="5" fill="var(--panel-2)" opacity="0.55" />
+                  <rect x="14" y="16" width="36" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="14" y="26" width="28" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="14" y="36" width="32" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="62" y="8" width="128" height="120" rx="5" fill="var(--panel-2)" opacity="0.45" />
+                  <rect x="68" y="36" width="90" height="6" rx="3" fill="var(--line)" />
+                  <rect x="68" y="48" width="110" height="6" rx="3" fill="var(--line)" />
+                  <rect x="68" y="60" width="78" height="6" rx="3" fill="var(--line)" />
+                  <rect x="150" y="13" width="34" height="14" rx="7" fill="var(--accent)" />
+                  <text x="167" y="22.5" text-anchor="middle" font-size="8" font-weight="700" fill="var(--brand-on)">상세</text>
+                  <path d="M186 20 h7 m-2.5 -2.5 l2.5 2.5 l-2.5 2.5" stroke="var(--accent)" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+                  <rect x="196" y="8" width="116" height="120" rx="5" fill="var(--accent-soft-bg)" stroke="var(--accent)" stroke-width="1.5" />
+                  <rect x="202" y="14" width="25" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="214.5" y="23.5" text-anchor="middle" font-size="7" fill="var(--muted)">개요</text>
+                  <rect x="229" y="14" width="28" height="14" rx="4" fill="var(--accent)" />
+                  <text x="243" y="23.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">데이터</text>
+                  <rect x="259" y="14" width="24" height="14" rx="4" fill="var(--accent)" />
+                  <text x="271" y="23.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">SQL</text>
+                  <rect x="285" y="14" width="21" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="295.5" y="23.5" text-anchor="middle" font-size="7" fill="var(--muted)">이력</text>
+                  <rect x="202" y="36" width="104" height="10" rx="3" fill="var(--panel-2)" />
+                  <rect x="202" y="50" width="104" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="60" width="88" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="70" width="96" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="80" width="76" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="94" width="104" height="28" rx="4" fill="var(--panel-2)" />
+                  <rect x="208" y="101" width="58" height="4" rx="2" fill="var(--line)" />
+                  <rect x="208" y="110" width="80" height="4" rx="2" fill="var(--line)" />
+                </svg>
+                <figcaption>오른쪽 위 <strong>상세</strong> → <strong>데이터</strong> · <strong>SQL</strong> 탭</figcaption>
+              </figure>
+            </article>
+            <article class="user-guide-tip">
+              <h4>전체 데이터는 보고서 내보내기로 받으세요</h4>
+              <p>화면의 <strong>데이터</strong> 탭은 최대 100건까지만 미리보기로 보여줍니다.</p>
+              <p>전체 데이터가 필요하면 왼쪽 아래 <strong>데이터 도구 → 보고서 내보내기</strong>에서 <strong>Excel</strong> 또는 <strong>TXT</strong>를 누르세요. 미리보기 100건이 아니라 조회된 전체 행을 파일로 내려받습니다. (Word 보고서는 표를 200건까지만 담으므로 전체 데이터는 Excel · TXT를 이용해 주세요.)</p>
+              <figure class="guide-figure">
+                <svg viewBox="0 0 320 136" role="img" aria-label="왼쪽 아래 데이터 도구 안의 보고서 내보내기에서 Excel과 TXT 버튼 위치를 표시한 화면 구성도">
+                  <rect x="0.75" y="0.75" width="318.5" height="134.5" rx="7" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+                  <rect x="8" y="8" width="100" height="120" rx="5" fill="var(--accent-soft-bg)" stroke="var(--accent)" stroke-width="1.5" />
+                  <rect x="15" y="15" width="86" height="8" rx="3" fill="var(--panel-2)" />
+                  <rect x="15" y="27" width="68" height="8" rx="3" fill="var(--panel-2)" />
+                  <rect x="15" y="43" width="86" height="15" rx="4" fill="var(--panel-2)" />
+                  <text x="21" y="53.5" font-size="8" font-weight="700" fill="var(--text)">▾ 데이터 도구</text>
+                  <text x="21" y="68" font-size="7" fill="var(--muted)">저장 쿼리</text>
+                  <text x="21" y="82" font-size="7" font-weight="700" fill="var(--text)">보고서 내보내기</text>
+                  <rect x="17" y="88" width="40" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="37" y="97.5" text-anchor="middle" font-size="7" fill="var(--muted)">전체</text>
+                  <rect x="60" y="88" width="40" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="80" y="97.5" text-anchor="middle" font-size="7" fill="var(--muted)">Word</text>
+                  <rect x="17" y="105" width="40" height="14" rx="4" fill="var(--accent)" />
+                  <text x="37" y="114.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">Excel</text>
+                  <rect x="60" y="105" width="40" height="14" rx="4" fill="var(--accent)" />
+                  <text x="80" y="114.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">TXT</text>
+                  <rect x="114" y="8" width="122" height="120" rx="5" fill="var(--panel-2)" opacity="0.45" />
+                  <rect x="120" y="36" width="88" height="6" rx="3" fill="var(--line)" />
+                  <rect x="120" y="48" width="104" height="6" rx="3" fill="var(--line)" />
+                  <rect x="120" y="60" width="72" height="6" rx="3" fill="var(--line)" />
+                  <rect x="242" y="8" width="70" height="120" rx="5" fill="var(--panel-2)" opacity="0.45" />
+                  <rect x="248" y="16" width="58" height="8" rx="3" fill="var(--line)" />
+                  <rect x="248" y="30" width="58" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="248" y="40" width="46" height="5" rx="2.5" fill="var(--line)" />
+                </svg>
+                <figcaption>왼쪽 아래 <strong>데이터 도구</strong> → 보고서 내보내기 → <strong>Excel</strong> · <strong>TXT</strong></figcaption>
+              </figure>
             </article>
           </section>
 
