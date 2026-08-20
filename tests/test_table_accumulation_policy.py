@@ -482,6 +482,43 @@ def loaded_window(start: str, end: str):
         yield
 
 
+POSTCODE_QUESTION = "역전우동 가맹점주 우편번호 2026년 5월 기준으로 알려줘"
+
+
+def test_named_master_column_routes_to_the_master_even_without_an_alias() -> None:
+    """속성은 별칭으로만 매칭된다. 사용자는 컬럼명을 그대로 부른다.
+
+    "우편번호" 는 merchant_address 의 선언 컬럼인데 별칭에 없어서 안 걸렸고,
+    남은 단서 하나("가맹점주")가 우편번호 컬럼조차 없는 tmdaaus01 을 끌어왔다.
+    """
+    with frozen_clock():
+        assert workflow._tbdaadt01_time_route(POSTCODE_QUESTION)[0] == "master"
+        assert workflow._rule_rank_tables(POSTCODE_QUESTION)[0] == "tbdaadt01"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # 컬럼이 집계 기준축으로만 쓰인 질문은 그 달을 세는 질문이다.
+        "2026년 7월 기준 연체가 발생한 기업을 가맹점 업종코드별로 몇 곳인지 보여줘",
+        "2026년 5월 기준 가맹점 상태구분별 가맹점 수를 알려줘",
+        "2026년 5월 가맹점명별 매출금액 상위 10개를 보여줘",
+    ],
+)
+def test_aggregation_questions_stay_on_the_month_snapshot(question: str) -> None:
+    with frozen_clock():
+        assert workflow._tbdaadt01_time_route(question)[0] == "monthly"
+
+
+def test_master_only_columns_exclude_shared_identifiers() -> None:
+    """가맹점번호처럼 어느 질문에나 섞이는 식별자로 마스터를 단정하면 안 된다."""
+    columns = workflow._master_only_attribute_columns()
+    assert "우편번호" in columns
+    assert "가맹점상세주소" in columns
+    assert "가맹점번호" not in columns
+    assert "대표고객식별자" not in columns
+
+
 def test_merchant_business_address_is_queryable_while_personal_ones_stay_blocked() -> None:
     """'상세주소' 패턴은 개인 자택·직장 주소를 막으려는 것이다.
 
