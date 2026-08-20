@@ -2800,7 +2800,7 @@ def _stream_followup(
                     },
                 )
             answer = followup_result.get("answer", "")
-            chart = build_chart_spec(resolved_question, followup_result.get("query_columns", []), followup_result.get("query_rows", [])) if wants_chart else None
+            chart = build_chart_spec(resolved_question, followup_result.get("query_columns", []), followup_result.get("query_rows", []), shape_question=req.question) if wants_chart else None
             if chart:
                 followup_result["chart"] = chart
                 answer = (
@@ -2832,7 +2832,7 @@ def _stream_followup(
                     },
                 }
             )
-            chart = build_chart_spec(resolved_question, transform["columns"], transform["rows"]) if wants_chart else None
+            chart = build_chart_spec(resolved_question, transform["columns"], transform["rows"], shape_question=req.question) if wants_chart else None
             if chart:
                 local_result["chart"] = chart
             else:
@@ -2844,7 +2844,7 @@ def _stream_followup(
             yield _sse("progress", {**route_progress, "message": "직전 결과만 사용해 차트를 생성합니다. SQL은 다시 실행하지 않습니다."})
             yield _sse("progress", {"step": "generate_answer", "title": "차트 생성", "message": "숫자·범주·시간 컬럼을 판별해 차트 데이터를 구성합니다.", "query": req.question})
             visual_result = dict(base_result)
-            chart = build_chart_spec(resolved_question, base_result.get("query_columns", []), base_result.get("query_rows", []))
+            chart = build_chart_spec(resolved_question, base_result.get("query_columns", []), base_result.get("query_rows", []), shape_question=req.question)
             if chart:
                 visual_result["chart"] = chart
                 visual_result["followup_operations"] = ["차트 생성"]

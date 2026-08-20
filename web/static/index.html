@@ -1578,6 +1578,7 @@ function resetResultPanels() {
   tableMeta.textContent = "조회 데이터가 없습니다.";
   compactSummary.innerHTML = "";
   compactSummary.classList.add("hidden");
+  renderChart(null);
   resultMeta.innerHTML = "";
   resultMeta.classList.add("hidden");
   sourceLabel.textContent = "";
@@ -2460,7 +2461,11 @@ function drawChart(chart) {
   if (!labels.length || !datasets.length) return;
 
   const height = 330;
-  const width = Math.max(320, resultChart.parentElement?.clientWidth || 720);
+  const available = resultChart.parentElement?.clientWidth || 0;
+  // 접혀 있거나 아직 배치되지 않았으면 폭을 알 수 없다. 이때 그리면 좁은 폭으로
+  // 굳어 라벨이 겹치므로, 폭이 생기면 ResizeObserver가 다시 부르도록 넘긴다.
+  if (!available) return;
+  const width = Math.max(320, available);
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   resultChart.width = Math.round(width * dpr);
   resultChart.height = Math.round(height * dpr);
@@ -3440,12 +3445,16 @@ themeToggle?.addEventListener("click", () => {
 });
 
 let chartResizeTimer = null;
-window.addEventListener("resize", () => {
+function scheduleChartRedraw() {
   window.clearTimeout(chartResizeTimer);
   chartResizeTimer = window.setTimeout(() => {
     if (state.lastChart) drawChart(state.lastChart);
   }, 120);
-});
+}
+window.addEventListener("resize", scheduleChartRedraw);
+if (window.ResizeObserver && resultChart?.parentElement) {
+  new window.ResizeObserver(scheduleChartRedraw).observe(resultChart.parentElement);
+}
 
 const compactInspectorMedia = window.matchMedia("(max-width: 1240px)");
 
