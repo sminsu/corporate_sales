@@ -5,6 +5,7 @@ import json
 import re
 from calendar import monthrange
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Literal
 
 import sqlparse
@@ -2061,6 +2062,13 @@ def _replace_physical_table(sql: str, source_table: str, target_table: str) -> s
     return rewritten
 
 
+# 마스터 속성 조회가 아니라 집계임을 드러내는 표현. 관측된 실패 질문에서만 뽑았다.
+_AGGREGATION_REQUEST_RE = re.compile(
+    r"몇\s*[곳개건명군데]|개수|건수|좌수|비중|비율|평균|합계|총합|순위|"
+    r"상위\s*\d|하위\s*\d|분포|추이|비교|많은\s*순|적은\s*순|수를\s*(?:알려|보여|집계)"
+)
+
+
 def _merchant_master_attribute_question(question: str) -> bool:
     """월 스냅샷으로 바꾸면 사용자가 지목한 테이블만 사라지는 질문인지.
 
@@ -2069,15 +2077,53 @@ def _merchant_master_attribute_question(question: str) -> bool:
     집계할 지표가 없어 스냅샷으로 돌려도 답이 달라지지 않는다. 대신 tbdaadt01 이
     후보에서 통째로 빠져서 "요청한 달이 마스터에 있느냐" 는 것조차 답할 수 없다.
     """
-    return any(
-        {
-            str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
-            for mapping in attribute.get("source_mappings", [])
-            if mapping.get("table")
-        }
-        == {_TBDAADT01_TABLE}
+    if any(
+        _master_only_attribute(attribute)
         for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6)
-    )
+    ):
+        return True
+    # 속성은 별칭으로만 매칭된다. "우편번호" 처럼 사용자가 컬럼명을 그대로 부르면
+    # 별칭에 없어서 안 걸리고, 남은 단서 하나("가맹점주")가 스냅샷을 끌어온다.
+    # 별칭을 하나씩 채우는 대신 속성이 이미 선언한 컬럼으로도 판정한다.
+    # 집계 질문은 그 달을 세는 질문이므로 스냅샷이 맞다. 컬럼이 집계 기준축으로만
+    # 쓰인 경우("연체 발생한 기업을 가맹점 업종코드별로 몇 곳인지")를 지표명만으로는
+    # 못 거른다. 세는 질문임을 드러내는 표현도 함께 본다.
+    if any(
+        _phrase_in_question(question, term)
+        for metric in SCHEMA.get("canonical_metrics", [])
+        for term in [metric.get("name", ""), *metric.get("synonyms", [])]
+    ):
+        return False
+    if _AGGREGATION_REQUEST_RE.search(question or ""):
+        return False
+    return bool(_master_only_attribute_columns() & set(_v2_named_columns(question, _schema_column_names())))
+
+
+def _master_only_attribute(attribute: dict) -> bool:
+    """이 속성이 가맹점 마스터 한 곳만 가리키는지."""
+    return {
+        str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+        for mapping in attribute.get("source_mappings", [])
+        if mapping.get("table")
+    } == {_TBDAADT01_TABLE}
+
+
+@lru_cache(maxsize=1)
+def _master_only_attribute_columns() -> frozenset[str]:
+    """마스터 한 곳만 가리키는 속성이 선언한 컬럼.
+
+    가맹점번호처럼 어느 질문에나 섞이는 식별자는 뺀다. 그것만으로 마스터 질문이라
+    단정하면 월 지표 질문까지 끌어온다.
+    """
+    columns: set[str] = set()
+    for attribute in SCHEMA.get("semantic_attributes", []):
+        if not _master_only_attribute(attribute):
+            continue
+        for mapping in attribute.get("source_mappings", []):
+            columns.update(str(name) for name in mapping.get("columns", []) if name)
+            if mapping.get("column"):
+                columns.add(str(mapping["column"]))
+    return frozenset(columns - {"가맹점번호", "기업고객식별자", "대표고객식별자"})
 
 
 def _recent_merchant_time_route(question: str) -> tuple[str, str, str]:
