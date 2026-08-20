@@ -2436,6 +2436,17 @@ function chartCssColor(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
+function chartSeriesColors() {
+  return [
+    chartCssColor("--mint", "#58cdbc"),
+    chartCssColor("--blue", "#7fa8ff"),
+    chartCssColor("--accent", "#f4c84a"),
+    chartCssColor("--green", "#5fd68a"),
+    chartCssColor("--red", "#ff7a70"),
+    "#b18cff", "#ff9f67", "#66c7f2", "#d6cf5f", "#ef7fb1", "#70d6a8", "#8b9cff",
+  ];
+}
+
 function compactChartNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
@@ -2462,14 +2473,7 @@ function drawChart(chart) {
   const text = chartCssColor("--muted", "#9aa5b2");
   const grid = chartCssColor("--line-soft", "#242b36");
   const panel = chartCssColor("--panel", "#151922");
-  const colors = [
-    chartCssColor("--mint", "#58cdbc"),
-    chartCssColor("--blue", "#7fa8ff"),
-    chartCssColor("--accent", "#f4c84a"),
-    chartCssColor("--green", "#5fd68a"),
-    chartCssColor("--red", "#ff7a70"),
-    "#b18cff", "#ff9f67", "#66c7f2", "#d6cf5f", "#ef7fb1", "#70d6a8", "#8b9cff",
-  ];
+  const colors = chartSeriesColors();
   ctx.font = '11px "BodyFont", sans-serif';
   ctx.fillStyle = text;
   ctx.strokeStyle = grid;
@@ -2498,24 +2502,62 @@ function drawChart(chart) {
       ctx.strokeStyle = panel;
       ctx.lineWidth = 2;
       ctx.stroke();
+      const share = value / total;
+      if (share >= 0.05) {
+        const middle = (angle + next) / 2;
+        ctx.fillStyle = panel;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`${Math.round(share * 100)}%`, cx + Math.cos(middle) * radius * 0.64, cy + Math.sin(middle) * radius * 0.64);
+      }
       angle = next;
     });
     return;
   }
 
-  const plot = { left: 68, right: width - 22, top: 20, bottom: height - 65 };
-  const allValues = datasets.flatMap((dataset) => (dataset.data || []).map(chartNumber)).filter((value) => value !== null);
+  const rightDatasets = datasets.filter((dataset) => dataset.axis === "right");
+  const axisValues = (pool) => pool.flatMap((dataset) => (dataset.data || []).map(chartNumber)).filter((value) => value !== null);
+  const allValues = axisValues(datasets);
   if (!allValues.length) return;
-  let minValue = Math.min(0, ...allValues);
-  let maxValue = Math.max(0, ...allValues);
-  if (minValue === maxValue) maxValue = minValue + 1;
-  const range = maxValue - minValue;
-  const y = (value) => plot.top + ((maxValue - value) / range) * (plot.bottom - plot.top);
+  const plot = { left: 68, right: width - (rightDatasets.length ? 62 : 22), top: 20, bottom: height - 65 };
   const xStep = (plot.right - plot.left) / Math.max(labels.length, 1);
-  const zeroY = y(0);
+  const labelTexts = labels.map((label) => String(label));
+  // 칸보다 긴 라벨은 눕혀서 전부 보여준다. 너무 많을 때만 건너뛴다.
+  const rotateLabels = labelTexts.length <= 24 && labelTexts.some((label) => ctx.measureText(label).width > xStep - 6);
+  if (rotateLabels) plot.bottom = height - 96;
+  // 막대는 0 기준선이 의미를 갖지만, 선 그래프에 0을 강제하면 96%대 추이가 평평해진다.
+  const zeroBased = chart.type !== "line";
+  const niceStep = (span) => {
+    const magnitude = Math.pow(10, Math.floor(Math.log10(Math.abs(span) || 1)));
+    return [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((step) => step >= span) || magnitude * 10;
+  };
+  const axisScale = (values, intervals) => {
+    let min = zeroBased ? Math.min(0, ...values) : Math.min(...values);
+    let max = zeroBased ? Math.max(0, ...values) : Math.max(...values);
+    if (min === max) max = min + Math.max(Math.abs(min) * 0.05, 1);
+    else if (!zeroBased) {
+      const padding = (max - min) * 0.08;
+      min -= padding;
+      max += padding;
+    }
+    // 눈금을 1·2·5의 배수로 맞춘다. 기업 수 축에 1.8 같은 값이 찍히면 셈이 아닌 것처럼 읽힌다.
+    const step = niceStep((max - min) / (intervals || 5));
+    min = Math.floor(min / step) * step;
+    max = min + step * (intervals || Math.max(1, Math.ceil((max - min) / step)));
+    const project = (value) => plot.top + ((max - value) / (max - min)) * (plot.bottom - plot.top);
+    return { min, max, step, project };
+  };
+  const leftValues = axisValues(datasets.filter((dataset) => dataset.axis !== "right"));
+  const leftAxis = axisScale(leftValues.length ? leftValues : allValues);
+  const ticks = Math.max(1, Math.round((leftAxis.max - leftAxis.min) / leftAxis.step));
+  // 오른쪽 축도 같은 눈금 수로 맞춰야 격자선이 두 축에서 같은 자리를 뜻한다.
+  const rightAxis = rightDatasets.length ? axisScale(axisValues(rightDatasets), ticks) : null;
+  const axisFor = (dataset) => (dataset.axis === "right" && rightAxis ? rightAxis : leftAxis);
+  const y = leftAxis.project;
 
-  for (let tick = 0; tick <= 5; tick += 1) {
-    const value = maxValue - (range * tick) / 5;
+  for (let tick = 0; tick <= ticks; tick += 1) {
+    const ratio = tick / ticks;
+    const value = leftAxis.max - (leftAxis.max - leftAxis.min) * ratio;
     const tickY = y(value);
     ctx.beginPath();
     ctx.moveTo(plot.left, tickY);
@@ -2527,20 +2569,41 @@ function drawChart(chart) {
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     ctx.fillText(compactChartNumber(value), plot.left - 9, tickY);
+    if (rightAxis) {
+      ctx.fillStyle = colors[datasets.indexOf(rightDatasets[0]) % colors.length];
+      ctx.textAlign = "left";
+      ctx.fillText(compactChartNumber(rightAxis.max - (rightAxis.max - rightAxis.min) * ratio), plot.right + 8, tickY);
+    }
   }
 
-  const labelStride = Math.max(1, Math.ceil(labels.length / 10));
-  labels.forEach((label, index) => {
+  // 눕힌 라벨끼리 겹치지 않을 만큼만 그린다. 좁은 화면에서는 건너뛰는 편이 읽기 쉽다.
+  const labelStride = rotateLabels
+    ? Math.max(1, Math.ceil(14 / Math.max(xStep * 0.7071, 1)))
+    : Math.max(1, Math.ceil(labels.length / 10));
+  const labelLimit = rotateLabels ? 14 : 10;
+  labelTexts.forEach((label, index) => {
     if (index % labelStride !== 0) return;
-    const shortLabel = String(label).length > 10 ? `${String(label).slice(0, 9)}…` : String(label);
+    const shortLabel = label.length > labelLimit ? `${label.slice(0, labelLimit - 1)}…` : label;
+    const px = plot.left + xStep * (index + 0.5);
     ctx.fillStyle = text;
+    if (rotateLabels) {
+      ctx.save();
+      ctx.translate(px, plot.bottom + 9);
+      ctx.rotate(-Math.PI / 4);
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(shortLabel, 0, 0);
+      ctx.restore();
+      return;
+    }
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText(shortLabel, plot.left + xStep * (index + 0.5), plot.bottom + 10);
+    ctx.fillText(shortLabel, px, plot.bottom + 10);
   });
 
   if (chart.type === "line") {
     datasets.forEach((dataset, datasetIndex) => {
+      const project = axisFor(dataset).project;
       ctx.strokeStyle = colors[datasetIndex % colors.length];
       ctx.fillStyle = colors[datasetIndex % colors.length];
       ctx.lineWidth = 2.2;
@@ -2550,7 +2613,7 @@ function drawChart(chart) {
         const value = chartNumber(rawValue);
         if (value === null) return;
         const px = plot.left + xStep * (index + 0.5);
-        const py = y(value);
+        const py = project(value);
         if (!started) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
         started = true;
@@ -2560,7 +2623,7 @@ function drawChart(chart) {
         const value = chartNumber(rawValue);
         if (value === null) return;
         ctx.beginPath();
-        ctx.arc(plot.left + xStep * (index + 0.5), y(value), 3, 0, Math.PI * 2);
+        ctx.arc(plot.left + xStep * (index + 0.5), project(value), 3, 0, Math.PI * 2);
         ctx.fill();
       });
     });
@@ -2568,13 +2631,15 @@ function drawChart(chart) {
     const groupWidth = xStep * 0.72;
     const barWidth = Math.max(2, groupWidth / Math.max(datasets.length, 1));
     datasets.forEach((dataset, datasetIndex) => {
+      const axis = axisFor(dataset);
+      const baseY = axis.project(0);
       ctx.fillStyle = colors[datasetIndex % colors.length];
       (dataset.data || []).forEach((rawValue, index) => {
         const value = chartNumber(rawValue);
         if (value === null) return;
         const px = plot.left + xStep * index + (xStep - groupWidth) / 2 + barWidth * datasetIndex;
-        const valueY = y(value);
-        ctx.fillRect(px, Math.min(valueY, zeroY), Math.max(1, barWidth - 2), Math.max(1, Math.abs(zeroY - valueY)));
+        const valueY = axis.project(value);
+        ctx.fillRect(px, Math.min(valueY, baseY), Math.max(1, barWidth - 2), Math.max(1, Math.abs(baseY - valueY)));
       });
     });
   }
@@ -2592,9 +2657,14 @@ function renderChart(chart) {
   }
   chartTitle.textContent = chart.title || "조회 결과 차트";
   chartNote.textContent = chart.note || "";
-  const colors = ["var(--mint)", "var(--blue)", "var(--accent)", "var(--green)", "var(--red)"];
-  chartLegend.innerHTML = chart.datasets
-    .map((dataset, index) => `<span><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(dataset.label || `계열 ${index + 1}`)}</span>`)
+  const colors = chartSeriesColors();
+  const shares = (chart.datasets[0]?.data || []).map((value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0));
+  const total = shares.reduce((sum, value) => sum + value, 0);
+  const legendLabels = chart.type === "pie"
+    ? chart.labels.map((label, index) => `${label}${total ? ` ${Math.round(((shares[index] || 0) / total) * 100)}%` : ""}`)
+    : chart.datasets.map((dataset, index) => `${dataset.label || `계열 ${index + 1}`}${dataset.axis === "right" ? " (오른쪽 축)" : ""}`);
+  chartLegend.innerHTML = legendLabels
+    .map((label, index) => `<span><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(label)}</span>`)
     .join("");
   resultChart.setAttribute("aria-label", `${chart.title || "조회 결과 차트"}. ${chart.note || ""}`);
   chartBox.classList.remove("hidden");

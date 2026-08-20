@@ -48,6 +48,36 @@ METRIC_ALIASES = (
     ("잔액", ("잔액",)),
     ("수수료", ("수수료",)),
 )
+# 축·계열을 고를 때 쓰는 컬럼 성격 판별용 토큰.  접미사로 보는 이유는
+# "월평균매출"처럼 시간 단어를 품고도 지표인 컬럼을 시간축으로 오해하지 않기 위함이다.
+TIME_COLUMN_SUFFIXES = (
+    "년월", "년월일", "월", "일자", "날짜", "일", "년", "연도", "년도", "분기", "기간",
+    "date", "month", "year", "ym", "dt",
+)
+IDENTIFIER_TOKENS = ("번호", "코드", "일련", "사업자등록", "식별자")
+NON_ADDITIVE_TOKENS = ("율", "비율", "비중", "평균", "단가", "지수", "점수", "rate", "ratio")
+METRIC_PREFERENCE_TOKENS = ("금액", "매출", "이용", "비용", "잔액", "한도", "건수", "수", "비율", "율")
+# "지역별"처럼 질문이 부르는 이름과 실제 컬럼명(한글시도명)을 잇는 표.
+DIMENSION_ALIASES = (
+    (("년월", "월별", "월", "기간"), ("기준년월", "년월", "월", "기간", "month", "ym")),
+    (("연도", "연도별", "년별"), ("연도", "년도", "year")),
+    (("업종", "업종별"), ("업종",)),
+    (("기업", "기업별", "회사별"), ("기업명", "회사명", "기업")),
+    (("가맹점", "가맹점별", "매장별"), ("가맹점명", "매장명", "가맹점")),
+    (("일자", "날짜", "일별"), ("일자", "날짜", "date")),
+    (("지역", "지역별", "시도", "시도별", "권역", "광역", "소재지"), ("시도", "지역", "권역")),
+    (("시군구", "시군구별", "구별", "군별"), ("시군구",)),
+)
+GROUP_SHAPE_RE = re.compile(r"([가-힣A-Za-z0-9]{1,12})\s*별")
+ENTITY_COUNT_RE = re.compile(r"([가-힣]{2,8})\s*(?:수|개수|건수)(?:는|은|를|을|가|이|만)?(?:\s|[?!.,]|$)")
+# 무엇을 세는지에 따라 세는 컬럼이 다르다.  기업 수는 고객식별자, 회원 수는 회원일련번호로만
+# 셀 수 있다(1:N이라 서로 대체하면 숫자가 달라진다).
+ENTITY_IDENTIFIER_ALIASES = (
+    (("기업", "법인", "업체", "회사", "고객", "거래처"), ("기업고객식별자", "고객식별자", "사업자등록번호", "기업명", "회사명")),
+    (("가맹점", "매장", "점포"), ("가맹점번호", "가맹점명")),
+    (("회원",), ("회원일련번호", "회원번호")),
+    (("카드",), ("카드번호", "카드일련번호")),
+)
 
 
 def _normalized(value: Any) -> str:
@@ -115,6 +145,7 @@ def _column_mentions(question: str, columns: list[str]) -> list[int]:
         (("비율", "증감률", "증가율", "율", "rate", "ratio"), ("비율", "증감", "증가율", "rate", "ratio")),
         (("건수", "명수", "회원수", "업체수", "가맹점수"), ("건수", "명수", "몇명", "회원수", "업체수", "가맹점수")),
         (("기준년월", "년월", "월", "일자", "날짜", "기간", "date"), ("년월", "월", "일자", "날짜", "기간", "date")),
+        (("시도", "지역", "권역", "시군구"), ("지역", "시도", "권역", "시군구", "광역", "소재지")),
     )
     matched: list[int] = []
     for column_aliases, question_aliases in aliases:
@@ -126,6 +157,40 @@ def _column_mentions(question: str, columns: list[str]) -> list[int]:
                 matched.append(index)
                 break
     return matched
+
+
+def _alias_candidates(token: str) -> tuple[str, ...]:
+    """붙여 쓴 말("전체지역별")에서도 뒤쪽 두 글자를 다시 본다."""
+
+    token = str(token or "").strip()
+    return (token, token[-2:]) if len(token) > 2 else (token,)
+
+
+def _resolve_columns(token: str, columns: list[str]) -> list[int]:
+    """Columns a word in the question ("지역") can name, most direct first.
+
+    한 글자 토큰은 이름 대조에서 뺀다.  "특별히"의 "특"이 아무 컬럼이나 잡으면
+    질문에 없는 기준으로 묶어 버린다.  한 글자는 별칭표를 통해서만 해석한다.
+    """
+
+    normalized = _normalized(token)
+    if not normalized:
+        return []
+    matches = [
+        index
+        for index, column in enumerate(columns)
+        if len(normalized) > 1 and normalized in _normalized(column)
+    ]
+    for question_aliases, column_aliases in DIMENSION_ALIASES:
+        if normalized not in [_normalized(alias) for alias in question_aliases]:
+            continue
+        for alias in column_aliases:
+            matches.extend(
+                index
+                for index, column in enumerate(columns)
+                if _normalized(alias) in _normalized(column) and index not in matches
+            )
+    return matches
 
 
 def _metric_index(question: str, columns: list[str], rows: list[list[Any]], *, exclude: set[int] | None = None) -> int | None:
@@ -145,25 +210,72 @@ def _dimension_index(question: str, columns: list[str], rows: list[list[Any]]) -
     numeric = set(_numeric_indices(columns, rows))
     mentions = _column_mentions(question, columns)
     for index in mentions:
-        if index not in numeric or any(token in columns[index].lower() for token in ("년월", "월", "일자", "날짜", "date", "기간")):
+        if index not in numeric or _is_time_column(columns[index]):
             return index
 
     normalized_question = _normalized(question)
-    dimension_aliases = (
-        (("년월", "월별", "월", "기간"), ("기준년월", "년월", "월", "기간", "month", "ym")),
-        (("연도", "연도별", "년별"), ("연도", "년도", "year")),
-        (("업종", "업종별"), ("업종",)),
-        (("기업", "기업별", "회사별"), ("기업명", "회사명", "기업")),
-        (("가맹점", "가맹점별", "매장별"), ("가맹점명", "매장명", "가맹점")),
-        (("일자", "날짜", "일별"), ("일자", "날짜", "date")),
-    )
-    for question_aliases, column_aliases in dimension_aliases:
+    for question_aliases, column_aliases in DIMENSION_ALIASES:
         if not any(_normalized(alias) in normalized_question for alias in question_aliases):
             continue
         for index, column in enumerate(columns):
+            # 축은 라벨이 될 수 있는 컬럼이어야 한다.  "기업" 별칭이 "기업 수"라는
+            # 지표를 잡아 x축에 올리면 막대가 한 칸으로 뭉개진다.
+            if index in numeric and not _is_time_column(column):
+                continue
             if any(_normalized(alias) in _normalized(column) for alias in column_aliases):
                 return index
     return next((index for index in range(len(columns)) if index not in numeric), None)
+
+
+def _is_time_column(column: str) -> bool:
+    normalized = _normalized(column)
+    return bool(normalized) and (
+        normalized.endswith(TIME_COLUMN_SUFFIXES) or "년월" in normalized or "일자" in normalized
+    )
+
+
+def _is_identifier_column(column: str) -> bool:
+    normalized = _normalized(column)
+    return any(token in normalized for token in IDENTIFIER_TOKENS) or normalized.endswith(("id", "no", "key"))
+
+
+def _is_additive_column(column: str) -> bool:
+    return not any(token in _normalized(column) for token in NON_ADDITIVE_TOKENS)
+
+
+def _metric_rank(column: str) -> int:
+    normalized = _normalized(column)
+    return next(
+        (rank for rank, token in enumerate(METRIC_PREFERENCE_TOKENS) if token in normalized),
+        len(METRIC_PREFERENCE_TOKENS),
+    )
+
+
+def _distinct_values(rows: list[list[Any]], index: int) -> int:
+    if index is None or index < 0:
+        return 0
+    return len({str(row[index]) for row in rows if index < len(row)})
+
+
+def _series_scale(rows: list[list[Any]], index: int) -> float:
+    values = [abs(number) for number in (_number(row[index]) for row in rows) if number]
+    return max(values) if values else 0.0
+
+
+def _non_negative(rows: list[list[Any]], indices: list[int]) -> bool:
+    return all(
+        (_number(row[index]) or 0) >= 0
+        for row in rows
+        for index in indices
+    )
+
+
+def _comparable_scale(primary: float, other: float) -> bool:
+    """True when two series can share one y axis without one of them flattening."""
+
+    if not primary or not other:
+        return True
+    return max(primary, other) / min(primary, other) <= 100
 
 
 def _korean_number(value: str, unit: str) -> float:
@@ -180,16 +292,73 @@ def _sortable(value: Any) -> tuple[int, Any]:
     return (1, str(value).lower())
 
 
+def _group_dimension(question: str, columns: list[str], rows: list[list[Any]]) -> int | None:
+    """"<무엇>별"이 가리키는 컬럼.  질문이 부르지 않은 컬럼으로는 묶지 않는다."""
+
+    numeric = set(_numeric_indices(columns, rows))
+
+    def usable(index: int | None) -> bool:
+        return index is not None and (index not in numeric or _is_time_column(columns[index]))
+
+    for token in GROUP_SHAPE_RE.findall(str(question or "")):
+        for candidate in _alias_candidates(token):
+            index = next((index for index in _resolve_columns(candidate, columns) if usable(index)), None)
+            if index is not None:
+                return index
+    if any(token in _normalized(question) for token in ("분포", "구성")):
+        return next((index for index in _column_mentions(question, columns) if usable(index)), None)
+    return None
+
+
+def _entity_count_target(question: str, columns: list[str]) -> tuple[str, int] | None:
+    """"기업 수"를 세려면 어느 컬럼의 고유값을 세야 하는지 찾는다."""
+
+    for entity in ENTITY_COUNT_RE.findall(str(question or "")):
+        for candidate in _alias_candidates(entity):
+            for entity_aliases, column_aliases in ENTITY_IDENTIFIER_ALIASES:
+                if _normalized(candidate) not in [_normalized(alias) for alias in entity_aliases]:
+                    continue
+                for alias in column_aliases:
+                    for index, column in enumerate(columns):
+                        if _normalized(alias) in _normalized(column):
+                            return candidate, index
+    return None
+
+
+def _count_distinct_by_group(
+    columns: list[str],
+    rows: list[list[Any]],
+    dimension: int,
+    entity: str,
+    target: int,
+) -> tuple[list[str], list[list[Any]], str]:
+    """그룹별로 식별자의 고유값을 센다.  한 기업이 여러 행이어도 한 번만 센다."""
+
+    seen: OrderedDict[str, set[str]] = OrderedDict()
+    display_values: dict[str, Any] = {}
+    for row in rows:
+        key = str(row[dimension])
+        display_values.setdefault(key, row[dimension])
+        seen.setdefault(key, set()).add(str(row[target]))
+    metric_name = f"{entity} 수"
+    output_rows = [[display_values[key], len(values)] for key, values in seen.items()]
+    label = f"{columns[dimension]}별 {metric_name} 집계 ({columns[target]} 고유값 기준)"
+    return [columns[dimension], metric_name], output_rows, label
+
+
 def _apply_grouping(question: str, columns: list[str], rows: list[list[Any]]) -> tuple[list[str], list[list[Any]], str] | None:
     normalized_question = _normalized(question)
-    has_group_shape = any(token in normalized_question for token in ("월별", "연도별", "년별", "업종별", "기업별", "회사별", "가맹점별", "매장별", "일별", "날짜별"))
-    has_aggregate = any(token in normalized_question for token in ("합계", "총합", "평균", "건수", "개수", "최대", "최소", "집계", "묶"))
-    if not (has_group_shape and has_aggregate):
-        return None
-    dimension = _dimension_index(question, columns, rows)
+    dimension = _group_dimension(question, columns, rows)
     if dimension is None:
         return None
-    operation = "avg" if "평균" in normalized_question else "max" if "최대" in normalized_question else "min" if "최소" in normalized_question else "count" if any(token in normalized_question for token in ("건수", "개수")) else "sum"
+    # "지역별 기업 수"는 행 수가 아니라 식별자의 고유값 수를 물어보는 질문이다.
+    counted = _entity_count_target(question, columns)
+    if counted and counted[1] != dimension:
+        return _count_distinct_by_group(columns, rows, dimension, counted[0], counted[1])
+    has_aggregate = any(token in normalized_question for token in ("합계", "총합", "평균", "건수", "개수", "최대", "최소", "집계", "묶", "분포"))
+    if not has_aggregate:
+        return None
+    operation = "avg" if "평균" in normalized_question else "max" if "최대" in normalized_question else "min" if "최소" in normalized_question else "count" if any(token in normalized_question for token in ("건수", "개수", "분포")) else "sum"
     metric = _metric_index(question, columns, rows, exclude={dimension})
     if operation != "count" and metric is None:
         return None
@@ -611,6 +780,55 @@ def plan_followup(
     }
 
 
+def _label_dimension(
+    columns: list[str],
+    rows: list[list[Any]],
+    numeric: list[int],
+    mentioned: list[int],
+    current: int | None,
+) -> int | None:
+    """Pick an x axis whose values actually differ, so each point gets its own label."""
+
+    candidates = [index for index in range(len(columns)) if index not in numeric or _is_time_column(columns[index])]
+    varying = [index for index in candidates if _distinct_values(rows, index) > 1]
+    preferred = [index for index in mentioned if index in varying]
+    if preferred:
+        return preferred[0]
+    if varying:
+        return max(varying, key=lambda index: _distinct_values(rows, index))
+    if current is not None:
+        return current
+    return candidates[0] if candidates else None
+
+
+def _merge_duplicate_labels(
+    rows: list[list[Any]],
+    dimension: int,
+    metrics: list[int],
+    columns: list[str],
+) -> tuple[list[list[Any]], str]:
+    """Collapse rows that share one x label so a label draws a single bar or point."""
+
+    if dimension < 0 or _distinct_values(rows, dimension) == len(rows):
+        return rows, ""
+    if not all(_is_additive_column(columns[index]) for index in metrics):
+        return rows, f"같은 {columns[dimension]} 값이 여러 번 나타나 합산하지 않고 그대로 표시했습니다."
+
+    merged: OrderedDict[str, list[Any]] = OrderedDict()
+    for row in rows:
+        key = str(row[dimension])
+        if key not in merged:
+            merged[key] = list(row)
+            continue
+        target = merged[key]
+        for index in metrics:
+            addition = _number(row[index])
+            base = _number(target[index])
+            if addition is not None:
+                target[index] = addition if base is None else base + addition
+    return list(merged.values()), f"같은 {columns[dimension]} 값은 합계로 묶었습니다."
+
+
 def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any], *, max_points: int = 30) -> dict[str, Any] | None:
     """Build a small dependency-free chart contract for the web client."""
 
@@ -623,41 +841,93 @@ def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any],
         return None
 
     lowered = str(question or "").lower()
-    chart_type = "pie" if any(token in lowered for token in ("원형", "파이", "pie", "구성비")) else "line" if any(token in lowered for token in ("라인", "line", "선그래프", "추이", "시계열")) else "bar"
-    time_indices = [
-        index
-        for index, column in enumerate(columns)
-        if any(token in _normalized(column) for token in ("년월", "월", "일자", "날짜", "date", "기간", "year", "month"))
-    ]
+    # 질문이 모양을 직접 말하면("막대") 그 말이 이긴다.  "추이"·"구성비"는 모양을
+    # 지정하지 않았을 때만 쓰는 힌트다. 안 그러면 "매출 추이를 막대로"가 선 차트가 된다.
+    named_type = (
+        "pie" if any(token in lowered for token in ("원형", "파이", "pie")) else
+        "bar" if any(token in lowered for token in ("막대", "bar")) else
+        "line" if any(token in lowered for token in ("라인", "line", "선그래프", "꺾은")) else ""
+    )
+    implied_type = (
+        "pie" if "구성비" in lowered else
+        "line" if any(token in lowered for token in ("추이", "시계열")) else
+        "bar"
+    )
+    chart_type = named_type or implied_type
+    notes: list[str] = []
+    time_indices = [index for index, column in enumerate(columns) if _is_time_column(column)]
+    mentioned = _column_mentions(question, columns)
+    # 막대·원형은 질문이 가리키는 축을 그대로 쓴다.  시간 컬럼을 무조건 x축으로 올리면
+    # "가맹점별 승인율"처럼 범주를 지정한 질문에서 축이 년월로 바뀌어 라벨이 겹친다.
     dimension = time_indices[0] if chart_type == "line" and time_indices else _dimension_index(question, columns, rows)
-    if chart_type != "line" and time_indices and dimension not in _column_mentions(question, columns):
-        dimension = time_indices[0]
+    if dimension is None or _distinct_values(rows, dimension) < 2:
+        dimension = _label_dimension(columns, rows, numeric, mentioned, dimension)
     if dimension is None:
         dimension = next((index for index in range(len(columns)) if index not in numeric), 0)
-    mentioned = _column_mentions(question, columns)
+
     metrics = [index for index in mentioned if index in numeric and index != dimension]
-    metrics.extend(index for index in numeric if index != dimension and index not in metrics)
-    if not metrics and dimension in numeric:
+    # 년월·번호 컬럼은 숫자여도 지표가 아니다.  같은 축에 올리면 실제 지표가 눌려 보이지 않는다.
+    extras = [
+        index
+        for index in numeric
+        if index != dimension
+        and index not in metrics
+        and not _is_time_column(columns[index])
+        and not _is_identifier_column(columns[index])
+    ]
+    metrics.extend(sorted(extras, key=lambda index: (_metric_rank(columns[index]), index)))
+    if not metrics and dimension in numeric and not _is_identifier_column(columns[dimension]):
         metrics = [dimension]
         dimension = -1
     if not metrics:
         return None
     metrics = metrics[:1] if chart_type == "pie" else metrics[:3]
+    # 축을 지배하는 계열이 첫 계열이 되도록 지표성이 강한 순서로 세운다.
+    metrics.sort(key=lambda index: (_metric_rank(columns[index]), index))
+    right_axis: list[int] = []
+    if len(metrics) > 1:
+        primary_scale = _series_scale(rows, metrics[0])
+        shared = [metrics[0]] + [index for index in metrics[1:] if _comparable_scale(primary_scale, _series_scale(rows, index))]
+        rest = [index for index in metrics if index not in shared]
+        # 크기 차이가 큰 계열이 하나면 오른쪽 축으로 살린다.  축을 셋 이상으로 늘리거나
+        # 음수가 섞여 0선이 어긋나는 경우는 눌려 보이는 계열을 제외하고 이유를 남긴다.
+        if len(shared) == 1 and len(rest) == 1 and _non_negative(rows, shared + rest):
+            right_axis = rest
+            notes.append(f"{columns[rest[0]]}은(는) 값의 크기가 달라 오른쪽 축에 표시했습니다.")
+        elif rest:
+            notes.append(f"{', '.join(columns[index] for index in rest)}은(는) 값의 크기 차이가 커서 축을 공유할 수 없어 제외했습니다.")
+        metrics = shared + right_axis
 
     valid_rows = [row for row in rows if any(_number(row[index]) is not None for index in metrics)]
-    if chart_type == "line" and dimension >= 0:
+    valid_rows, merge_note = _merge_duplicate_labels(valid_rows, dimension, metrics, columns)
+    if merge_note:
+        notes.append(merge_note)
+    if chart_type == "pie":
+        values = [_number(row[metrics[0]]) for row in valid_rows]
+        if any(value is not None and value < 0 for value in values):
+            chart_type = "bar"
+            notes.append("음수가 섞여 구성비로 나눌 수 없어 막대 차트로 표시했습니다.")
+        else:
+            valid_rows = [row for row in valid_rows if (_number(row[metrics[0]]) or 0) > 0]
+
+    time_axis = dimension >= 0 and _is_time_column(columns[dimension])
+    if dimension >= 0 and (chart_type == "line" or time_axis):
         valid_rows.sort(key=lambda row: _sortable(row[dimension]))
-    elif chart_type in {"bar", "pie"}:
+    else:
         primary = metrics[0]
         valid_rows.sort(key=lambda row: _number(row[primary]) if _number(row[primary]) is not None else float("-inf"), reverse=True)
     point_limit = min(max_points, 12 if chart_type == "pie" else 20 if chart_type == "bar" else max_points)
     truncated = len(valid_rows) > point_limit
-    valid_rows = valid_rows[:point_limit]
+    if truncated:
+        # 시간축은 값 순서로 자르면 기간이 뒤섞이므로 최근 구간을 남긴다.
+        valid_rows = valid_rows[-point_limit:] if time_axis else valid_rows[:point_limit]
+        notes.append("최근 구간만 표시했습니다." if time_axis else "값이 큰 항목부터 일부만 표시했습니다.")
     labels = [str(row[dimension]) if dimension >= 0 else str(index + 1) for index, row in enumerate(valid_rows)]
     datasets = [
         {
             "label": columns[index],
             "data": [_number(row[index]) for row in valid_rows],
+            **({"axis": "right"} if index in right_axis else {}),
         }
         for index in metrics
     ]
@@ -667,7 +937,7 @@ def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any],
     chart_name = {"bar": "막대", "line": "선", "pie": "원형"}[chart_type]
     return {
         "type": chart_type,
-        "title": f"{dimension_name}별 {datasets[0]['label']} {chart_name} 차트",
+        "title": f"{dimension_name}별 {', '.join(dataset['label'] for dataset in datasets)} {chart_name} 차트",
         "x_label": dimension_name,
         "y_label": datasets[0]["label"],
         "labels": labels,
@@ -675,5 +945,5 @@ def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any],
         "source": "existing_result",
         "point_count": len(labels),
         "truncated": truncated,
-        "note": f"직전 결과 중 {len(labels):,}개 항목을 표시합니다." + (" 값이 큰 항목부터 일부만 표시했습니다." if truncated else ""),
+        "note": " ".join([f"직전 결과 중 {len(labels):,}개 항목을 표시합니다."] + notes),
     }

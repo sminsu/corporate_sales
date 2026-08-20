@@ -102,6 +102,131 @@ def test_chart_contract_uses_time_as_x_axis_and_numeric_metric_as_series() -> No
     assert chart["datasets"] == [{"label": "매출금액", "data": [100_000_000.0, 300_000_000.0, 200_000_000.0]}]
 
 
+MEMBER_LIST_COLUMNS = ["기업고객식별자", "가맹점명", "사업자등록번호", "한글시도명", "월매출액", "유효기업신용카드수"]
+MEMBER_LIST_ROWS = [
+    ("C001", "강남상사", "1010112345", "서울특별시", 152_000_000, 0),
+    ("C002", "서초물산", "1010167890", "서울특별시", 210_000_000, 0),
+    ("C003", "부산유통", "6010112345", "부산광역시", 130_000_000, 0),
+    ("C004", "수원기업", "1350112345", "경기도", 175_000_000, 0),
+    ("C004", "수원기업 2호점", "1350112345", "경기도", 90_000_000, 0),
+]
+
+
+def test_region_distribution_counts_companies_instead_of_charting_the_raw_list() -> None:
+    question = "대상 기업들의 지역별 분포 현황과 지역별 기업 수를 알려줘"
+    planned = plan_followup(question, MEMBER_LIST_COLUMNS, MEMBER_LIST_ROWS)
+
+    assert planned["mode"] == "transform_visualization"
+    transform = planned["transform"]
+    assert transform["columns"] == ["한글시도명", "기업 수"]
+    # 한 기업이 두 가맹점으로 나뉘어 있어도 기업은 하나로 센다.
+    assert transform["rows"] == [["서울특별시", 2], ["부산광역시", 1], ["경기도", 1]]
+    assert transform["operations"] == ["한글시도명별 기업 수 집계 (기업고객식별자 고유값 기준)"]
+
+    chart = build_chart_spec(question, transform["columns"], transform["rows"])
+    assert chart["x_label"] == "한글시도명"
+    assert chart["y_label"] == "기업 수"
+    assert chart["labels"] == ["서울특별시", "부산광역시", "경기도"]
+    assert chart["datasets"] == [{"label": "기업 수", "data": [2.0, 1.0, 1.0]}]
+
+
+def test_counting_an_entity_the_result_cannot_identify_goes_back_to_sql() -> None:
+    # 회원 수는 회원일련번호로만 셀 수 있다. 결과에 없으면 기업 수로 대신 세지 않는다.
+    planned = plan_followup("지역별 회원 수 알려줘", MEMBER_LIST_COLUMNS, MEMBER_LIST_ROWS)
+    assert planned["transform"]["applied"] is False
+    assert planned["requires_sql"] is True
+
+
+def test_a_partial_result_is_not_counted_locally() -> None:
+    planned = plan_followup(
+        "지역별 기업 수를 차트로 보여줘",
+        MEMBER_LIST_COLUMNS,
+        MEMBER_LIST_ROWS,
+        result_scope={"is_complete": False},
+    )
+
+    assert planned["mode"] == "rewrite_sql_visualization"
+    assert planned["route_reason"] == "incomplete_result_requires_sql"
+
+
+def test_chart_axis_skips_a_constant_column_and_keeps_time_order() -> None:
+    single_month = [
+        ("202506", "음식점", 900),
+        ("202506", "주유소", 700),
+        ("202506", "병원", 500),
+    ]
+    by_industry = build_chart_spec("위 결과를 막대그래프로 보여줘", ["기준년월", "업종", "매출금액"], single_month)
+    assert by_industry["x_label"] == "업종"
+    assert by_industry["labels"] == ["음식점", "주유소", "병원"]
+
+    monthly = [("202501", 100), ("202502", 300), ("202503", 200), ("202504", 250)]
+    over_time = build_chart_spec("월별 매출 막대그래프로 그려줘", ["기준년월", "매출금액"], monthly)
+    assert over_time["labels"] == ["202501", "202502", "202503", "202504"]
+
+    long_history = [(f"{year}{month:02d}", month) for year in (2024, 2025, 2026) for month in range(1, 13)]
+    truncated = build_chart_spec("월별 매출 추이 라인차트", ["기준년월", "매출금액"], long_history)
+    assert truncated["labels"][-1] == "202612"
+    assert "최근 구간만 표시했습니다." in truncated["note"]
+
+
+def test_chart_series_exclude_identifier_and_time_columns() -> None:
+    chart = build_chart_spec(
+        "차트로 보여줘",
+        ["가맹점명", "가맹점번호", "기준년월", "매출금액"],
+        [("강남점", 10023456, "202501", 900), ("서초점", 10023457, "202502", 700)],
+    )
+
+    assert [dataset["label"] for dataset in chart["datasets"]] == ["매출금액"]
+
+
+def test_chart_moves_a_mismatched_series_to_the_right_axis_or_drops_it() -> None:
+    two_series = build_chart_spec(
+        "업종별 매출과 가맹점수 막대그래프",
+        ["업종", "매출금액", "가맹점수"],
+        [("음식점", 900_000_000, 120), ("주유소", 700_000_000, 80)],
+    )
+    assert [(dataset["label"], dataset.get("axis")) for dataset in two_series["datasets"]] == [
+        ("매출금액", None),
+        ("가맹점수", "right"),
+    ]
+    assert "오른쪽 축" in two_series["note"]
+
+    three_series = build_chart_spec(
+        "업종별 매출 건수 가맹점수 막대그래프",
+        ["업종", "매출금액", "거래건수", "가맹점수"],
+        [("음식점", 900_000_000, 3200, 120), ("주유소", 700_000_000, 2800, 80)],
+    )
+    assert [dataset["label"] for dataset in three_series["datasets"]] == ["매출금액"]
+    assert "축을 공유할 수 없어 제외했습니다" in three_series["note"]
+
+
+def test_chart_merges_duplicate_labels_only_when_the_metric_is_additive() -> None:
+    columns = ["기준년월", "가맹점명", "매출금액"]
+    rows = [("202501", "강남점", 100), ("202502", "강남점", 120), ("202501", "서초점", 90)]
+    merged = build_chart_spec("가맹점별 매출 막대그래프", columns, rows)
+    assert merged["labels"] == ["강남점", "서초점"]
+    assert merged["datasets"][0]["data"] == [220.0, 90.0]
+    assert "합계로 묶었습니다" in merged["note"]
+
+    ratio_columns = ["기준년월", "가맹점명", "승인율"]
+    ratio_rows = [("202501", "강남점", 96.0), ("202502", "강남점", 97.0), ("202501", "서초점", 90.0)]
+    kept = build_chart_spec("가맹점별 승인율 막대그래프", ratio_columns, ratio_rows)
+    assert kept["labels"] == ["강남점", "강남점", "서초점"]
+    assert kept["datasets"][0]["data"] == [97.0, 96.0, 90.0]
+    assert "합산하지 않고" in kept["note"]
+
+
+def test_chart_type_follows_the_named_shape_and_pie_rejects_negatives() -> None:
+    columns = ["기준년월", "매출금액"]
+    rows = [("202501", 100), ("202502", 300)]
+    assert build_chart_spec("매출 추이를 막대그래프로 보여줘", columns, rows)["type"] == "bar"
+    assert build_chart_spec("추이 그래프로 보여줘", columns, rows)["type"] == "line"
+
+    negative = build_chart_spec("파이차트로 보여줘", ["업종", "증감액"], [("음식점", 900), ("주유소", -300)])
+    assert negative["type"] == "bar"
+    assert "음수가 섞여" in negative["note"]
+
+
 def test_followup_stream_runs_local_transform_without_graph_or_llm() -> None:
     base_result = {
         "question": "월별 가맹점 매출을 보여줘",
@@ -222,6 +347,10 @@ def test_frontend_contains_dependency_free_chart_renderer() -> None:
     assert "function renderChart(chart)" in source
     assert "function drawChart(chart)" in source
     assert "renderChart(data.chart);" in source
+    assert 'const rightDatasets = datasets.filter((dataset) => dataset.axis === "right");' in source
+    assert "const rotateLabels =" in source
+    assert 'const zeroBased = chart.type !== "line";' in source
+    assert "const niceStep = (span) =>" in source
 
 
 def test_frontend_history_keeps_the_original_question() -> None:
