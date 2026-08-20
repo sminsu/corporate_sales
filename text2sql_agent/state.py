@@ -37,6 +37,10 @@ class Text2SQLState(TypedDict):
     missing_params: list
     param_stage: str
     user_provided_params: dict
+    # --- 되묻기(clarification) ---
+    # 사용자가 선택지 중 하나를 고른 결과를 프롬프트에 그대로 전달하기 위한
+    # 확정 해석 문장들. 값 자체는 user_provided_params/selected_domain에 반영된다.
+    clarification_directives: list
     # --- Verified Query ---
     matched_query_name: str
     matched_query_sql: str

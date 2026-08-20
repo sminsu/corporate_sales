@@ -30,6 +30,7 @@ if str(BASE_DIR) not in sys.path:
 
 import text2sql_agent as agent  # noqa: E402
 import webapp_compatible_api as webapp_api  # noqa: E402
+from text2sql_agent import clarify  # noqa: E402
 from text2sql_agent import config as agent_config  # noqa: E402
 from text2sql_agent.followup_ops import build_chart_spec, plan_followup  # noqa: E402
 from text2sql_agent.managed_scope import (  # noqa: E402
@@ -119,6 +120,7 @@ NODE_LABELS = {
     "prepare_direct_sql": ("sql_generation", "입력 SQL 준비", "사용자가 입력한 SQL을 읽기 전용 검증 경로로 준비했습니다."),
     "route_domain": ("domain_routing", "도메인 라우팅", "질문에 맞는 업무 도메인을 선택했습니다."),
     "select_tool": ("capability_selection", "Capability 선택", "사용 가능한 Tool과 검증 쿼리 경로를 판단했습니다."),
+    "check_domain_choice": ("domain_routing", "도메인 확인", "라우팅 후보가 비슷할 때 어느 업무 영역으로 조회할지 확인했습니다."),
     "check_tool_params": ("parameter_check", "파라미터 확인", "Tool 실행에 필요한 입력값을 확인했습니다."),
     "execute_tool": ("tool_execution", "Tool 실행", "선택된 Tool을 실행했습니다."),
     "run_tool_query": ("sql_execution", "SQL 실행", "Tool 기반 SQL 조회를 실행했습니다."),
@@ -919,6 +921,7 @@ def _build_continuation(result: dict[str, Any]) -> dict[str, Any]:
         "table_details": result.get("table_details", ""),
         "user_provided_params": result.get("user_provided_params", {}),
         "missing_params": result.get("missing_params", []),
+        "clarification_directives": result.get("clarification_directives", []),
     }
 
 
@@ -1172,13 +1175,23 @@ def _coerce_natural_params(params: dict[str, Any], continuation: dict[str, Any])
     if not natural_input:
         return params
     missing_params = continuation.get("missing_params") or []
+    explicit = {key: value for key, value in params.items() if not key.startswith("_")}
+    # A reply that picks one of the offered options is bound exactly as
+    # offered. Only genuinely free-form answers reach the rule and model
+    # parsers, which is what keeps a small model out of the easy path.
+    chosen = clarify.bind_option_answers(missing_params, natural_input)
+    still_open = [
+        item
+        for item in missing_params
+        if _param_name(item) and _param_name(item) not in chosen
+    ]
     parsed = _natural_params_by_rule(
         natural_input,
-        missing_params,
+        still_open,
         continuation.get("selected_tables") or [],
     )
-    explicit = {key: value for key, value in params.items() if not key.startswith("_")}
     explicit.update(parsed)
+    explicit.update(chosen)
     if re.search(r"현재|현시점|오늘|전일|어제|최신|지금", natural_input):
         explicit["_cadence_hint"] = "current"
     unresolved = [
@@ -1232,6 +1245,10 @@ def _state_from_request(
     state["domain_context"] = continuation.get("domain_context", "")
     state["selected_capability_type"] = continuation.get("selected_capability_type", "")
     state["selected_capability_name"] = continuation.get("selected_capability_name", "")
+    state["clarification_directives"] = list(continuation.get("clarification_directives") or [])
+    # A routing answer belongs on the state, not in the parameter bag: the
+    # resumed run must re-enter with the user's decision already made.
+    params = clarify.apply_answers(state, continuation.get("missing_params") or [], params)
     selected_tool = continuation.get("selected_tool", "")
     matched_query_name = continuation.get("matched_query_name", "")
     if selected_tool:
@@ -1488,12 +1505,29 @@ def _param_instruction_line(item: Any) -> str:
     name = str(item.get("name") or item.get("label") or "").strip()
     label = str(item.get("label") or name or "필수 값").strip()
     description = str(item.get("description") or "").strip()
+    options = clarify.options_of(item)
+    if options:
+        # An answerable question with its own options does not need a generic
+        # "name=value" example; the options are the example.
+        reason = str(item.get("reason") or "").strip()
+        lines = [f"- {label}"]
+        if reason and reason != description:
+            lines.append(f"  ({reason})")
+        for index, option in enumerate(options, start=1):
+            hint = str(option.get("hint") or "").strip()
+            suffix = f" — {hint}" if hint else ""
+            lines.append(f"  {index}) {option.get('label')} = {option.get('value')}{suffix}")
+        if item.get("allow_free_text"):
+            hint = str(item.get("free_text_hint") or "").strip()
+            lines.append(f"  {len(options) + 1}) 직접 입력{f' ({hint})' if hint else ''}")
+        return "\n".join(lines)
     example = _param_example_value(name) if name else ""
     title = label
     if name and name != label and name not in label:
         title += f" ({name})"
     detail = f": {description}" if description else ""
-    example_text = f" (예: {example})" if example else ""
+    hint = str(item.get("free_text_hint") or "").strip()
+    example_text = f" ({hint})" if hint else (f" (예: {example})" if example else "")
     return f"- {title}{detail}{example_text}"
 
 
@@ -1513,10 +1547,19 @@ def _requires_params_answer(result: dict[str, Any]) -> str:
             "\n\n관리기업목록은 사업자등록번호를 쉼표 또는 줄바꿈으로 구분해 입력해 주세요. "
             "하이픈은 있어도 됩니다."
         )
+    all_have_options = all(clarify.options_of(item) for item in missing)
+    body = "\n".join(_param_instruction_line(item) for item in missing)
+    if all_have_options:
+        return (
+            "진행 방향을 확인하고 싶어요.\n\n"
+            + body
+            + "\n\n보기 번호나 값을 그대로 답해 주시면 같은 질문을 이어서 실행합니다."
+            + managed_scope_help
+        )
     return (
         "추가 입력이 필요해요.\n\n"
         "필요한 값:\n"
-        + "\n".join(_param_instruction_line(item) for item in missing)
+        + body
         + "\n\n"
         f"예: `{example}`\n"
         "진행 영역의 입력값을 확인하거나 수정한 뒤 `계속`을 누르면 같은 질문을 이어서 실행합니다."
@@ -1828,6 +1871,7 @@ _NEXT_PROGRESS_STEP = {
     "prepare_direct_sql": "validate_sql",
     "route_domain": "select_tool",
     "select_tool": "match_verified_query",
+    "check_domain_choice": "analyze_question",
     "check_tool_params": "execute_tool",
     "execute_tool": "run_tool_query",
     "extract_and_apply_params": "run_matched_query",

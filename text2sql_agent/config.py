@@ -140,6 +140,22 @@ VERIFIED_QUERY_MIN_LEXICAL_SCORE = int(os.getenv("VERIFIED_QUERY_MIN_LEXICAL_SCO
 VERIFIED_QUERY_RULE_MATCH_THRESHOLD = int(os.getenv("VERIFIED_QUERY_RULE_MATCH_THRESHOLD", "5"))
 VERIFIED_QUERY_RULE_MATCH_MARGIN = int(os.getenv("VERIFIED_QUERY_RULE_MATCH_MARGIN", "2"))
 # ---------------------------------------------------------------------------
+# Interactive clarification
+# ---------------------------------------------------------------------------
+# 에이전트가 애매한 지점에서 임의로 고르지 않고 사용자에게 선택지를 제시할지 여부.
+# 선택지는 semantic layer/업무 달력/라우팅 점수에서 결정론적으로 만들기 때문에
+# 작은 사내 모델이어도 추가 LLM 호출 없이 동작한다.
+ENABLE_INTERACTIVE_CLARIFICATION = _env_bool("ENABLE_INTERACTIVE_CLARIFICATION", True)
+# 도메인 라우팅이 애매할 때 되묻기. 질문 한 턴이 늘어나므로 점수가 약하고
+# 1·2위가 붙어 있을 때만 발동한다.
+ENABLE_DOMAIN_CLARIFICATION = _env_bool("ENABLE_DOMAIN_CLARIFICATION", True)
+# 1위 점수가 이 값 이상이면 확신으로 보고 되묻지 않는다.
+CLARIFY_DOMAIN_MIN_SCORE = float(os.getenv("CLARIFY_DOMAIN_MIN_SCORE", "5.0"))
+# 1·2위 점수 차가 1위의 이 비율 이내면 사실상 동점으로 본다.
+CLARIFY_DOMAIN_MARGIN_RATIO = float(os.getenv("CLARIFY_DOMAIN_MARGIN_RATIO", "0.12"))
+# 한 번에 던지는 질문 수 상한. 사용자가 한 번에 답할 수 있는 만큼만 묻는다.
+CLARIFY_MAX_QUESTIONS = int(os.getenv("CLARIFY_MAX_QUESTIONS", "3"))
+# ---------------------------------------------------------------------------
 # Web follow-up suggestion generation
 # ---------------------------------------------------------------------------
 # static: 기존 규칙 기반 추천만 사용

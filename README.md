@@ -537,6 +537,36 @@ VERIFIED_QUERY_RULE_MATCH_THRESHOLD=5
 VERIFIED_QUERY_RULE_MATCH_MARGIN=2
 ```
 
+### 되묻기(clarification)
+
+애매한 지점에서 임의로 하나를 고르는 대신, 에이전트가 실행을 멈추고 선택지와 함께 되묻습니다.
+선택지는 업무 달력, semantic layer의 value semantics, 방금 계산한 라우팅 점수에서 결정론적으로
+만들기 때문에 작은 사내 모델이어도 선택지 생성에 LLM을 쓰지 않습니다. 사용자가 보기 중 하나를
+고르면 그 답을 그대로 바인딩하므로 재개 경로에서도 LLM 호출이 없습니다. 자유 입력만 기존 규칙
+파서와 LLM 파서로 넘어갑니다.
+
+```bash
+# 되묻기 전체 on/off. 끄면 이전처럼 파라미터 이름과 빈 입력칸만 내려갑니다.
+ENABLE_INTERACTIVE_CLARIFICATION=true
+
+# 도메인 라우팅이 애매할 때 되묻기. 질문 한 턴이 늘어나므로
+# 1위 점수가 약하고(CLARIFY_DOMAIN_MIN_SCORE 미만) 1·2위가 붙어 있을 때만 발동합니다.
+ENABLE_DOMAIN_CLARIFICATION=true
+CLARIFY_DOMAIN_MIN_SCORE=5.0
+CLARIFY_DOMAIN_MARGIN_RATIO=0.12
+
+# 한 번에 던지는 질문 수 상한
+CLARIFY_MAX_QUESTIONS=3
+```
+
+되묻기 지점은 다음 세 곳입니다.
+
+| 지점 | 그래프 노드 | 질문 | 선택지 출처 |
+|---|---|---|---|
+| 도메인 라우팅 | `check_domain_choice` | 어느 업무 영역 데이터로 조회할지 | `domain_candidates` 상위 후보 (에이전트의 잠정 선택이 첫 번째) |
+| verified query / tool 파라미터 | `extract_and_apply_params`, `check_tool_params` | 기준년월·기간 등 필수 값의 기준 | 업무 달력(전월/이번 달/작년 동월 등) |
+| SQL 생성 직전 | `check_sql_gen_params` | 중복 코드 라벨의 분류축, 조회 대상명 | semantic attribute의 `value_semantics` |
+
 ## 처리 흐름
 
 1. 사용자가 웹 UI에서 질문을 입력합니다.

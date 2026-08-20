@@ -10,6 +10,7 @@ from typing import Literal
 import sqlparse
 from langgraph.graph import END, StateGraph
 
+from . import clarify
 from .config import (
     DB_BACKEND,
     DB_SCHEMA_PREFIX,
@@ -24,6 +25,11 @@ from .config import (
     VERIFIED_QUERY_RULE_MATCH_MARGIN,
     VERIFIED_QUERY_RULE_MATCH_THRESHOLD,
     MAX_QUERY_ROW_LIMIT,
+    CLARIFY_DOMAIN_MARGIN_RATIO,
+    CLARIFY_DOMAIN_MIN_SCORE,
+    CLARIFY_MAX_QUESTIONS,
+    ENABLE_DOMAIN_CLARIFICATION,
+    ENABLE_INTERACTIVE_CLARIFICATION,
 )
 from .db import count_result_rows, execute_sql, loaded_period_range, prepare_sql_for_backend
 from .exports import _get_source_label
@@ -323,10 +329,21 @@ _AMBIGUOUS_TARGET_PATTERNS = [
 ]
 
 
+def _as_clarifications(params: list[dict]) -> list[dict]:
+    """Attach a question and concrete options to each pending parameter.
+
+    With clarification turned off the legacy bare-field shape is returned
+    untouched, so the flag is a true kill switch rather than a style toggle.
+    """
+    if not ENABLE_INTERACTIVE_CLARIFICATION:
+        return params
+    return clarify.upgrade_params(params)
+
+
 def _missing_ambiguous_target_params(question: str) -> list[dict]:
     missing = []
     if any(re.search(pattern, question) for pattern in _AMBIGUOUS_TARGET_PATTERNS):
-        missing.append({"name": "대상명", "label": "조회 대상명(기업명/가맹점명/고객명)"})
+        missing.append(clarify.target_name_clarification().to_param())
 
     labels: dict[str, list[dict]] = {}
     all_value_terms = set()
@@ -389,15 +406,8 @@ def _missing_ambiguous_target_params(question: str) -> list[dict]:
             for attribute in unique_attributes
         ):
             continue
-        options = [
-            str(attribute.get("korean_name") or attribute.get("name") or "")
-            for attribute in unique_attributes
-        ]
         missing.append(
-            {
-                "name": f"{raw_label}분류축",
-                "label": f"'{raw_label}' 분류 기준({' / '.join(options)})",
-            }
+            clarify.classification_axis_clarification(raw_label, unique_attributes).to_param()
         )
     return missing
 
@@ -650,7 +660,9 @@ def route_domain(state: Text2SQLState) -> dict:
             "selected_domain": state["selected_domain"],
             "domain_candidates": state.get("domain_candidates", []),
             "domain_routing_trace": state.get("domain_routing_trace", ""),
-            "domain_context": state.get("domain_context", ""),
+            # A domain the user just switched to arrives without its context.
+            "domain_context": state.get("domain_context")
+            or build_domain_context(SCHEMA, state["selected_domain"]),
         }
 
     question = state["question"]
@@ -715,6 +727,34 @@ def route_domain(state: Text2SQLState) -> dict:
         "domain_routing_trace": "\n".join(trace_lines),
         "domain_context": domain_context,
     }
+
+
+def check_domain_choice(state: Text2SQLState) -> dict:
+    """Ask which business domain to use when the routing scores stay tied.
+
+    Routing is the decision that silently changes every downstream table, so a
+    weak, near-tied score is worth one question instead of a coin flip. A
+    domain the user already picked is never re-asked.
+    """
+    if not (ENABLE_INTERACTIVE_CLARIFICATION and ENABLE_DOMAIN_CLARIFICATION):
+        return {"missing_params": [], "param_stage": "done"}
+    if "user_selected_domain=" in str(state.get("domain_routing_trace") or ""):
+        return {"missing_params": [], "param_stage": "done"}
+    candidates = state.get("domain_candidates") or []
+    if not clarify.needs_domain_clarification(
+        candidates,
+        margin_ratio=CLARIFY_DOMAIN_MARGIN_RATIO,
+        min_score=CLARIFY_DOMAIN_MIN_SCORE,
+    ):
+        return {"missing_params": [], "param_stage": "done"}
+    # The tentative pick leads the options so the question reads as a
+    # confirmation of the agent's own reasoning, not a blank choice.
+    selected = str(state.get("selected_domain") or "")
+    ordered = sorted(candidates, key=lambda item: str(item.get("domain") or "") != selected)
+    question = clarify.domain_clarification(ordered)
+    if question is None:
+        return {"missing_params": [], "param_stage": "done"}
+    return {"missing_params": [question.to_param()], "param_stage": "need_params"}
 
 
 def _extract_ym_from_question(question: str) -> str:
@@ -3379,15 +3419,17 @@ def check_tool_params(state: Text2SQLState) -> dict:
     missing = [p for p in required if params.get(p["name"]) in (None, "")]
     if missing:
         return {
-            "missing_params": [
-                {
-                    "name": p["name"],
-                    "label": p["name"],
-                    "description": p.get("description", ""),
-                    "type": p.get("type", "string"),
-                }
-                for p in missing
-            ],
+            "missing_params": _as_clarifications(
+                [
+                    {
+                        "name": p["name"],
+                        "label": p["name"],
+                        "description": p.get("description", ""),
+                        "type": p.get("type", "string"),
+                    }
+                    for p in missing
+                ]
+            ),
             "param_stage": "need_params",
         }
     return {"missing_params": [], "param_stage": "done"}
@@ -4072,7 +4114,7 @@ def _missing_vq_required_params(vq_params_def: dict, params: dict) -> list[dict]
                 "type": info.get("type", "string"),
             }
         )
-    return missing
+    return _as_clarifications(missing)
 
 
 def extract_and_apply_params(state: Text2SQLState) -> dict:
@@ -5274,7 +5316,9 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
 
     if needed:
         return {
-            "missing_params": needed,
+            # More open questions than a user can answer in one reply just
+            # stalls the run; the rest are asked on the next pause.
+            "missing_params": needed[: max(CLARIFY_MAX_QUESTIONS, 1)],
             "param_stage": "need_params",
         }
     return {"missing_params": [], "param_stage": "done"}
@@ -5421,6 +5465,7 @@ def generate_sql(state: Text2SQLState) -> dict:
     if user_params:
         params_text = "\n".join(f"- {k}: {v}" for k, v in user_params.items())
         user_params_context = f"\n## 사용자가 제공한 추가 정보\n{params_text}\n위 값을 SQL의 WHERE 조건이나 파라미터에 반영하세요.\n"
+    user_params_context += clarify.directives_prompt(state.get("clarification_directives"))
 
     prompt = f"""당신은 KB카드 기업영업 데이터베이스의 SQL 전문가입니다.
 사용자의 자연어 질문을 {_sql_dialect_name()} SQL로 변환하세요.
@@ -6342,13 +6387,21 @@ def route_by_question_type(
     return "refine_search_query"
 
 
-def after_tool_selection(state: Text2SQLState) -> Literal["check_tool_params", "extract_and_apply_params", "analyze_question", "__end__"]:
+def after_tool_selection(state: Text2SQLState) -> Literal["check_tool_params", "extract_and_apply_params", "check_domain_choice", "__end__"]:
     if state.get("answer"):
         return "__end__"
     if state.get("selected_tool"):
         return "check_tool_params"
     if state.get("matched_query_name"):
         return "extract_and_apply_params"
+    # Only free SQL generation depends on the routed domain, so that is the
+    # only path where a tied route is worth a question.
+    return "check_domain_choice"
+
+
+def after_domain_choice(state: Text2SQLState) -> Literal["analyze_question", "__end__"]:
+    if state.get("param_stage") == "need_params":
+        return "__end__"
     return "analyze_question"
 
 
@@ -6414,6 +6467,7 @@ def build_graph() -> StateGraph:
     graph.add_node("refine_search_query", refine_search_query)
     graph.add_node("prepare_direct_sql", prepare_direct_sql)
     graph.add_node("route_domain", route_domain)
+    graph.add_node("check_domain_choice", check_domain_choice)
     graph.add_node("select_tool", select_tool)
     graph.add_node("check_tool_params", check_tool_params)
     graph.add_node("execute_tool", execute_tool)
@@ -6441,6 +6495,7 @@ def build_graph() -> StateGraph:
     graph.add_edge("reject_answer", END)
     graph.add_edge("policy_refusal", END)
 
+    graph.add_conditional_edges("check_domain_choice", after_domain_choice)
     graph.add_conditional_edges("select_tool", after_tool_selection)
     graph.add_conditional_edges("check_tool_params", after_check_params)
     graph.add_conditional_edges("execute_tool", after_execute_tool)
@@ -6475,6 +6530,7 @@ def _new_initial_state(question: str) -> Text2SQLState:
         "selected_tool": "", "tool_params": {}, "tool_completed": False, "skip_tool_selection": False,
         "selected_capability_type": "", "selected_capability_name": "",
         "missing_params": [], "param_stage": "", "user_provided_params": {},
+        "clarification_directives": [],
         "matched_query_name": "", "matched_query_sql": "", "matched_query_params": {}, "extracted_params": {},
         "skip_verified_query_matching": False,
         "selected_tables": [], "table_details": "",
@@ -6495,6 +6551,35 @@ def _get_app():
         _COMPILED_APP = build_graph()
     return _COMPILED_APP
 
+def _prompt_for_clarification(param: dict) -> dict:
+    """Ask one clarification on the terminal, numbering its options."""
+    question_text = str(param.get("question") or param.get("label") or param.get("name") or "")
+    reason = str(param.get("reason") or "")
+    options = clarify.options_of(param)
+    print()
+    print(f"  ? {question_text}")
+    if reason:
+        print(f"    이유: {reason}")
+    for index, option in enumerate(options, start=1):
+        hint = str(option.get("hint") or "")
+        suffix = f"  ({hint})" if hint else ""
+        print(f"    {index}) {option.get('label')} = {option.get('value')}{suffix}")
+    if options and param.get("allow_free_text"):
+        print(f"    {len(options) + 1}) {param.get('free_text_label') or '직접 입력'}")
+    hint = str(param.get("free_text_hint") or "")
+    raw = input(f"  -> 번호 또는 값 입력{f' [{hint}]' if hint else ''}: ").strip()
+    if not raw:
+        return {}
+    resolved = clarify.resolve_answer(param, raw)
+    if resolved:
+        return {str(param.get("name")): resolved}
+    if options and raw == str(len(options) + 1):
+        raw = input("  -> 값 직접 입력: ").strip()
+        if not raw:
+            return {}
+    return {str(param.get("name")): raw}
+
+
 def run_agent_with_prompts(question: str) -> dict:
     """모든 질문에 대해 그래프를 실행하고, 파라미터 누락 시 사용자에게 입력 요청 루프를 수행합니다."""
     app = _get_app()
@@ -6503,10 +6588,6 @@ def run_agent_with_prompts(question: str) -> dict:
 
     while result.get("param_stage") == "need_params":
         missing = result.get("missing_params", [])
-        missing_names = ", ".join(p["label"] for p in missing)
-        print(f"\n  다음 파라미터가 필요합니다: {missing_names}")
-        print("  추가로 입력해주세요!")
-        print()
 
         current_params = {}
         tool_name = result.get("selected_tool", "")
@@ -6520,10 +6601,10 @@ def run_agent_with_prompts(question: str) -> dict:
         else:
             current_params = dict(result.get("user_provided_params", {}))
 
+        answers: dict = {}
         for p in missing:
-            raw = input(f"  -> {p['label']}: ").strip()
-            if raw:
-                current_params[p["name"]] = raw
+            answers.update(_prompt_for_clarification(p))
+        current_params.update(answers)
 
         state = _new_initial_state(question)
         state["question_type"] = "need_sql"
@@ -6531,6 +6612,8 @@ def run_agent_with_prompts(question: str) -> dict:
         state["domain_candidates"] = result.get("domain_candidates", [])
         state["domain_routing_trace"] = result.get("domain_routing_trace", "")
         state["domain_context"] = result.get("domain_context", "")
+        state["clarification_directives"] = list(result.get("clarification_directives") or [])
+        current_params = clarify.apply_answers(state, missing, current_params)
 
         if tool_name:
             state["selected_tool"] = tool_name
@@ -6541,15 +6624,21 @@ def run_agent_with_prompts(question: str) -> dict:
             still_missing = [p for p in required if not current_params.get(p["name"])]
             if still_missing:
                 result["tool_params"] = current_params
-                result["missing_params"] = [
-                    {
-                        "name": p["name"],
-                        "label": p["name"],
-                        "description": p.get("description", ""),
-                        "type": p.get("type", "string"),
-                    }
-                    for p in still_missing
-                ]
+                result["missing_params"] = _as_clarifications(
+                    [
+                        {
+                            "name": p["name"],
+                            "label": p["name"],
+                            "description": p.get("description", ""),
+                            "type": p.get("type", "string"),
+                        }
+                        for p in still_missing
+                    ]
+                )
+                # Answers already applied to the state must survive the retry.
+                result["selected_domain"] = state["selected_domain"]
+                result["domain_routing_trace"] = state["domain_routing_trace"]
+                result["clarification_directives"] = state["clarification_directives"]
                 continue
         elif matched_query_name:
             state["matched_query_name"] = matched_query_name

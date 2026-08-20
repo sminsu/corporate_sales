@@ -1284,9 +1284,11 @@ function progressContextLines(progress) {
     lines.push(`선택 테이블: ${selectedTables.join(", ")}`);
   }
 
-  if (["check_tool_params", "check_sql_gen_params"].includes(step)) {
-    const labels = missingParams.map((param) => param?.label || param?.name || String(param)).filter(Boolean);
-    lines.push(labels.length ? `추가로 필요한 조건: ${labels.join(", ")}` : "필수 조회 조건 확인 완료");
+  if (["check_tool_params", "check_sql_gen_params", "check_domain_choice"].includes(step)) {
+    // The progress trace wants the short name; the full question is rendered
+    // by the clarification form itself.
+    const labels = missingParams.map((param) => param?.name || param?.label || String(param)).filter(Boolean);
+    lines.push(labels.length ? `사용자에게 확인 중: ${labels.join(", ")}` : "필수 조회 조건 확인 완료");
   }
 
   if (step === "generate_sql") {
@@ -2206,11 +2208,14 @@ function renderMissingParams(data) {
 }
 
 function applyPendingParamPrompt(params = []) {
-  const labels = (params || []).map((param) => param.label || param.name).filter(Boolean).join(", ");
+  const labels = (params || []).map((param) => param.name || param.label).filter(Boolean).join(", ");
   const hasManagedScope = (params || []).some(isManagedScopeParam);
+  const firstChoice = (params || []).find((param) => paramOptions(param).length);
   queryPanel.classList.add("awaiting-param");
   questionInput.placeholder = hasManagedScope
     ? "사업자등록번호를 줄바꿈이나 쉼표로 입력하세요."
+    : firstChoice
+    ? `보기 번호나 값을 그대로 답해도 됩니다. 예: ${paramOptions(firstChoice)[0].label}`
     : labels
     ? `${labels} 값을 채팅하듯 입력하세요. 예: ${currentYmKorean()}로 해줘`
     : "필요한 추가 정보를 채팅하듯 입력하세요.";
@@ -2247,20 +2252,59 @@ function hideInlineParamForm() {
   inlineParamFields.innerHTML = "";
 }
 
+function paramOptions(param = {}) {
+  return Array.isArray(param.options) ? param.options.filter((option) => option && option.value !== undefined) : [];
+}
+
+function renderClarifyOptions(param, options, id) {
+  // The first option is the agent's own recommendation, so it starts selected
+  // and a single click on "계속" accepts the reasoning as-is.
+  const chips = options
+    .map((option, index) => {
+      const hint = option.hint ? `<small>${escapeHtml(option.hint)}</small>` : "";
+      return `<button type="button" class="clarify-option${index === 0 ? " selected" : ""}" data-target="${id}" data-value="${escapeHtml(option.value)}" aria-pressed="${index === 0}">${escapeHtml(option.label || option.value)}${hint}</button>`;
+    })
+    .join("");
+  const free = param.allow_free_text
+    ? `<button type="button" class="clarify-option clarify-free" data-target="${id}" data-free="1" aria-pressed="false">${escapeHtml(param.free_text_label || "직접 입력")}</button>`
+    : "";
+  return `<div class="clarify-options" role="group">${chips}${free}</div>`;
+}
+
 function renderInlineParamForm(params = []) {
   const normalized = (params || []).map((param) => typeof param === "object" ? param : { name: String(param) });
   if (!normalized.length) {
     hideInlineParamForm();
     return;
   }
-  inlineParamTitle.textContent = `조회 조건 ${normalized.length}개를 확인해주세요.`;
+  const asking = normalized.filter((param) => paramOptions(param).length);
+  inlineParamTitle.textContent = asking.length
+    ? `진행 방향 ${normalized.length}개를 확인해주세요.`
+    : `조회 조건 ${normalized.length}개를 확인해주세요.`;
+  inlineParamFields.classList.toggle("clarify-grid", asking.length > 0);
   inlineParamFields.innerHTML = normalized
     .map((param, index) => {
       const name = param.name || param.label || `param_${index + 1}`;
-      const label = param.label || param.name || `필수 값 ${index + 1}`;
-      const { value, note } = inlineParamDefault(param);
+      const label = param.question || param.label || param.name || `필수 값 ${index + 1}`;
+      const options = paramOptions(param);
       const id = `inline-param-${index}`;
-      const hint = param.description ? `<small class="field-hint">${escapeHtml(param.description)}</small>` : "";
+      const reason = param.reason || param.description || "";
+      const hint = reason ? `<small class="field-hint">${escapeHtml(reason)}</small>` : "";
+      if (options.length) {
+        const chosen = String(options[0].value);
+        return `
+        <div class="field field-clarify">
+          <label for="${id}">${escapeHtml(label)}</label>
+          ${hint}
+          ${renderClarifyOptions(param, options, id)}
+          <input id="${id}" name="${escapeHtml(name)}" type="text" value="${escapeHtml(chosen)}" required autocomplete="off"
+                 class="clarify-value${param.allow_free_text ? "" : " readonly"}" ${param.allow_free_text ? "" : "readonly"}
+                 placeholder="${escapeHtml(param.free_text_hint || inlineParamPlaceholder(param))}" />
+          ${param.free_text_hint ? `<small class="field-default">${escapeHtml(param.free_text_hint)}</small>` : ""}
+        </div>
+      `;
+      }
+      const { value, note } = inlineParamDefault(param);
       const defaultNote = note ? `<small class="field-default">${escapeHtml(note)}</small>` : "";
       const control = isManagedScopeParam(param)
         ? `<textarea id="${id}" name="${escapeHtml(name)}" rows="4" required autocomplete="off" placeholder="${escapeHtml(inlineParamPlaceholder(param))}">${escapeHtml(value)}</textarea>`
@@ -2280,6 +2324,33 @@ function renderInlineParamForm(params = []) {
   const focusTarget = fields.find((field) => !field.value.trim()) || fields[0];
   window.setTimeout(() => focusTarget?.focus(), 0);
 }
+
+// Choosing an option writes it into the field it belongs to. With a single
+// question open there is nothing left to confirm, so the pick submits at once.
+inlineParamFields.addEventListener("click", (event) => {
+  const chip = event.target.closest(".clarify-option");
+  if (!chip || state.isBusy) return;
+  const field = document.getElementById(chip.dataset.target);
+  if (!field) return;
+  const group = chip.closest(".clarify-options");
+  group.querySelectorAll(".clarify-option").forEach((option) => {
+    option.classList.toggle("selected", option === chip);
+    option.setAttribute("aria-pressed", String(option === chip));
+  });
+  if (chip.dataset.free) {
+    field.removeAttribute("readonly");
+    field.classList.remove("readonly");
+    field.value = "";
+    field.focus();
+    return;
+  }
+  field.value = chip.dataset.value || "";
+  const openQuestions = inlineParamFields.querySelectorAll(".field-clarify").length;
+  const totalFields = inlineParamFields.querySelectorAll("input[name], textarea[name]").length;
+  if (openQuestions === 1 && totalFields === 1) {
+    inlineParamForm.requestSubmit();
+  }
+});
 
 function renderBadges(data) {
   const badges = [];

@@ -372,6 +372,8 @@ Semantic layer 전체를 매 호출마다 전달하지 않고 질문·도메인�
 | `ENABLE_VERIFIED_QUERY_LLM_FALLBACK` | `false` | VQ fallback 매칭 프롬프트는 기본적으로 호출되지 않음 |
 | `VERIFIED_QUERY_LLM_CANDIDATE_LIMIT` | `8` | fallback 활성화 시 최대 후보 수 |
 | `WEBAPP_FOLLOWUP_SUGGESTION_MODE` | `static` | 후속 추천 LLM 프롬프트는 기본적으로 호출되지 않음 |
+| `ENABLE_INTERACTIVE_CLARIFICATION` | `true` | 되묻기 선택지는 결정론적으로 생성되고, 보기를 고른 답변은 LLM 파싱 없이 바인딩됨 |
+| `ENABLE_DOMAIN_CLARIFICATION` | `true` | 라우팅 점수가 약하고 동점일 때만 도메인을 되물음 |
 
 따라서 기본 실행에서 VQ는 주로 다음 두 결정론적 단계로 선택된다.
 
