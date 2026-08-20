@@ -339,6 +339,44 @@ def test_empty_tool_result_can_rerun_sql_for_an_entity_followup() -> None:
     assert captured["final_result"]["original_question"] == base_result["question"]
 
 
+def test_a_truncated_pie_keeps_the_whole_it_claims_to_show() -> None:
+    rows = [(f"업종{index:02d}", 1000 - index * 30) for index in range(30)]
+    pie = build_chart_spec("업종 구성비 파이차트", ["업종", "매출금액"], rows)
+
+    assert pie["labels"][-1] == "기타 19개"
+    assert sum(pie["datasets"][0]["data"]) == sum(row[1] for row in rows)
+    assert "기타로 합쳐 비중을 유지했습니다" in pie["note"]
+
+    # 율은 더할 수 없으니 기타로 묶지 않고, 일부만 보여준다고 밝힌다.
+    ratio = build_chart_spec("업종별 승인율 파이차트", ["업종", "승인율"], [(f"업종{index:02d}", 90 + index * 0.1) for index in range(30)])
+    assert "기타" not in " ".join(ratio["labels"])
+    assert "값이 큰 항목부터 일부만 표시했습니다." in ratio["note"]
+
+
+def test_named_chart_shape_survives_a_context_rewritten_question() -> None:
+    columns = ["업종", "매출금액"]
+    rows = [("음식점", 900), ("주유소", 700), ("병원", 500)]
+    # 맥락 보강이 "파이차트로"를 지워도 사용자가 말한 모양은 지켜야 한다.
+    resolved = "2026년 6월 법인 가맹점의 업종별 매출금액 추이를 알려줘"
+
+    assert build_chart_spec(resolved, columns, rows, shape_question="이걸 파이차트로 보여줘")["type"] == "pie"
+    assert build_chart_spec(resolved, columns, rows, shape_question="막대그래프로")["type"] == "bar"
+    assert build_chart_spec(resolved, columns, rows)["type"] == "line"
+
+
+def test_frontend_keeps_the_chart_in_step_with_the_panel_it_lives_in() -> None:
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "web" / "static" / "index.html").read_text(encoding="utf-8")
+
+    # 결과 패널을 비우면 차트도 사라져야 한다. 남으면 새 대화에 이전 차트가 보인다.
+    reset = source[source.index("function resetResultPanels()"):source.index("function renderFailureDiagnostics(")]
+    assert "renderChart(null);" in reset
+    # 폭을 모르는 동안 그리면 좁은 폭으로 굳는다. 폭이 생기면 다시 그려야 한다.
+    assert "if (!available) return;" in source
+    assert "new window.ResizeObserver(scheduleChartRedraw).observe(resultChart.parentElement);" in source
+
+
 def test_frontend_contains_dependency_free_chart_renderer() -> None:
     from pathlib import Path
 

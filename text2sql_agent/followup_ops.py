@@ -829,8 +829,20 @@ def _merge_duplicate_labels(
     return list(merged.values()), f"같은 {columns[dimension]} 값은 합계로 묶었습니다."
 
 
-def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any], *, max_points: int = 30) -> dict[str, Any] | None:
-    """Build a small dependency-free chart contract for the web client."""
+def build_chart_spec(
+    question: str,
+    raw_columns: list[Any],
+    raw_rows: list[Any],
+    *,
+    max_points: int = 30,
+    shape_question: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a small dependency-free chart contract for the web client.
+
+    ``question`` 은 축·계열을 찾는 데 쓰는 질문(맥락이 채워진 문장)이고,
+    ``shape_question`` 은 사용자가 실제로 입력한 문장이다.  맥락 보강이 "파이차트로"
+    같은 표현을 지워 버려도 사용자가 말한 차트 모양은 그대로 지켜야 한다.
+    """
 
     columns = [str(column) for column in raw_columns or []]
     rows = _rows_as_lists(columns, raw_rows or [])
@@ -840,7 +852,7 @@ def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any],
     if not numeric:
         return None
 
-    lowered = str(question or "").lower()
+    lowered = " ".join(str(part or "") for part in (question, shape_question)).lower()
     # 질문이 모양을 직접 말하면("막대") 그 말이 이긴다.  "추이"·"구성비"는 모양을
     # 지정하지 않았을 때만 쓰는 힌트다. 안 그러면 "매출 추이를 막대로"가 선 차트가 된다.
     named_type = (
@@ -918,7 +930,16 @@ def build_chart_spec(question: str, raw_columns: list[Any], raw_rows: list[Any],
         valid_rows.sort(key=lambda row: _number(row[primary]) if _number(row[primary]) is not None else float("-inf"), reverse=True)
     point_limit = min(max_points, 12 if chart_type == "pie" else 20 if chart_type == "bar" else max_points)
     truncated = len(valid_rows) > point_limit
-    if truncated:
+    if truncated and chart_type == "pie" and dimension >= 0 and _is_additive_column(columns[metrics[0]]):
+        # 원형 차트의 조각 비중은 전체를 뜻한다.  상위 몇 개만 남기고 자르면 남은
+        # 조각들이 100%를 차지한 것처럼 보이므로, 나머지는 기타로 합쳐 전체를 지킨다.
+        tail = valid_rows[point_limit - 1:]
+        others: list[Any] = [None] * len(columns)
+        others[dimension] = f"기타 {len(tail):,}개"
+        others[metrics[0]] = sum(_number(row[metrics[0]]) or 0 for row in tail)
+        valid_rows = valid_rows[: point_limit - 1] + [others]
+        notes.append(f"상위 {point_limit - 1}개 외 {len(tail):,}개는 기타로 합쳐 비중을 유지했습니다.")
+    elif truncated:
         # 시간축은 값 순서로 자르면 기간이 뒤섞이므로 최근 구간을 남긴다.
         valid_rows = valid_rows[-point_limit:] if time_axis else valid_rows[:point_limit]
         notes.append("최근 구간만 표시했습니다." if time_axis else "값이 큰 항목부터 일부만 표시했습니다.")
