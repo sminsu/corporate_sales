@@ -67,8 +67,10 @@ _NOT_AN_AXIS = frozenset(
 
 # 질문에 기간이 박혀 있다고 볼 표면형. 상대 기간("최근 3개월")은 VQ 쪽에서
 # 파라미터로 못 받아도 기본값 해석이 가능하므로 절대 기간만 본다.
+# 두 자리로 적은 연도("26년 7월")도 절대 기간이다. 네 자리만 보면 이 게이트가
+# 통째로 건너뛰어진다.
 _ABSOLUTE_PERIOD_RE = re.compile(
-    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|"
+    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|(?<!\d)\d{2}\s*년\s*\d{1,2}\s*월|"
     r"\d{1,2}\s*월\s*\d{1,2}\s*일|상반기|하반기"
 )
 
@@ -111,6 +113,15 @@ _GENERIC_COLUMNS = frozenset(
 
 # 3글자 컬럼은 봉사료·선급금·연체료·예수금뿐이고 모두 고유한 지표다.
 _MIN_COLUMN_LENGTH = 3
+
+
+def absolute_period_requested(question: str) -> bool:
+    """질문이 연·월·일을 적어 기간을 못 박았는지.
+
+    "전월 매입금액" 처럼 컬럼명에 들어 있는 상대 기간어는 기간 요청이 아니다.
+    상대 기간은 VQ 쪽에 파라미터가 없어도 기본값 해석이 가능하다.
+    """
+    return bool(_ABSOLUTE_PERIOD_RE.search(str(question or "")))
 
 
 def _axis_terms(question: str) -> list[str]:

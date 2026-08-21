@@ -5,6 +5,7 @@ from unittest.mock import patch
 from scripts.v2_build.build_semantic_layer_v2 import (
     apply_accumulation_policies,
     apply_corporate_customer_semantic_overrides,
+    apply_merchant_monthly_sales_surface_forms,
     apply_recent_merchant_semantic_overrides,
     apply_sql_contract,
 )
@@ -71,8 +72,33 @@ def test_build_reapplies_safe_monthly_merchant_semantics() -> None:
 def test_build_separates_current_corporate_snapshot_from_monthly_history() -> None:
     rebuilt = deepcopy(schema.SCHEMA)
 
-    assert apply_corporate_customer_semantic_overrides(rebuilt) == 41
-    assert apply_corporate_customer_semantic_overrides(rebuilt) == 41
+    assert apply_corporate_customer_semantic_overrides(rebuilt) == 42
+    assert apply_corporate_customer_semantic_overrides(rebuilt) == 42
+
+    # 유효 기업카드 보유 원천은 현재(D-1)와 명시 과거 월로 갈라져 있어야 한다.
+    # source_selection 이 없으면 네 원천이 모두 최상위 후보 점수를 받아,
+    # "현재 기준" 질문에서 월말 스냅샷이 일 스냅샷을 이겼다.
+    holding = next(
+        item
+        for item in rebuilt["semantic_attributes"]
+        if item["name"] == "corporate_card_holding"
+    )
+    assert [item["table"] for item in holding["source_mappings"]] == [
+        "tbdaa1d12",
+        "tmdaa1d12",
+        "tbdaaus01",
+        "tmdaaus01",
+    ]
+    assert [item["role"] for item in holding["source_mappings"]] == [
+        "current_corporate_card_holding",
+        "monthly_corporate_card_holding",
+        "current_merchant_card_holding",
+        "monthly_merchant_card_holding",
+    ]
+    assert holding["source_selection"]["default_role_prefix"] == "current_"
+    assert holding["source_selection"]["period_role_prefix"] == "monthly_"
+    assert holding["source_selection"]["open_month_uses_current"] is True
+    assert sum("KST 전일" in item for item in holding["semantic_cautions"]) == 1
 
     entities = {item["name"]: item for item in rebuilt["semantic_entities"]}
     assert "KST 전일" in entities["corporate_customer_daily"]["use_when"][0]
@@ -213,3 +239,38 @@ def test_live_period_wording_keeps_current_snapshot_but_old_as_of_month_archives
     assert current_month == ["tbdaa1d12"]
     assert d_minus_one == ["tbdaa1d12"]
     assert archived == ["tmdaa1d12"]
+
+
+def test_build_gives_merchant_monthly_sales_the_same_surface_forms_as_its_count_sibling() -> None:
+    """가맹점월매출건수만 '가맹점매출건수' 를 갖고 있던 v1 비대칭을 메운다."""
+    metrics = {
+        item["name"]: item for item in deepcopy(schema.SCHEMA)["canonical_metrics"]
+    }
+
+    assert "가맹점매출건수" in metrics["가맹점월매출건수"]["synonyms"]
+    assert "가맹점매출금액" in metrics["가맹점월매출금액"]["synonyms"]
+
+
+def test_build_surface_form_override_is_idempotent_by_failing_loudly() -> None:
+    """이미 적용된 스키마에 다시 돌리면 조용히 넘어가지 않고 멈춘다."""
+    import pytest
+
+    with pytest.raises(SystemExit):
+        apply_merchant_monthly_sales_surface_forms(deepcopy(schema.SCHEMA))
+
+
+def test_build_declares_the_card_only_usage_metrics_on_the_card_monthly_fact() -> None:
+    """할부·CA 이용금액은 tmdaa3e16 에만 있는 컬럼인데 지표 선언이 없었다."""
+    metrics = {
+        item["name"]: item for item in deepcopy(schema.SCHEMA)["canonical_metrics"]
+    }
+
+    for name, column, synonym in (
+        ("카드월할부이용금액", "금월할부이용금액", "할부이용금액"),
+        ("카드월CA이용금액", "금월CA이용금액", "CA이용금액"),
+    ):
+        metric = metrics[name]
+        assert metric["source_table"] == "tmdaa3e16"
+        assert metric["default_time_dimension"] == "기준년월"
+        assert column in metric["expression"]
+        assert synonym in metric["synonyms"]

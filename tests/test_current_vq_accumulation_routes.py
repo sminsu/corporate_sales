@@ -214,3 +214,49 @@ def test_numeric_month_continuation_stays_monthly_even_for_current_month_number(
         rendered = workflow.extract_and_apply_params(state)
 
     assert workflow._extract_schema_tables(rendered["final_sql"]) == {"tmdaa1d12"}
+
+
+# 시간 조건이 "지금/어제" 상대 표현뿐이고 기간 파라미터도 없는 VQ. 질문이 다른
+# 기간을 짚으면 적재 정책이 과거 월 소스로 다시 써 줄 때만 답이 된다.
+# 아래 셋은 D-1 을 DATE_FORMAT(DATE_ADD(...), '%Y%m%d') 로 못 박아 두어 재작성이
+# 안 걸렸었다. 이제 tbdaaus01 -> tmdaaus01 로 돌아가므로 모두 rewritable 이다.
+_NOW_PINNED_QUERIES = [
+    ("brand_active_merchant_count", True),
+    ("merchant_detail_by_name", True),
+    ("merchant_payment_institution_list", True),
+    ("merchant_count_by_payment_institution", True),
+    ("brand_merchant_owner_corporate_card_count", True),
+    ("region_top_enterprise_merchants", True),
+    ("marketing_industry_card_portfolio", True),
+]
+
+
+def _verified_query(name: str) -> dict:
+    return next(item for item in workflow.VERIFIED_QUERIES if item["name"] == name)
+
+
+@pytest.mark.parametrize(("name", "rewritable"), _NOW_PINNED_QUERIES)
+def test_now_pinned_query_serves_a_named_month_only_when_rewritable(
+    name: str, rewritable: bool
+) -> None:
+    question = f"2025년 3월 도미노피자 {name} 알려줘"
+
+    assert (
+        workflow._verified_query_serves_requested_period(question, _verified_query(name))
+        is rewritable
+    )
+
+
+@pytest.mark.parametrize(("name", "_rewritable"), _NOW_PINNED_QUERIES)
+def test_now_pinned_query_still_serves_its_own_question(name: str, _rewritable: bool) -> None:
+    """"전월 매입금액" 같은 컬럼명 속 상대 기간어를 기간 요청으로 읽으면 안 된다."""
+    query = _verified_query(name)
+
+    assert workflow._verified_query_serves_requested_period(str(query["question"]), query)
+
+
+def test_named_month_industry_question_does_not_match_a_yesterday_portfolio() -> None:
+    """"26년 7월 마트업종 유효기업신용카드수" 가 어제 기준 전체 업종을 내던 회귀."""
+    question = "26년 7월 마트업종이 보유한 유효기업신용카드수 알려줘"
+
+    assert workflow._select_verified_query_capability(question, {"question": question}) is None

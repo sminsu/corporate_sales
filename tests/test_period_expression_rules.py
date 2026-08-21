@@ -110,3 +110,41 @@ def test_half_year_answer_fills_period_parameters() -> None:
             "기간_시작": "202604",
             "기간_종료": "202609",
         }
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("26년 9월 기업카드 이용금액", ("202609", "202609", "")),
+        ("25년 9월 기업카드 이용금액", ("202509", "202509", "")),
+        ("24년 12월 기업카드 이용금액", ("202412", "202412", "")),
+        ("26년 7월 9일 하루 기준 기업신용매출건수", ("202607", "202607", "20260709")),
+        ("25년 상반기 기업카드 이용금액", ("202501", "202506", "")),
+        ("25년 3분기 기업카드 이용금액", ("202507", "202509", "")),
+        ("25년 1월부터 3월까지 기업카드 이용금액", ("202501", "202503", "")),
+    ],
+)
+def test_two_digit_year_is_read_as_the_year_it_names(
+    question: str, expected: tuple[str, str, str]
+) -> None:
+    """두 자리 연도가 버려져 "25년 9월"이 202609가 되던 회귀를 막는다.
+
+    기간 정규식이 네 자리 연도만 받아서 "26년 7월 9일"의 일자도 함께 사라졌다.
+    """
+    with patch.object(workflow, "kst_today", return_value=SEPTEMBER):
+        assert workflow._extract_period_by_rule(question) == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("최근 10년 기업카드 이용금액", ("201610", "202609")),
+        ("최근 5년 기업카드 이용금액", ("202110", "202609")),
+    ],
+)
+def test_relative_year_length_is_not_a_two_digit_year(
+    question: str, expected: tuple[str, str]
+) -> None:
+    """"최근 10년"의 10은 연도가 아니라 기간 길이다."""
+    with patch.object(workflow, "kst_today", return_value=SEPTEMBER):
+        assert workflow._extract_period_by_rule(question)[:2] == expected

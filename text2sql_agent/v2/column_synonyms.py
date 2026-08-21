@@ -267,6 +267,35 @@ def _date_variants(column: str) -> list[str]:
     return [term for term in variants if term not in _TOO_GENERIC]
 
 
+# 월 지표 컬럼의 기준월 접두사. 한 행이 이미 기준년월 한 달이라서 이 접두사는 그
+# 행의 달을 가리키는 표기일 뿐이고, 질문은 접두사를 빼고 지표만 부른다.
+#   금월체크카드이용금액   → "2025년 11월 기업카드 체크카드 이용금액을 발급유형별로"
+#   금월유이자할부이용금액 → "유이자 할부 이용금액을 카드거래매체별로"
+# 스키마의 금월 컬럼 75개 전부가 이 표면형을 동의어로 갖고 있지 않아서, 질문이
+# 지표를 불러도 컬럼이 프롬프트 예산에서 잘려 나갔다.
+# 전월·전년·금년·최근 접두사는 그 행의 달이 아닌 다른 기간을 가리키므로 벗기지 않는다.
+_REFERENCE_MONTH_PREFIXES: tuple[str, ...] = ("금월", "당월")
+_MIN_REFERENCE_MONTH_STEM_LENGTH = 3
+
+
+def _reference_month_variants(column: str, reserved: frozenset[str]) -> list[str]:
+    """기준월 접두사를 뗀 지표 표면형.
+
+    벗긴 어간이 다른 컬럼의 이름 그대로면(금월CA수수료 → CA수수료) 그 표면형은
+    이미 그 컬럼의 것이므로 동의어로 만들지 않는다.
+    """
+    for prefix in _REFERENCE_MONTH_PREFIXES:
+        if not column.startswith(prefix):
+            continue
+        stem = column[len(prefix) :]
+        if len(compact(stem)) < _MIN_REFERENCE_MONTH_STEM_LENGTH:
+            return []
+        if compact(stem) in reserved:
+            return []
+        return [stem]
+    return []
+
+
 def _name_modifier_variants(column: str) -> list[str]:
     """표기 수식어를 뗀 이름 컬럼: 한글상품명 → 상품명."""
     if not column.endswith("명"):
@@ -309,10 +338,16 @@ def _space_variants(term: str) -> list[str]:
     return variants
 
 
-def derive_column_synonyms(name: str, existing: object = None) -> list[str]:
+def derive_column_synonyms(
+    name: str,
+    existing: object = None,
+    reserved: object = (),
+) -> list[str]:
     """컬럼명에서 질문 표면형 동의어를 만든다.
 
     이미 있는 동의어는 결과에서 제외하고 새로 추가할 것만 돌려준다.
+    ``reserved`` 는 스키마에 실제로 있는 컬럼명 모음이다. 접두사를 벗긴 어간이
+    거기 있으면 그 표면형은 그 컬럼의 것이므로 동의어로 만들지 않는다.
     """
     column = str(name or "").strip()
     if not column:
@@ -321,6 +356,7 @@ def derive_column_synonyms(name: str, existing: object = None) -> list[str]:
     known = {compact(column)}
     for value in existing or []:
         known.add(compact(value))
+    reserved_names = {compact(value) for value in reserved or ()} - {compact(column)}
 
     derived: list[str] = []
 
@@ -362,6 +398,31 @@ def derive_column_synonyms(name: str, existing: object = None) -> list[str]:
     for stem in trimmed:
         add(stem)
     bases = [*bases, *trimmed]
+
+    # 질문은 엔티티 접두사를 떼고 부른다: 가맹점사업주체구분코드 → "사업주체별로",
+    # 가맹점해지사유구분코드 → "해지사유 기준으로". 접두사 제거가 여부·날짜 컬럼에만
+    # 있어서, 코드·구분 컬럼의 동의어는 전부 물리 컬럼명의 접두사를 그대로 달고
+    # 있었다. 그래서 사용자 표면형이 하나도 걸리지 않고 컬럼이 프롬프트 예산에서
+    # 잘려 나갔다(날짜 컬럼 15개가 예산을 다 먹은 tmdaa5d01).
+    stripped: list[str] = []
+    for base in bases:
+        for prefix in _ENTITY_PREFIXES:
+            if not base.startswith(prefix) or len(base) <= len(prefix):
+                continue
+            stem = base[len(prefix) :]
+            # 벗긴 어간이 다른 컬럼의 이름 그대로면 그 표면형은 그 컬럼의 것이다.
+            if compact(stem) not in reserved_names and stem not in stripped:
+                stripped.append(stem)
+            break
+    for stem in stripped:
+        add(stem)
+    bases = [*bases, *stripped]
+
+    # 기준월 접두사를 뗀 지표는 경계 어휘까지 더 떼지 않는다. "체크카드이용" 까지
+    # 가면 금월체크카드이용건수 같은 다른 지표 질문에도 이 컬럼이 잡힌다.
+    for term in _reference_month_variants(column, frozenset(reserved_names)):
+        add(term, min_length=_MIN_REFERENCE_MONTH_STEM_LENGTH)
+        bases = [*bases, term]
 
     # 띄어쓰기 변형은 원본 컬럼명과 벗긴 후보 모두에 대해 만든다.
     for term in [column, *bases]:

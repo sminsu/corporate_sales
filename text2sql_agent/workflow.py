@@ -42,6 +42,7 @@ from .row_constraints import (
     first_order_key,
     is_scalar_aggregate_query,
     outer_limit,
+    outer_select_list,
     parse_row_request,
 )
 from .safety import SAFETY_REFUSAL, check_content_safety
@@ -103,7 +104,9 @@ from .v2.sql_dialect_guard import (
     prose_reason as _v2_prose_reason,
 )
 from .v2.column_repair import repair_columns as _v2_repair_columns
+from .v2.column_synonyms import compact as _v2_compact
 from .v2.vq_output_guard import (
+    absolute_period_requested as _v2_absolute_period_requested,
     named_columns as _v2_named_columns,
     vq_output_gap as _v2_vq_output_gap,
 )
@@ -615,7 +618,7 @@ def _reference_domain_by_rule(question: str) -> str:
         max_count=1,
         routing_only=True,
     )
-    if semantic_routes:
+    if semantic_routes and _contract_entity_bindings_available(question, semantic_routes[0]):
         domain = str(semantic_routes[0].get("domain") or "")
         if domain in known_domains:
             return domain
@@ -760,6 +763,7 @@ def check_domain_choice(state: Text2SQLState) -> dict:
 
 def _extract_ym_from_question(question: str) -> str:
     """질문에서 기준년월을 YYYYMM으로 뽑는다 (예: '2025년 12월' -> '202512')."""
+    question = _expand_two_digit_years(question)
     match = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월", question)
     if match:
         return f"{match.group(1)}{int(match.group(2)):02d}"
@@ -787,14 +791,50 @@ _PREVIOUS_MONTH_COMPARISON_RE = re.compile(
 )
 
 
+@lru_cache(maxsize=8)
+def _period_prefixed_column_patterns(prefix: str) -> tuple[re.Pattern[str], ...]:
+    """시간 표현으로 시작하는 컬럼명을 질문에서 지울 패턴.
+
+    "2025년 12월 가맹점 전월 일시불 매입건수" 의 전월은 조회 기간이 아니라
+    tmdaaus01."전월일시불매입건수" 라는 사전 집계 컬럼 이름의 앞부분이고,
+    "최근 한도변경 사유별로" 의 최근은 tbdaa1d12."최근한도변경사유코드" 다.
+    이걸 상대 시점으로 읽으면 실행일 기준의 달 조건을 요구해 정답을 반려한다.
+    """
+    forms = {
+        compacted
+        for table in SCHEMA.get("tables", [])
+        for section in ("dimensions", "measures", "time_dimensions")
+        for column in table.get(section) or []
+        for text in (
+            str(column.get("name") or ""),
+            *(str(value) for value in column.get("synonyms") or []),
+        )
+        if (compacted := _v2_compact(text)).startswith(prefix)
+        and len(compacted) > len(prefix)
+    }
+    return tuple(
+        re.compile(r"\W*".join(re.escape(char) for char in form))
+        for form in sorted(forms, key=len, reverse=True)
+    )
+
+
+def _without_period_prefixed_columns(text: str, prefix: str) -> str:
+    """질문에 적힌 "<접두사>…" 컬럼명을 지운 텍스트."""
+    for pattern in _period_prefixed_column_patterns(prefix):
+        text = pattern.sub(" ", text)
+    return text
+
+
 def _has_previous_month_lookup(question: str) -> bool:
     """Return whether ``전월`` is a requested period, not a comparison basis.
 
     Phrases such as ``전월 대비 증감률`` describe an analytic operation over
     the user's requested period.  Treating that ``전월`` as a relative date
     silently replaces an explicit year with the system's previous month.
+    지표 컬럼 이름의 앞부분인 전월도 기간이 아니다.
     """
     lookup_text = _PREVIOUS_MONTH_COMPARISON_RE.sub(" ", question or "")
+    lookup_text = _without_period_prefixed_columns(lookup_text, "전월")
     return bool(re.search(r"저번\s*달|지난\s*달|전월", lookup_text))
 
 
@@ -1244,9 +1284,28 @@ def _recent_ym_for_month(month: int, today: date) -> str:
     return f"{today.year - (0 if month <= today.month else 1)}{month:02d}"
 
 
+# 두 자리로 적은 연도. 기간 정규식은 모두 네 자리(20\d{2})를 전제하므로, 두 자리
+# 연도는 통째로 버려지고 뒤의 월만 남는다. 그래서 "26년 7월 9일" 의 일자가 사라져
+# 하루 질문이 월 집계로 답해지고, "25년 7월" 은 bare_month 규칙이 "가장 최근 7월"
+# 을 집어 조용히 202607 이 됐다.
+#
+# 뒤에 월·분기·반기가 붙은 연도만 편다. "최근 10년", "설립 30년" 은 기간 연도가
+# 아니라 길이여서 펴면 안 된다.
+_TWO_DIGIT_YEAR_PERIOD_RE = re.compile(
+    r"(?<!\d)(\d{2})\s*년(?=\s*(?:\d{1,2}\s*월|[1-4]\s*분기|상반기|하반기))"
+)
+
+
+def _expand_two_digit_years(text: str) -> str:
+    """'26년 5월' 처럼 두 자리로 적은 기간 연도를 네 자리로 펴 준다."""
+    return _TWO_DIGIT_YEAR_PERIOD_RE.sub(
+        lambda match: f"{int(match.group(1)) + 2000}년", text or ""
+    )
+
+
 def _extract_period_by_rule(question: str) -> tuple[str, str, str]:
     """Return ``(start_ym, end_ym, explicit_yyyymmdd)`` from Korean date text."""
-    text = question or ""
+    text = _expand_two_digit_years(question or "")
     business_today = kst_today()
     day = re.search(
         r"(?<!\d)(20\d{2})[-./](\d{1,2})[-./](\d{1,2})(?!\d)|"
@@ -1925,6 +1984,7 @@ def _relative_month_target(question: str) -> tuple[str, str]:
     if _has_previous_month_lookup(question):
         return _previous_ym(), "저번달/지난달/전월"
     lookup_text = re.sub(_RECENT_CLOSURE_PERIOD_PATTERN, " ", question or "")
+    lookup_text = _without_period_prefixed_columns(lookup_text, "최근")
     if re.search(r"최근|이번\s*달|이번\s*월|현재\s*월", lookup_text):
         return _current_ym(), "최근/이번달/최근 기준"
     return "", ""
@@ -2013,16 +2073,23 @@ def _apply_recent_month_sql_fix(question: str, sql: str) -> str:
 _TBDAADT01_TABLE = "tbdaadt01"
 _TBDAADT01_TIME_COLUMN = "실적기준년월일"
 _SQL_SOURCE_KEYWORDS = {
-    "where", "join", "left", "right", "inner", "full", "cross", "on",
-    "group", "order", "limit", "union", "having", "qualify", "window",
+    "from", "where", "join", "left", "right", "inner", "full", "cross", "on",
+    "using", "group", "order", "limit", "union", "having", "qualify", "window",
 }
+# 별칭 자리에서 다음 절의 키워드를 삼키면 그 뒤 관계를 아예 못 본다.
+# ``FROM ms JOIN tmdaa5e11 p ON ...`` 은 별칭 없는 ms 다음의 JOIN 을 ms 의 별칭으로
+# 먹어 치우고 스캔이 그 뒤에서 재개돼, tmdaa5e11 이 바인딩 목록에서 사라졌다.
+# 그러면 적재 축 검사가 붙일 별칭을 못 찾아 "기간 조건 없음" 으로 정답을 반려하고,
+# 테이블 치환도 그 관계를 건너뛴다.
+_SQL_ALIAS_STOPWORDS = "|".join(sorted(_SQL_SOURCE_KEYWORDS))
 _SQL_RELATION_RE = re.compile(
     r'\b(?P<kind>FROM|JOIN)\s+'
     r'(?:(?:"(?P<quoted_schema>[A-Za-z_][A-Za-z0-9_]*)"|'
     r'(?P<plain_schema>[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*)?'
     r'(?:"(?P<quoted_table>[A-Za-z_][A-Za-z0-9_]*)"|'
     r'(?P<plain_table>[A-Za-z_][A-Za-z0-9_]*))'
-    r'(?:\s+(?:AS\s+)?(?:"(?P<quoted_alias>[A-Za-z_][A-Za-z0-9_]*)"|'
+    rf'(?:\s+(?:AS\s+)?(?!(?:{_SQL_ALIAS_STOPWORDS})\b)'
+    r'(?:"(?P<quoted_alias>[A-Za-z_][A-Za-z0-9_]*)"|'
     r'(?P<plain_alias>[A-Za-z_][A-Za-z0-9_]*)))?',
     re.IGNORECASE,
 )
@@ -2117,9 +2184,20 @@ def _merchant_master_attribute_question(question: str) -> bool:
     집계할 지표가 없어 스냅샷으로 돌려도 답이 달라지지 않는다. 대신 tbdaadt01 이
     후보에서 통째로 빠져서 "요청한 달이 마스터에 있느냐" 는 것조차 답할 수 없다.
     """
+    candidates = semantic_attribute_candidates(SCHEMA, question, max_count=6)
+    if any(_master_only_attribute(attribute) for attribute in candidates):
+        return True
+    # 현재·과거 원천을 나눠 선언한 속성이 이 질문에서 마스터를 골랐다면, 월 원천에는
+    # 아직 그 달 행이 없다는 뜻이다. 집계 질문이어도 스냅샷으로 돌릴 곳이 없다.
     if any(
-        _master_only_attribute(attribute)
-        for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6)
+        isinstance(attribute.get("source_selection"), dict)
+        and {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+            for mapping in _attribute_source_mappings(question, attribute)
+            if mapping.get("table")
+        }
+        == {_TBDAADT01_TABLE}
+        for attribute in candidates
     ):
         return True
     # 속성은 별칭으로만 매칭된다. "우편번호" 처럼 사용자가 컬럼명을 그대로 부르면
@@ -2435,6 +2513,7 @@ def _rewrite_previous_day_archive_select(
     target_table: str,
     start_ym: str,
     end_ym: str,
+    preserve_pinned_current: bool = True,
 ) -> str:
     """Route one SELECT scope from a D-1 source to its monthly archive."""
     if source_table not in _extract_schema_tables(select_sql):
@@ -2442,24 +2521,33 @@ def _rewrite_previous_day_archive_select(
     aliases = _table_aliases(select_sql, source_table)
     if not aliases:
         return select_sql
-    # A mixed query may use the live table once for its current population and
-    # again for historical measures. Preserve the exact D-1 population scope.
-    if _has_exact_table_axis_value(
-        select_sql,
-        source_table,
-        "기준년월일",
-        previous_day_ymd(),
-    ) or re.search(
+    # 조회기준일을 다른 스코프에서 받아 오는 조건은 그 참조를 지우는 순간
+    # 깨진다. 스코프가 몇 개든 그대로 둔다.
+    if re.search(
         r'"?기준년월일"?\s*=\s*"?[A-Za-z_]\w*"?\s*\.\s*"?현재기준일"?',
         select_sql,
         re.IGNORECASE,
     ):
         return select_sql
+    # A mixed query may use the live table once for its current population and
+    # again for historical measures. Preserve the exact D-1 population scope.
+    if preserve_pinned_current and _has_exact_table_axis_value(
+        select_sql,
+        source_table,
+        "기준년월일",
+        previous_day_ymd(),
+    ):
+        return select_sql
 
     rewritten = select_sql
     touched = False
+    # 함수 인자 안에 함수가 한 번 더 들어가는 D-1 표현
+    # (DATE_FORMAT(DATE_ADD('day', -1, ...), '%Y%m%d'))까지 통째로 잡는다.
+    # [^)]* 로 끊으면 안쪽 DATE_ADD 의 닫는 괄호에서 멈춰 ", '%Y%m%d')" 가
+    # 남은 깨진 SQL 이 된다. 문자열 안의 괄호는 '...' 갈래가 먼저 삼킨다.
+    call_args = r"(?:[^()']|'[^']*'|\((?:[^()']|'[^']*')*\))*"
     operand = (
-        r"(?:CONCAT\s*\([^)]*\)|DATE_FORMAT\s*\([^)]*\)|"
+        rf"(?:(?:CONCAT|DATE_FORMAT)\s*\({call_args}\)|"
         r"'[^']*'|\{[^}]+\}|"
         r"(?:(?:\"?[A-Za-z_][A-Za-z0-9_]*\"?)\s*\.\s*)?"
         r'"?[A-Za-z가-힣_][A-Za-z0-9가-힣_]*"?)'
@@ -2505,6 +2593,15 @@ def _rewrite_previous_day_archive_select(
 
     if not touched:
         return select_sql
+    # 조회기준일 도장까지 D-1 로 두면 2025년 3월 값을 세면서 "조회기준일 = 어제"를
+    # 함께 내보낸다. 돌린 창의 기준월로 맞춘다. 별칭이 붙은 도장만 건드린다 —
+    # 같은 스코프의 다른 테이블이 D-1 조건을 쓰고 있을 수 있다.
+    rewritten = re.sub(
+        rf"{_DYNAMIC_PREVIOUS_DAY_SQL}(?=\s+AS\s)",
+        f"'{end_ym}'",
+        rewritten,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
     return _replace_physical_table(rewritten, source_table, target_table)
 
 
@@ -2565,12 +2662,16 @@ def _apply_previous_day_historical_sources(question: str, sql: str) -> str:
             )
             rewritten = rewritten[:start] + routed_body + rewritten[end:]
         if not spans:
+            # 스코프가 하나뿐이면 "현재 모집단 + 과거 실적" 분업이 없다. 그 하나를
+            # 어제로 남겨 두면 어제 값이 그 달의 답으로 나가므로, D-1 로 못 박힌
+            # 템플릿도 적재 정책이 선언한 아카이브로 돌린다.
             rewritten = _rewrite_previous_day_archive_select(
                 rewritten,
                 source_table,
                 target_table,
                 start_ym,
                 end_ym,
+                preserve_pinned_current=False,
             )
     return rewritten
 
@@ -2595,22 +2696,29 @@ def _live_month_source_relation(
     )
 
 
-def _live_source_covers_columns(sql: str, source_table: str, live_table: str) -> bool:
-    """Whether the daily twin carries every column this SQL reads.
+def _live_source_missing_columns(sql: str, source_table: str, live_table: str) -> list[str]:
+    """Columns this SQL reads that the daily source does not have.
 
     The twins are near-identical by design, but not identical — ``tmdaa1d12``
-    owns `소호로지스틱BSS등급구분코드` and ``tbdaa1d12`` does not. Rerouting a
-    query that reads such a column would turn an empty result into a column
-    error, so leave those on the monthly source.
+    owns `소호로지스틱BSS등급구분코드` and ``tbdaa1d12`` does not. 이름 접미사가
+    다른 짝(``tmdaa5e11``·``tbdaadt01``)은 겹치는 컬럼이 신용판매 매출금액처럼
+    일부뿐이다. 그런 컬럼을 읽는 쿼리를 돌리면 빈 결과가 컬럼 오류로 바뀌므로,
+    월 원천에 그대로 두고 왜 값이 없는지를 답변에서 밝힌다.
     """
     _, schema_columns = _schema_table_index(SCHEMA)
     monthly_only = schema_columns.get(source_table, set()) - schema_columns.get(live_table, set())
     # 기준년월은 감싸는 SELECT 가 기준년월일에서 파생해 채운다.
     monthly_only.discard("기준년월")
-    return not any(
-        re.search(rf'"{re.escape(column)}"', sql or "", re.IGNORECASE)
+    return sorted(
+        column
         for column in monthly_only
+        if re.search(rf'"{re.escape(column)}"', sql or "", re.IGNORECASE)
     )
+
+
+def _live_source_covers_columns(sql: str, source_table: str, live_table: str) -> bool:
+    """Whether the daily source carries every column this SQL reads."""
+    return not _live_source_missing_columns(sql, source_table, live_table)
 
 
 def _route_table_to_live_source(
@@ -3277,8 +3385,17 @@ def _vq_lists_entities(sql: str) -> bool:
     from_at = re.search(r"(?<![0-9A-Za-z_])FROM(?![0-9A-Za-z_])", tail, re.IGNORECASE)
     select_list = tail[: from_at.start()] if from_at else tail
 
-    # 집계 호출을 인자까지 통째로 지운다. 함수 이름만 지우면
-    # COUNT(DISTINCT m."고객식별자") 의 고객식별자가 남아 전부 목록으로 잡힌다.
+    # 집계 호출을 지운 뒤에도 엔티티 식별자가 남아 있으면 행이 엔티티 단위다.
+    stripped = _strip_aggregate_calls(select_list)
+    return any(column in stripped for column in _ENTITY_ID_COLUMNS)
+
+
+def _strip_aggregate_calls(select_list: str) -> str:
+    """Drop aggregate calls with their arguments from a SELECT list.
+
+    함수 이름만 지우면 COUNT(DISTINCT m."고객식별자") 의 고객식별자가 남아
+    집계 결과가 엔티티 목록으로 잡힌다.
+    """
     stripped: list[str] = []
     index = 0
     while index < len(select_list):
@@ -3297,8 +3414,7 @@ def _vq_lists_entities(sql: str) -> bool:
                     break
             cursor += 1
         index = cursor + 1
-    # 집계 호출을 지운 뒤에도 엔티티 식별자가 남아 있으면 행이 엔티티 단위다.
-    return any(column in "".join(stripped) for column in _ENTITY_ID_COLUMNS)
+    return "".join(stripped)
 
 
 def _tool_request_is_supported(question: str, tool: dict) -> bool:
@@ -3621,6 +3737,10 @@ def _verified_query_matches_intent(
         return False
     if not _verified_query_time_source_compatible(question, matched):
         return False
+    if not _verified_query_serves_requested_period(question, matched):
+        return False
+    if not _verified_query_serves_named_industry(question, matched):
+        return False
     question_text = question or ""
 
     # v2: 참고 SQL은 컬럼이 고정된 완제품이라 매칭되면 그대로 실행된다. 질문이
@@ -3833,6 +3953,80 @@ def _vq_row_request_is_supported(
 def _verified_query_is_executable(query: dict) -> bool:
     """Keep migration/reference SQL available as documentation, not runtime templates."""
     return str(query.get("runtime_mode") or "executable").lower() != "reference_only"
+
+
+_VQ_RELATIVE_NOW_RE = re.compile(r"CURRENT_TIMESTAMP|CURRENT_DATE|\bNOW\s*\(", re.IGNORECASE)
+
+
+def _verified_query_serves_requested_period(question: str, query: dict) -> bool:
+    """Reject a now-pinned VQ when the question names a period it cannot reach.
+
+    시간 조건이 "지금/어제" 상대 표현뿐이고 기간 파라미터도 없는 VQ는 현재 시점
+    하나만 낸다. 질문이 다른 기간을 짚었을 때 답이 되는 건 적재 정책이 그 템플릿을
+    과거 월 소스로 다시 써 줄 때뿐이고, 다시 못 쓰면 어제 값이 그 달의 답으로
+    나간다.
+
+    기간을 맞춰 준다고 답이 되는 건 아니다. 축까지 맞는지는
+    _verified_query_serves_named_industry 가 따로 본다.
+    """
+    sql = str(query.get("sql") or "")
+    if not _VQ_RELATIVE_NOW_RE.search(sql):
+        return True
+    parameters = query.get("parameters") if isinstance(query.get("parameters"), dict) else {}
+    if any(re.search(r"(?:년월|기간|시작|종료|기준일|기준년)", str(name)) for name in parameters):
+        return True
+    # 연·월·일을 적어 못 박은 기간만 본다. "전월 매입금액" 처럼 컬럼명에 들어 있는
+    # 상대 기간어를 기간 요청으로 읽으면 VQ 자신의 원래 질문까지 거부된다.
+    if not _v2_absolute_period_requested(question):
+        return True
+    start_ym, _ = _previous_day_archive_route(question)
+    if not start_ym:
+        return True
+    routed = _route_verified_query_accumulation(question, str(query.get("name") or ""), sql)
+    return routed.strip() != sql.strip()
+
+
+def _named_industry_value(question: str) -> str:
+    """질문이 값으로 짚은 업종 이름. 축 이름을 부른 것이면 빈 문자열.
+
+    "마트업종이 보유한" 처럼 이름을 업종에 붙여 쓴 형태만 값으로 읽는다.
+    "마케팅 업종", "높은 업종", "10개 업종" 처럼 띄어 쓴 앞말은 축 이름이거나
+    수식어라, 값으로 읽으면 멀쩡한 매칭까지 거부하게 된다. 띄어 쓴 업종명
+    ("주유 업종")은 이 게이트가 그냥 안 걸리는 쪽으로 흘린다.
+    """
+    if "업종" not in (question or ""):
+        return ""
+    axis_prefixes = {
+        name.split("업종")[0]
+        for name in _schema_column_names()
+        if "업종" in name and name.split("업종")[0]
+    }
+    for match in re.finditer(r"(?P<name>[0-9A-Za-z가-힣]{2,})업종", question or ""):
+        name = match.group("name")
+        if any(name.endswith(prefix) for prefix in axis_prefixes):
+            continue
+        return name
+    return ""
+
+
+def _verified_query_serves_named_industry(question: str, query: dict) -> bool:
+    """Reject an all-industry template when the question names one industry.
+
+    marketing_industry_card_portfolio 는 마케팅업종대분류 전체를 GROUP BY 만 하고
+    업종 필터도 파라미터도 없다. "26년 7월 마트업종이 보유한 유효기업신용카드수"
+    에 이게 붙으면 마트 한 줄이 아니라 전 업종 표가 나간다. 적재 정책이 이 VQ를
+    과거 월 소스로 다시 써 주기 전에는 기간 게이트가 이 사례를 대신 막고 있었다.
+    """
+    if not _named_industry_value(question):
+        return True
+    sql = str(query.get("sql") or "")
+    if "업종" not in sql:
+        return True
+    parameters = query.get("parameters") if isinstance(query.get("parameters"), dict) else {}
+    if any("업종" in str(name) for name in parameters):
+        return True
+    # WHERE 에 업종이 있으면 그 업종만 낼 수 있다. GROUP BY 축에만 있으면 못 한다.
+    return any("업종" in region for region in _where_regions(sql))
 
 
 def _verified_query_time_source_compatible(question: str, query: dict) -> bool:
@@ -4446,6 +4640,22 @@ _DISTINCTIVE_OWNER_LIMIT = 3
 _DISTINCTIVE_WEIGHT = 12
 _DISTINCTIVE_CAP = 1
 
+# "지표 X를 축 Y별로" 질문은 X와 Y를 함께 가진 테이블 하나로 답한다. 컬럼 겹침
+# 점수는 min(hits, 4) * 3 이라서 둘 다 가진 테이블(6점)과 하나만 가진 테이블(3점)의
+# 차이가 semantic attribute 한 건(36점)에 묻혔다. "법인카드 유이자 할부 이용금액을
+# 카드거래매체별로" 는 두 컬럼을 함께 가진 유일한 테이블 tmdaa3e16 이 3순위였고,
+# "법인카드" 라는 낱말로 걸린 가맹점 월 enrichment 가 1순위였다.
+_COVERAGE_MIN_COLUMNS = 2
+_COVERAGE_WEIGHT = 40
+
+# 위 규칙은 축이 함께 잡힐 때만 듣는다. 축 없이 지표만 묻는 질문("기업카드 할부
+# 이용금액은?")은 컬럼이 하나만 걸려서 겹침 3점 + 희소 컬럼 12점이 전부이고,
+# 그 지표를 가진 유일한 테이블 tmdaa3e16 이 컬럼을 하나도 못 맞춘
+# corporate_card_holding 원천(36점)에 밀려 후보에서 잘려 나갔다. semantic attribute
+# 는 모집단을 좁히는 축이므로, 질문의 지표를 갖고 있지 않으면 1순위가 아니라
+# 조인 상대다.
+_SOLE_MEASURE_OWNER_WEIGHT = 40
+
 
 def _is_semantic_table_visible(table: dict) -> bool:
     return str(table.get("semantic_visibility") or "default").lower() != "restricted"
@@ -4472,6 +4682,15 @@ def _phrase_in_question(question: str, phrase: object) -> bool:
 
 def _contract_source_tables(question: str, contract: dict) -> list[str]:
     return source_tables_for_question(contract, question)
+
+
+def _requested_period_is_open_month(question: str) -> bool:
+    """Whether the question asks only about the month the run date sits in."""
+    start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
+    current_ym = _current_ym()
+    if explicit_day:
+        return explicit_day[:6] == current_ym
+    return bool(start_ym) and start_ym == end_ym == current_ym
 
 
 def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
@@ -4531,6 +4750,11 @@ def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
     use_period = has_period and not (
         explicitly_current_attribute or (generic_current and not historical_shape)
     )
+    # 월 실적·월 스냅샷은 그 달이 닫힌 뒤에 적재된다. 요청 월이 실행일이 속한 달이면
+    # 월 원천에 아직 그 달 행이 없으므로, 열린 달을 이미 들고 있는 일 적재 원천을 쓴다.
+    # "2026년 8월"처럼 이번 달을 날짜로 쓴 질문이 여기 걸린다.
+    if use_period and policy.get("open_month_uses_current") and _requested_period_is_open_month(question):
+        use_period = False
     prefix_key = "period_role_prefix" if use_period else "default_role_prefix"
     prefix = str(policy.get(prefix_key) or "")
     preferred = [
@@ -4773,6 +4997,12 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
             add(mapping.get("table"), attribute_score)
 
     for contract in matched_contracts:
+        # 이름이 required 인 계약은 이름 없는 질문의 근거가 못 된다. authoritative
+        # 경로에는 이 가드가 있는데 점수 경로에는 없어서, "26년 7월 9일 하루 기준
+        # 기업신용매출건수" 가 named_merchant_monthly_sales 의 +28 로 가맹점 월매출
+        # (tmdaa5e11) 을 1순위로 받았다.
+        if not _contract_entity_bindings_available(question, contract):
+            continue
         for table_name in _contract_source_tables(question, contract):
             add(table_name, 28)
 
@@ -4844,6 +5074,8 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         for table_name in reference_routed_sources:
             add(table_name, join_weight)
 
+    matched_columns: dict[str, set[str]] = {}
+    measure_specificity: dict[str, int] = {}
     for index, table in enumerate(SCHEMA.get("tables", [])):
         if not _is_semantic_table_visible(table):
             continue
@@ -4860,12 +5092,20 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
             for column in _visible_table_columns(table, section):
                 name = str(column.get("name") or "")
                 terms = [name, *column.get("synonyms", [])]
-                if any(
-                    str(term or "") not in _GENERIC_TABLE_TERMS
-                    and _phrase_in_question(question, term)
+                matched_terms = [
+                    term
                     for term in terms
-                ):
+                    if str(term or "") not in _GENERIC_TABLE_TERMS
+                    and _phrase_in_question(question, term)
+                ]
+                if matched_terms:
                     column_hits += 1
+                    matched_columns.setdefault(logical, set()).add(name)
+                    if section == "measures":
+                        measure_specificity[logical] = max(
+                            measure_specificity.get(logical, 0),
+                            max(len(_v2_compact(term)) for term in matched_terms),
+                        )
                     if 0 < len(column_owners.get(name, ())) <= _DISTINCTIVE_OWNER_LIMIT:
                         distinctive_hits += 1
                 if name in named_columns:
@@ -4884,6 +5124,25 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         # 점수(36)로 이겼고 모델은 없는 컬럼을 "가장 가까운 컬럼"으로 대체했다.
         if exact_hits:
             add(logical, min(exact_hits, 2) * 40)
+
+    # 질문의 컬럼을 가장 많이 가진 테이블이 하나뿐이면, 그 테이블만으로 질문의
+    # 지표와 분류축이 모두 채워진다는 뜻이다. 같은 개수인 테이블이 여럿이면
+    # (기업 일/월 스냅샷 짝처럼) 적재 정책이 고를 몫이므로 가점하지 않는다.
+    coverage = sorted((len(names) for names in matched_columns.values()), reverse=True)
+    if len(coverage) > 1 and coverage[0] >= _COVERAGE_MIN_COLUMNS and coverage[0] > coverage[1]:
+        for name, names in matched_columns.items():
+            if len(names) == coverage[0]:
+                add(name, _COVERAGE_WEIGHT)
+
+    # 질문이 가장 구체적으로 부른 지표를 가진 테이블이 하나뿐이면, 축이 없어도 그
+    # 테이블이 답할 곳이다. 표면형 길이로 구체성을 잰다 — "할부이용금액"(tmdaa3e16)이
+    # 전표의 매출금액이 '이용금액' 동의어로 걸린 것보다 구체적이다. 같은 구체성인
+    # 테이블이 여럿이면(기업 일/월 스냅샷 짝처럼) 적재 정책이 고를 몫이므로 가점하지 않는다.
+    if measure_specificity:
+        best = max(measure_specificity.values())
+        owners = [name for name, length in measure_specificity.items() if length == best]
+        if len(owners) == 1:
+            add(owners[0], _SOLE_MEASURE_OWNER_WEIGHT)
 
     known_by_physical = {
         str(table.get("physical_table") or table.get("name") or "").rsplit(".", 1)[-1]: str(table.get("name") or "")
@@ -5122,6 +5381,17 @@ def _table_details(
         if source_time:
             partition_keys.add(source_time)
         primary_time = str(table.get("primary_time_dimension") or "")
+        # 이 테이블을 기간으로 자를 때 쓰는 축. 적재 정책의 조회 컬럼이 grain 의
+        # 시간축과 다른 테이블(tbdaadt01 의 실적기준년월일)이 있어 둘을 함께 본다.
+        time_axis = {
+            primary_time,
+            str(
+                (accumulation_policy_for(str(table.get("name") or "")) or {}).get(
+                    "query_time_dimension"
+                )
+                or ""
+            ),
+        } - {""}
 
         ranked: list[tuple[int, int, str, dict]] = []
         position = 0
@@ -5137,7 +5407,12 @@ def _table_details(
                     score += 90
                 if name and name in join_text:
                     score += 80
-                if semantic_role == "시간":
+                if semantic_role == "시간" and name in time_axis:
+                    # 시간 차원 전부에 가점을 주면 날짜 컬럼이 예산을 다 먹는다.
+                    # 날짜 컬럼이 15개인 tmdaa5d01 은 16칸이 전부 날짜로 채워져
+                    # 가맹점사업주체·상태·해지사유가 0점으로 탈락했다. 기간 조건에
+                    # 필요한 건 조회 시간축 하나이고, 나머지 날짜는 질문이 이름을
+                    # 대면(+70) 올라온다.
                     score += 35 if _has_time_expression(question) else 18
                 terms = [name, *column.get("synonyms", [])]
                 if any(_phrase_in_question(question, term) for term in terms):
@@ -5661,6 +5936,114 @@ def _validate_requested_row_constraints(question: str, sql: str) -> list[str]:
     return issues
 
 
+# "상위 10개 업체" 처럼 순위의 단위가 기업일 때만 잡는다. "상위 10개 가맹점"은
+# 가맹점번호가, "상위 20개를 보여줘"는 축 값이 단위라 여기 걸리면 안 된다.
+_CORPORATE_ENTITY_RANK_RE = re.compile(
+    r"(?:상위|하위|TOP|톱|BOTTOM)\s*\d[\d,]*\s*"
+    r"(?:개사|(?:개|곳|군데)?\s*(?:업체|회사|고객사|거래처|기업(?!카드)|법인(?!카드)))",
+    re.IGNORECASE,
+)
+_CARD_GRAIN_COLUMNS = ("회원일련번호", "카드구분키번호")
+
+
+def _validate_corporate_entity_grain(question: str, sql: str) -> list[str]:
+    """Check that a corporate ranking emits one row per 고객식별자.
+
+    같은 질문을 "상위 10개 업체"로 물으면 회원일련번호·카드구분키번호로 쪼갠 카드
+    목록이, "상위 10개 회사"로 물으면 고객식별자 목록이 나왔다(cs-workbook-017/018).
+    두 표현은 같은 단위를 가리키므로 결과 grain 도 같아야 한다.
+    """
+    if not _CORPORATE_ENTITY_RANK_RE.search(question or ""):
+        return []
+    # 질문이 카드·회원 단위를 따로 요구하면 그 grain 이 맞다.
+    if re.search(r"카드별|회원별", question or ""):
+        return []
+    select_list = outer_select_list(sql)
+    if not select_list:
+        return []
+
+    issues: list[str] = []
+    if "고객식별자" not in select_list:
+        issues.append(
+            "업체·회사 단위 순위 결과에 고객식별자가 없습니다. 고객식별자를 SELECT에 포함하세요."
+        )
+    leaked = [
+        column
+        for column in _CARD_GRAIN_COLUMNS
+        if column in _strip_aggregate_calls(select_list)
+    ]
+    if leaked:
+        issues.append(
+            f"업체·회사 단위 순위 결과가 {'·'.join(leaked)}로 쪼개져 있습니다. "
+            "고객식별자로 GROUP BY 해 업체 1행씩 내세요."
+        )
+    return issues
+
+
+_SLIP_TABLES = ("tbdaabt30", "tbdaabt08")
+# 사용자가 순액 대상으로 지정한 전표 금액 컬럼과 통화만 다른 미화 쌍둥이.
+_SLIP_NET_MEASURES = (
+    "매출금액",
+    "매출미화금액",
+    "봉사료",
+    "미화봉사료",
+    "부가가치세",
+    "가맹점수수료",
+)
+# SUM(매출금액), AVG(a."매출금액"), SUM(COALESCE(s.봉사료, 0)) 을 모두 잡되
+# 가맹점일시불매출금액·가맹점수수료율처럼 이름이 다른 컬럼은 건드리지 않는다.
+_RAW_SLIP_AMOUNT_RE = re.compile(
+    r"(?:SUM|AVG)\((?:COALESCE\()?[A-Za-z]?\.?(?:" + "|".join(_SLIP_NET_MEASURES) + r")[,)]",
+    re.IGNORECASE,
+)
+# COUNT(매출전표번호), COUNT(DISTINCT a."해외매출전표번호") 처럼 전표 행을 세는 집계.
+_RAW_SLIP_COUNT_RE = re.compile(
+    r"COUNT\((?:DISTINCT)?(?:\*|[A-Za-z]?\.?[가-힣]*매출전표번호)\)", re.IGNORECASE
+)
+
+
+def _validate_sales_slip_net_amount(sql: str) -> list[str]:
+    """Check that 전표 금액·건수 are aggregated as 순액.
+
+    전표 한 행은 정당·정정·취소 중 한 종류이고 취소전표도 금액을 양수로 들고 있다.
+    그대로 SUM·COUNT하면 취소·환급까지 더해져 이용금액과 건수가 부풀려진다.
+    매출전표종류구분코드를 이미 쓰고 있으면(부호 CASE·전표종류별 GROUP BY·코드 필터)
+    질문이 요구한 집계이므로 건드리지 않는다.
+    """
+    text = str(sql or "")
+    if not any(table in text.lower() for table in _SLIP_TABLES):
+        return []
+    compact = re.sub(r'["\s]', "", text)
+    if "매출전표종류구분코드" in compact:
+        return []
+
+    issues: list[str] = []
+    if _RAW_SLIP_AMOUNT_RE.search(compact):
+        issues.append(
+            "매출전표의 금액(매출금액·봉사료·부가가치세·가맹점수수료)은 매출전표종류구분코드로 "
+            "부호를 정해 순액으로 집계해야 합니다. "
+            "SUM(CASE WHEN \"매출전표종류구분코드\" IN ('1','4') THEN \"매출금액\" ELSE -\"매출금액\" END) 처럼 "
+            "정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 빼세요."
+        )
+    if _RAW_SLIP_COUNT_RE.search(compact):
+        issues.append(
+            "매출전표 건수도 순액입니다. COUNT로 세면 취소전표가 건수를 늘립니다. "
+            "SUM(CASE WHEN \"매출전표종류구분코드\" IN ('1','4') THEN 1 ELSE -1 END) 으로 세세요."
+        )
+    return issues
+
+
+# KST D-1 을 날짜 리터럴 없이 계산하는 표현. DATE_ADD 인자에 CAST(... AS DATE) 를
+# 끼운 형태도 같은 하루를 가리킨다. 적재 가용일 검증과 스냅샷 판정이 서로 다른
+# 패턴을 들고 있어서, CAST 형으로 D-1 한 날을 고른 SQL이 "최신 가용일로 제한하지
+# 않았다" 로 반려됐다.
+_DYNAMIC_PREVIOUS_DAY_SQL = (
+    r"DATE_FORMAT\s*\(\s*DATE_ADD\s*\(\s*'day'\s*,\s*-1\s*,"
+    r"[^)]*?CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'[^,]*?"
+    r"\)\s*,\s*'%Y%m%d'\s*\)"
+)
+
+
 def _where_regions(sql: str) -> list[str]:
     """Return WHERE regions from every CTE and subquery."""
     regions: list[str] = []
@@ -5738,12 +6121,7 @@ def _has_exact_table_axis_value(
     value: str,
 ) -> bool:
     """Whether a load axis is fixed to the requested one-day snapshot."""
-    dynamic_previous_day = (
-        r"DATE_FORMAT\s*\(\s*DATE_ADD\s*\(\s*'day'\s*,\s*-1\s*,\s*"
-        r"CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'\s*\)\s*,\s*"
-        r"'%Y%m%d'\s*\)"
-    )
-    exact_value = rf"(?:'{re.escape(value)}'|{dynamic_previous_day})"
+    exact_value = rf"(?:'{re.escape(value)}'|{_DYNAMIC_PREVIOUS_DAY_SQL})"
     for region in _where_regions(sql):
         for axis in _table_axis_patterns(sql, table_name, column):
             if re.search(
@@ -5963,12 +6341,7 @@ def _uses_exact_previous_day_snapshot(sql: str) -> bool:
     """Whether SQL fixes a previous-day table to the one latest KST day."""
     previous_day_value = previous_day_ymd()
     day_column = r'(?:(?:"?[A-Za-z_]\w*"?)\s*\.\s*)?"?기준년월일"?'
-    exact_value = (
-        rf"'{previous_day_value}'|"
-        r"DATE_FORMAT\s*\(\s*DATE_ADD\s*\(\s*'day'\s*,\s*-1\s*,"
-        r".*?CURRENT_TIMESTAMP\s+AT\s+TIME\s+ZONE\s+'Asia/Seoul'.*?"
-        r"\)\s*,\s*'%Y%m%d'\s*\)"
-    )
+    exact_value = rf"'{previous_day_value}'|{_DYNAMIC_PREVIOUS_DAY_SQL}"
     return bool(
         re.search(
             rf"{day_column}\s*=\s*(?:{exact_value})|(?:{exact_value})\s*=\s*{day_column}",
@@ -6035,6 +6408,8 @@ def validate_sql(state: Text2SQLState) -> dict:
     issues.extend(_validate_required_semantic_tables(retrieval_question, sql, selected_tables))
     issues.extend(_validate_recent_month_semantics(question, sql))
     issues.extend(_validate_requested_row_constraints(question, sql))
+    issues.extend(_validate_corporate_entity_grain(question, sql))
+    issues.extend(_validate_sales_slip_net_amount(sql))
     issues.extend(_availability_policy_issues(retrieval_question, sql, selected_tables))
     implicit_time_basis = _implicit_time_basis_note(question, sql)
     current_ym = _current_ym()
@@ -6249,6 +6624,39 @@ def _loaded_period_notes(sql: str) -> list[str]:
     return notes
 
 
+def _open_month_live_source_notes(sql: str) -> list[str]:
+    """이번 달을 물었는데 일 적재 원천으로 돌리지 못한 이유.
+
+    월 실적·월 스냅샷은 달이 닫힌 뒤 적재되므로 이번 달은 0건이 나온다. 열린 달을
+    들고 있는 일 적재 짝으로 돌리는 것이 기본이고(_apply_current_month_live_sources),
+    짝이 그 컬럼을 갖고 있지 않아 돌리지 못했으면 그 사실을 답변에서 밝힌다.
+    """
+    current_ym = kst_today().strftime("%Y%m")
+    notes: list[str] = []
+    for table in sorted(_extract_schema_tables(sql)):
+        live = live_source_for(table)
+        if not live:
+            continue
+        if set(_table_axis_literal_values(sql, table, "기준년월")) != {current_ym}:
+            continue
+        live_table = str(live.get("table") or "")
+        missing = _live_source_missing_columns(sql, table, live_table)
+        if missing:
+            notes.append(
+                f"{table}의 {current_ym} 행은 달이 닫힌 뒤 적재됩니다. "
+                f"이번 달을 들고 있는 {live_table}에는 {', '.join(missing)}이(가) 없어 "
+                "대신 조회할 수 없습니다."
+            )
+            continue
+        latest_day = _latest_available_day(live_table)
+        if latest_day[:6] != current_ym:
+            notes.append(
+                f"{table}의 {current_ym} 행은 달이 닫힌 뒤 적재되고, "
+                f"{live_table}도 아직 이번 달을 적재하지 않았습니다(최신 {latest_day})."
+            )
+    return notes
+
+
 def generate_answer(state: Text2SQLState) -> dict:
     if state.get("answer"):
         return {"answer": state["answer"]}
@@ -6262,6 +6670,7 @@ def generate_answer(state: Text2SQLState) -> dict:
         basis = state.get("implicit_time_basis", "") or _implicit_time_basis_note(question, sql)
         if basis:
             lines.append(f"- 조회 기준: {basis}")
+        lines.extend(f"- {note}" for note in _open_month_live_source_notes(sql))
         lines.extend(f"- {note}" for note in _loaded_period_notes(sql))
         lines.append("- 기간을 넓히거나 이름·업종 등의 검색어를 줄여서 다시 시도해 보세요.")
         return {"answer": "\n".join(lines)}

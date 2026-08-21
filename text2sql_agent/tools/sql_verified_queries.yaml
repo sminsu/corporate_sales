@@ -966,7 +966,8 @@ verified_queries:
       s."가맹점업종코드",
       COALESCE(i."가맹점업종명", '미분류') AS "가맹점업종명",
       COUNT(DISTINCT t."고객식별자") AS "대상기업수",
-      SUM(COALESCE(s."매출금액", 0)) AS "이용금액"
+      SUM(CASE WHEN s."매출전표종류구분코드" IN ('1','4')
+           THEN COALESCE(s."매출금액", 0) ELSE -COALESCE(s."매출금액", 0) END) AS "이용금액"
     FROM target t
     JOIN card_system.tbdaabt30 s
       ON t."고객식별자" = s."기업고객식별자"
@@ -1996,11 +1997,10 @@ verified_queries:
   sql: |
     SELECT
       전표매출년월일,
-      COUNT(DISTINCT 매출전표번호) AS 매출건수,
-      SUM(매출금액) AS 총매출금액
+      SUM(CASE WHEN 매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS 매출건수,
+      SUM(CASE WHEN 매출전표종류구분코드 IN ('1','4') THEN 매출금액 ELSE -매출금액 END) AS 총매출금액
     FROM card_system.tbdaabt30
     WHERE 개인기업구분코드 = '2'
-      AND (전표취소구분코드 IS NULL OR 전표취소구분코드 = '0')
     GROUP BY 전표매출년월일
     ORDER BY 전표매출년월일
   tags:
@@ -2157,14 +2157,14 @@ verified_queries:
     SELECT
       b.업종대분류코드명,
       b.가맹점업종명,
-      SUM(a.매출금액) AS 총매출금액,
-      COUNT(DISTINCT a.매출전표번호) AS 매출건수,
-      AVG(a.매출금액) AS 건당평균금액
+      SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN a.매출금액 ELSE -a.매출금액 END) AS 총매출금액,
+      SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS 매출건수,
+      SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN a.매출금액 ELSE -a.매출금액 END)
+        / NULLIF(CAST(SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS DOUBLE), 0.0) AS 건당평균금액
     FROM card_system.tbdaabt30 a
     JOIN card_system.tbdaadb17 b
       ON a.가맹점업종코드 = b.가맹점업종코드
     WHERE a.개인기업구분코드 = '2'
-      AND (a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')
       AND a.전표매출년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
     GROUP BY b.업종대분류코드명, b.가맹점업종명
     ORDER BY 총매출금액 DESC
@@ -2506,14 +2506,17 @@ verified_queries:
     SELECT
       b.업종대분류코드명,
       a.온라인거래여부,
-      COUNT(DISTINCT a.매출전표번호) AS 거래건수,
-      SUM(a.매출금액) AS 총매출금액,
-      ROUND(AVG(a.매출금액), 0) AS 건당평균금액
+      SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS 거래건수,
+      SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN a.매출금액 ELSE -a.매출금액 END) AS 총매출금액,
+      ROUND(
+        SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN a.매출금액 ELSE -a.매출금액 END)
+        / NULLIF(CAST(SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS DOUBLE), 0.0),
+        0
+      ) AS 건당평균금액
     FROM card_system.tbdaabt30 a
     JOIN card_system.tbdaadb17 b
       ON a.가맹점업종코드 = b.가맹점업종코드
     WHERE a.개인기업구분코드 = '2'
-      AND (a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')
       AND a.전표매출년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
     GROUP BY b.업종대분류코드명, a.온라인거래여부
     ORDER BY b.업종대분류코드명, a.온라인거래여부
@@ -2552,13 +2555,16 @@ verified_queries:
         WHEN 할부기간개월수 BETWEEN 7 AND 12 THEN '7~12개월'
         ELSE '12개월 초과'
       END AS 할부구간,
-      COUNT(DISTINCT 매출전표번호) AS 거래건수,
-      SUM(매출금액) AS 총매출금액,
-      ROUND(AVG(매출금액), 0) AS 건당평균금액,
+      SUM(CASE WHEN 매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS 거래건수,
+      SUM(CASE WHEN 매출전표종류구분코드 IN ('1','4') THEN 매출금액 ELSE -매출금액 END) AS 총매출금액,
+      ROUND(
+        SUM(CASE WHEN 매출전표종류구분코드 IN ('1','4') THEN 매출금액 ELSE -매출금액 END)
+        / NULLIF(CAST(SUM(CASE WHEN 매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS DOUBLE), 0.0),
+        0
+      ) AS 건당평균금액,
       ROUND(AVG(할부기간개월수), 1) AS 평균할부개월
     FROM card_system.tbdaabt30
     WHERE 개인기업구분코드 = '2'
-      AND (전표취소구분코드 IS NULL OR 전표취소구분코드 = '0')
       AND 전표매출년월일 BETWEEN '{기간_시작}' AND '{기간_종료}'
     GROUP BY
       CASE
@@ -3141,14 +3147,17 @@ verified_queries:
   - Athena
 - name: overseas_peak_month_usage
   question: 2026년 해외업종에서 가장 많이 사용한 달과 이용금액을 알려줘
-  description: 지정 연도의 해외 매출전표를 월별로 합산해 이용금액이 가장 큰 달과 금액을 반환합니다.
+  description: 지정 기간의 카드 월실적을 월별로 합산해 해외 이용금액이 가장 큰 달과 금액을 반환합니다.
   sql: |
     SELECT
-      "기준년월" AS "최다이용월",
-      SUM(COALESCE("매출금액", 0)) AS "이용금액"
-    FROM card_system.tbdaabt08
-    WHERE "기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
-    GROUP BY "기준년월"
+      f."기준년월" AS "최다이용월",
+      SUM(
+        COALESCE(f."금월해외일시불이용금액", 0) + COALESCE(f."금월해외CA이용금액", 0)
+      ) AS "이용금액"
+    FROM card_system.tmdaa3e16 f
+    WHERE f."개인기업구분코드" = '2'
+      AND f."기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
+    GROUP BY f."기준년월"
     ORDER BY "이용금액" DESC, "최다이용월"
     LIMIT 1
   parameters:
@@ -3166,7 +3175,7 @@ verified_queries:
   - 최다이용월
   - 이용금액
   - 월별
-  - tbdaabt08
+  - tmdaa3e16
   - Athena
 - name: region_top_enterprise_merchants
   question: 최근 기준일 기준 지역별 기업영업 가맹점 전월 매입 상위 지역은?

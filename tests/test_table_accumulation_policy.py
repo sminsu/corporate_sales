@@ -306,10 +306,15 @@ def test_live_source_pairs_come_from_the_declared_historical_source() -> None:
         "format": "YYYYMMDD",
     }
     assert time_policy.live_source_for("tmdaa1d12")["table"] == "tbdaa1d12"
-    # 짝이 아닌 월별 테이블은 돌릴 곳이 없다. tbdaadt01 의 과거 원천이지만
-    # 이름 접미사가 달라 같은 grain 의 일별 짝이 아니다.
+    # 이름 접미사가 다른 짝은 정책에 직접 선언한다. 가맹점 월실적의 이번 달은
+    # 일 적재 가맹점기본에만 있고, 두 테이블이 함께 가진 컬럼만 돌릴 수 있다.
+    assert time_policy.live_source_for("tmdaa5e11") == {
+        "table": "tbdaadt01",
+        "query_time_dimension": "실적기준년월일",
+        "format": "YYYYMMDD",
+    }
+    # 월말 스냅샷은 선언도 이름 짝도 없어 돌릴 곳이 없다.
     assert time_policy.live_source_for("tmdaa5d01") is None
-    assert time_policy.live_source_for("tmdaa5e11") is None
     assert time_policy.live_source_for("tbdaaus01") is None
 
 
@@ -1308,3 +1313,82 @@ def test_recent_ten_day_ignores_day_literals_outside_source_axis_predicate() -> 
         issues = workflow._availability_policy_issues("현재 가맹점 수", sql)
 
     assert not issues
+
+
+def test_previous_day_guard_accepts_the_cast_form_of_kst_d_minus_one() -> None:
+    """KST D-1 을 CAST(... AS DATE) 로 감싼 표현도 같은 하루를 가리킨다.
+
+    적재 가용일 검사와 스냅샷 판정이 서로 다른 패턴을 들고 있어서, CAST 형으로
+    D-1 한 날을 고른 SQL이 "최신 가용일로 제한하지 않았다" 로 반려됐다.
+    goldenset v3 의 전일 스냅샷 정답 SQL 은 전부 이 CAST 형이다.
+    """
+    def snapshot_sql(expression: str) -> str:
+        return f"""
+        SELECT a."소매비소매구분코드", SUM(a."유효기업신용카드수")
+        FROM card_system.tbdaa1d12 a
+        WHERE a."기준년월일" = {expression}
+        GROUP BY a."소매비소매구분코드"
+        """
+
+    plain = snapshot_sql(
+        "DATE_FORMAT(DATE_ADD('day', -1, "
+        "CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')"
+    )
+    cast = snapshot_sql(
+        "DATE_FORMAT(DATE_ADD('day', -1, "
+        "CAST(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE)), '%Y%m%d')"
+    )
+    question = "현재 기준 기업 유효 기업 신용카드 수를 소매비소매별로 알려줘"
+
+    with frozen_clock(), no_period_range():
+        for sql in (plain, cast):
+            assert not workflow._availability_policy_issues(question, sql), sql
+            assert workflow._uses_exact_previous_day_snapshot(sql), sql
+
+
+def test_relation_binding_survives_an_unaliased_source_before_a_join() -> None:
+    """``FROM ms JOIN tmdaa5e11 p`` 의 JOIN 을 ms 의 별칭으로 먹으면 안 된다.
+
+    별칭 자리가 다음 절의 키워드를 삼키면 스캔이 그 뒤에서 재개돼 조인된
+    테이블이 바인딩 목록에서 사라졌다. 그러면 적재 축 검사가 붙일 별칭을 찾지
+    못해 월 조건이 WHERE 에 있는데도 "적재 기간 조건 없음" 으로 반려하고,
+    테이블 치환도 그 관계를 건너뛴다.
+    """
+    sql = """
+    WITH ms AS (
+      SELECT u."기준년월", u."가맹점번호"
+      FROM card_system.tmdaaus01 u
+      WHERE u."기준년월" = '202603'
+    )
+    SELECT SUM(p."가맹점일시불매출금액")
+    FROM ms
+    JOIN card_system.tmdaa5e11 p
+      ON ms."기준년월" = p."기준년월"
+     AND ms."가맹점번호" = p."가맹점번호"
+    WHERE p."기준년월" = '202603'
+    """
+
+    assert workflow._table_aliases(sql, "tmdaa5e11") == [("p", True)]
+    assert workflow._has_table_axis_filter(sql, "tmdaa5e11", "기준년월")
+    assert not workflow._availability_policy_issues("2026년 3월 가맹점 매출", sql)
+
+
+def test_period_word_inside_a_column_name_is_not_a_relative_month() -> None:
+    """전월·최근으로 시작하는 컬럼명은 사전 집계 지표의 이름이지 조회 기간이 아니다.
+
+    "2025년 12월 가맹점 전월 일시불 매입건수" 의 전월은
+    tmdaaus01."전월일시불매입건수" 이고, 조회 월은 질문이 적은 202512 다.
+    "최근 한도변경 사유별로" 의 최근은 tbdaa1d12."최근한도변경사유코드" 다.
+    상대 시점으로 읽으면 실행일 기준의 달 조건을 요구해 정답 SQL을 반려한다.
+    """
+    with frozen_clock():
+        assert workflow._relative_month_target(
+            "2025년 12월 가맹점 전월 일시불 매입건수를 평일24시간운영 여부별로 알려줘"
+        ) == ("", "")
+        assert workflow._relative_month_target(
+            "2026년 1월 기업의 금월KB페이이용금액을 최근 한도변경 사유별로 알려줘"
+        ) == ("", "")
+        # 진짜 상대 시점은 그대로 해석해야 한다.
+        assert workflow._relative_month_target("지난달 가맹점 매출을 알려줘")[0] == "202607"
+        assert workflow._relative_month_target("전월 가맹점 매출을 알려줘")[0] == "202607"
+        assert workflow._relative_month_target("최근 기준 유효 기업카드 수")[0] == "202608"

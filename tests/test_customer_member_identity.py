@@ -14,6 +14,7 @@ COUNT(DISTINCT tbdaaat01."고객식별자") 다.
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,9 @@ def test_grain_rules_state_which_key_counts_what() -> None:
     assert identity_rule, rules
     assert "기업고객식별자" in identity_rule  # 전표·가맹점 테이블의 다른 이름
     assert "법인고객식별자" in identity_rule  # 부서사업장회원의 다른 이름
+    # 세는 것만이 아니라 목록·순위의 단위도 같은 키를 따른다.
+    assert "상위 N개 업체·회사·기업·법인" in identity_rule
+    assert "카드구분키번호" in identity_rule
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +213,68 @@ def test_followup_keeps_customer_count_apart_from_member_count() -> None:
     assert "고객수" not in buckets["회원수"]
     assert _requested_metrics("고객수는 얼마야") == ["고객수"]
     assert _requested_metrics("회원수는 얼마야") == ["회원수"]
+
+
+# ---------------------------------------------------------------------------
+# 프롬프트 밖 — 업체·회사 단위 순위의 결과 grain
+#
+# cs-workbook-017("상위 10개 업체")과 cs-workbook-018("상위 10개 회사")은 표현만
+# 다른 같은 질문이고 정답 SQL도 같다. 그런데 라우팅이 동일해 두 질문 모두 LLM
+# 생성 경로로 내려가므로, "업체"로 물었을 때만 회원일련번호·카드구분키번호로 쪼갠
+# 카드 목록이 나오는 일이 있었다. 표현과 무관하게 고객식별자 1행이어야 한다.
+# ---------------------------------------------------------------------------
+WORKBOOK_GOLDENSET = {
+    row["id"]: row
+    for row in csv.DictReader(
+        (ROOT / "tests" / "fixtures" / "corporate_sales_workbook_goldenset_v1.csv").read_text(
+            encoding="utf-8-sig"
+        ).splitlines()
+    )
+}
+CARD_GRAIN_SQL = """
+SELECT c."회원일련번호", c."카드구분키번호", c."사업자등록번호",
+       SUM(c."금월이용합계금액") AS "이용금액"
+FROM tmdaa3e16 c
+GROUP BY c."회원일련번호", c."카드구분키번호", c."사업자등록번호"
+ORDER BY "이용금액" DESC
+LIMIT 10
+"""
+
+
+@pytest.mark.parametrize("goldenset_id", ["cs-workbook-017", "cs-workbook-018"])
+def test_corporate_ranking_rejects_card_grain_for_either_wording(goldenset_id: str) -> None:
+    question = WORKBOOK_GOLDENSET[goldenset_id]["question"]
+    expected_sql = WORKBOOK_GOLDENSET[goldenset_id]["sql"]
+
+    issues = workflow._validate_corporate_entity_grain(question, CARD_GRAIN_SQL)
+
+    assert any("고객식별자" in issue for issue in issues)
+    assert any("카드구분키번호" in issue for issue in issues)
+    assert workflow._validate_corporate_entity_grain(question, expected_sql) == []
+
+
+def test_corporate_ranking_allows_card_counts_over_the_customer_key() -> None:
+    """고객식별자로 묶은 뒤 카드 좌수를 세는 건 카드 단위 목록이 아니다."""
+    sql = """
+    SELECT c."고객식별자", a."사업자등록번호",
+           COUNT(DISTINCT c."카드구분키번호") AS "이용카드좌수",
+           SUM(c."금월이용합계금액") AS "이용금액"
+    FROM tmdaa3e16 c JOIN tmdaa1d12 a ON c."고객식별자" = a."고객식별자"
+    GROUP BY c."고객식별자", a."사업자등록번호"
+    ORDER BY "이용금액" DESC
+    LIMIT 10
+    """
+
+    assert workflow._validate_corporate_entity_grain("이용금액 상위 10개 업체를 알려줘", sql) == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2025년 12월 매출 상위 10개 가맹점을 보여줘",  # 단위가 가맹점번호다
+        "고객 업종구분코드별 기업고객 수 상위 20개를 보여줘",  # 단위가 축 값이다
+        "상위 10개 업체의 카드별 이용금액을 알려줘",  # 카드 단위를 질문이 요구했다
+    ],
+)
+def test_corporate_ranking_check_skips_other_units(question: str) -> None:
+    assert workflow._validate_corporate_entity_grain(question, CARD_GRAIN_SQL) == []

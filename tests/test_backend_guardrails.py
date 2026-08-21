@@ -208,7 +208,9 @@ def test_industry_card_usage_inherits_end_year_and_uses_daily_bounds() -> None:
         "기간_종료": "202606",
     }
     assert "BETWEEN '20260101' AND '20260630'" in result["final_sql"]
-    assert "SUM(a.매출금액)" in result["final_sql"]
+    # 전표 금액은 매출전표종류구분코드로 부호를 정해 순액으로 더한다.
+    assert "a.매출전표종류구분코드 IN ('1', '4') THEN a.매출금액" in result["final_sql"]
+    assert "ELSE -a.매출금액" in result["final_sql"]
     assert not schema._validate_sql_against_schema(
         result["final_sql"], ["tbdaabt30", "tbdaadb17"]
     )

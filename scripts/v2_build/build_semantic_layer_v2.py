@@ -29,6 +29,7 @@ usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import defaultdict
 from copy import deepcopy
@@ -40,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]   # v2 적용본 루트
 V1_ROOT = PROJECT_ROOT.parent / "corporate_sales_fable"   # 변환 원본(v1 저장소)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from text2sql_agent.v2.column_synonyms import derive_column_synonyms  # noqa: E402
+from text2sql_agent.v2.column_synonyms import compact, derive_column_synonyms  # noqa: E402
 from text2sql_agent.time_policy import TABLE_ACCUMULATION_POLICIES  # noqa: E402
 from text2sql_agent.v2.sql_contract import (  # noqa: E402
     ATHENA_RULES_V2,
@@ -51,6 +52,21 @@ from text2sql_agent.v2.sql_contract import (  # noqa: E402
 )
 
 COLUMN_SECTIONS = ("dimensions", "measures", "time_dimensions")
+
+# 한 글자 동의어는 어절 경계만 지키면 어디에나 걸린다. v1 은 11개 테이블의
+# "기준년월" 에 동의어 '월' 을 달아 두었고, 그래서 "가맹점 월 승인한도금액" 같은
+# 질문에서 기준년월을 가진 테이블 전부가 컬럼 단서 점수를 받았다. 테이블 랭킹은
+# "기준년월" 자체를 이미 흔한 용어로 빼 두는데 동의어가 그 구멍을 다시 열었다.
+_MIN_DECLARED_SYNONYM_LENGTH = 2
+
+
+def _useful_synonyms(values: object) -> list[str]:
+    """어절 단서가 되지 못하는 한 글자 동의어를 걷어낸다."""
+    return [
+        text
+        for value in values or []
+        if len(compact(text := str(value).strip())) >= _MIN_DECLARED_SYNONYM_LENGTH
+    ]
 V2_VERSION = "2026-08-14.3-v2"
 
 REMOVED_COLUMNS_BY_TABLE: dict[str, frozenset[str]] = {
@@ -140,9 +156,8 @@ def collect_column_profiles(schema: dict) -> dict[str, dict]:
                     continue
                 profile = profiles[name]
                 profile["tables"].append(table_name)
-                for synonym in column.get("synonyms") or []:
-                    text = str(synonym).strip()
-                    if text and text not in profile["synonyms"]:
+                for text in _useful_synonyms(column.get("synonyms")):
+                    if text not in profile["synonyms"]:
                         profile["synonyms"].append(text)
                 description = str(column.get("description") or "").strip()
                 if len(description) > len(profile["description"]):
@@ -162,6 +177,8 @@ def load_codebooks(path: Path) -> dict[str, dict]:
 
 def apply_column_metadata(schema: dict, codebooks: dict[str, dict]) -> dict:
     profiles = collect_column_profiles(schema)
+    # 접두사를 벗긴 어간이 다른 컬럼의 이름 그대로면 그 표면형은 그 컬럼의 것이다.
+    declared_columns = frozenset(profiles)
     stats = {
         "synonyms_propagated": 0,
         "synonyms_derived": 0,
@@ -178,9 +195,10 @@ def apply_column_metadata(schema: dict, codebooks: dict[str, dict]) -> dict:
                 if not name:
                     continue
                 profile = profiles.get(name, {})
-                existing = [str(value) for value in column.get("synonyms") or []]
+                declared = [str(value) for value in column.get("synonyms") or []]
+                existing = _useful_synonyms(declared)
                 merged = list(existing)
-                changed = False
+                changed = len(existing) != len(declared)
 
                 # 1. 같은 이름 컬럼의 동의어 합치기
                 for synonym in profile.get("synonyms", []):
@@ -190,7 +208,7 @@ def apply_column_metadata(schema: dict, codebooks: dict[str, dict]) -> dict:
                         changed = True
 
                 # 2. 컬럼명에서 유도한 표면형
-                for synonym in derive_column_synonyms(name, merged):
+                for synonym in derive_column_synonyms(name, merged, declared_columns):
                     if synonym not in merged:
                         merged.append(synonym)
                         stats["synonyms_derived"] += 1
@@ -587,8 +605,62 @@ def _replace_corporate_daily_with_monthly(value):
     return value
 
 
+# 유효 기업카드 보유 속성의 원천 4개. 기업고객 스냅샷이 이 속성의 본래 원천이고,
+# 가맹점 enrichment 두 개는 "기업카드를 가진 가맹점주" 를 물을 때만 쓰는 부수 원천이다.
+# v1 은 이 속성에 source_selection 이 없어서 "법인카드"·"기업카드" 라는 낱말 하나로
+# 네 테이블이 모두 최상위 후보 점수를 받았다. "현재 기준 유효 기업 신용카드 수" 는
+# 월말 스냅샷(tmdaa1d12)이 일 스냅샷(tbdaa1d12)을 눌러 과거 달을 답했다.
+_CORPORATE_CARD_HOLDING_ROLES = {
+    "tbdaa1d12": "current_corporate_card_holding",
+    "tmdaa1d12": "monthly_corporate_card_holding",
+    "tbdaaus01": "current_merchant_card_holding",
+    "tmdaaus01": "monthly_merchant_card_holding",
+}
+
+
+def _apply_corporate_card_holding_source_selection(schema: dict) -> None:
+    """유효 기업카드 보유 원천을 현재(D-1)와 명시 과거 월로 갈라 놓는다."""
+    attribute = next(
+        (
+            item
+            for item in schema.get("semantic_attributes", [])
+            if item.get("name") == "corporate_card_holding"
+        ),
+        None,
+    )
+    if attribute is None:
+        raise SystemExit("corporate_card_holding 속성 없음")
+
+    mappings = list(attribute.get("source_mappings") or [])
+    by_table = {str(item.get("table") or ""): item for item in mappings}
+    missing = sorted(set(_CORPORATE_CARD_HOLDING_ROLES) - set(by_table))
+    if missing:
+        raise SystemExit(f"기업카드 보유 원천 누락: {', '.join(missing)}")
+    for table, role in _CORPORATE_CARD_HOLDING_ROLES.items():
+        by_table[table]["role"] = role
+    # 후보 점수가 같으면 선언 순서가 순위를 가른다. 기업고객 스냅샷을 앞에 둔다.
+    attribute["source_mappings"] = [
+        by_table[table] for table in _CORPORATE_CARD_HOLDING_ROLES
+    ]
+    attribute["source_selection"] = {
+        "default_role_prefix": "current_",
+        "period_role_prefix": "monthly_",
+        "current_terms": list(_CORPORATE_CURRENT_TERMS),
+        # 월말 스냅샷은 달이 닫힌 뒤 적재된다. 실행일이 속한 달은 일 스냅샷만 갖고 있다.
+        "open_month_uses_current": True,
+    }
+    cautions = attribute.setdefault("semantic_cautions", [])
+    caution = (
+        "현재·최신 보유는 tbdaa1d12 KST 전일 기준년월일, 명시한 과거 월은 "
+        "tmdaa1d12 기준년월에서 읽는다."
+    )
+    if caution not in cautions:
+        cautions.append(caution)
+
+
 def apply_corporate_customer_semantic_overrides(schema: dict) -> int:
     """Route current corporate snapshots to D-1 and history to monthly rows."""
+    _apply_corporate_card_holding_source_selection(schema)
     entities = {
         str(item.get("name") or ""): item for item in schema.get("semantic_entities", [])
     }
@@ -929,7 +1001,7 @@ def apply_corporate_customer_semantic_overrides(schema: dict) -> int:
         entry.update(values)
 
     return (
-        2
+        3
         + len(monthly_metric_names)
         + len(daily_snapshot_metric_names)
         + len(fixed_monthly_contracts)
@@ -1155,6 +1227,896 @@ def apply_usage_sales_vocabulary(schema: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 10-1. 전표 금액·건수는 매출전표종류구분코드로 부호를 정해 순액으로 더한다
+#
+# 매출전표(tbdaabt30 국내·tbdaabt08 해외) 한 행은 정당·정정·취소 중 한 종류의
+# 전표다. 취소전표도 금액을 양수로 들고 있어서 SUM("매출금액") 과
+# COUNT("매출전표번호") 는 취소·환급분까지 더해 이용금액·건수를 부풀린다.
+# 업무 규칙은 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은
+# 빼는 순액이다(사용자 제공).
+#
+# v1 은 이 코드값을 몰라서 query_references.영업대상군_결제처업종별이용금액 의 rules 에
+# "취소·환입 순액 규칙은 문서에 없으므로 임의 코드 필터를 만들지 않는다" 라고 적어 두고
+# 전표 금액을 그대로 SUM 했고, verified query 는 전표취소구분코드로 취소 건을 빼려 했다.
+# 전표취소구분코드는 취소 사유(가맹점번호 상이·분할취소 등) 코드라 취소 여부를
+# 가려 주지 않는다. 두 코드북을 함께 선언해 그 혼동을 끊는다.
+# ---------------------------------------------------------------------------
+SLIP_TYPE_COLUMN = "매출전표종류구분코드"
+SLIP_TYPE_VALUE_SEMANTICS = {
+    "1": "정당전표",
+    "2": "정정전표",
+    "3": "취소전표",
+    "4": "취소정정전표",
+    "5": "청구보류",
+    "6": "체크환급",
+}
+# 금액·건수를 더하는 전표 종류. 나머지는 같은 값을 빼는 쪽이다.
+SLIP_TYPE_POSITIVE_CODES = ("1", "4")
+
+SLIP_CANCEL_REASON_COLUMN = "전표취소구분코드"
+SLIP_CANCEL_REASON_VALUE_SEMANTICS = {
+    "1": "가맹점번호 상이",
+    "2": "원인전표검증생략",
+    "3": "분할취소",
+    "4": "자동상계비대상",
+}
+
+# 사용자가 순액 대상으로 지정한 전표 금액과, 통화만 다른 미화 쌍둥이 컬럼.
+NET_MEASURES_BY_TABLE = {
+    "tbdaabt30": ("매출금액", "매출미화금액", "봉사료", "미화봉사료", "부가가치세", "가맹점수수료"),
+    "tbdaabt08": ("매출금액", "매출미화금액"),
+}
+# 프롬프트에 항상 렌더되는 테이블 공식. 지표 이름 → 순액 공식의 대상 컬럼.
+NET_FORMULAS_BY_TABLE = {
+    "tbdaabt30": {
+        "카드매출금액": "매출금액",
+        "이용금액": "매출금액",
+        "봉사료": "봉사료",
+        "부가가치세": "부가가치세",
+        "가맹점수수료": "가맹점수수료",
+    },
+    "tbdaabt08": {"해외매출금액": "매출금액"},
+}
+NET_COUNT_FORMULA_NAME = "매출건수"
+
+# 컬럼 상세는 135자까지만 프롬프트에 렌더된다(_table_details).
+SLIP_TYPE_DESCRIPTION = (
+    "매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: "
+    "정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다."
+)
+SLIP_CANCEL_REASON_DESCRIPTION = (
+    "취소전표의 사유 코드(가맹점번호 상이·원인전표검증생략·분할취소·자동상계비대상). "
+    "취소 여부는 매출전표종류구분코드로 가리며 이 컬럼으로 취소를 걸러내지 않는다."
+)
+# _table_details 가 컬럼 설명을 잘라내는 길이. 원문이 길면 순액 규칙이 잘려 나가므로
+# 규칙을 지키고 원문을 줄인다(원문 전체는 v1 semantic_layer.yaml 에 남아 있다).
+COLUMN_DESCRIPTION_RENDER_LIMIT = 135
+NET_MEASURE_SUFFIX = (
+    " 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 "
+    "매출전표종류구분코드로 부호를 정해 순액으로 집계한다."
+)
+NET_AMOUNT_CAUTIONS = (
+    "매출금액을 그대로 SUM하면 취소·환급 전표까지 더해져 이용금액이 부풀려진다.",
+    "매출전표종류구분코드로 부호를 정한다: 정당(1)·취소정정(4)은 +, "
+    "정정(2)·취소(3)·청구보류(5)·체크환급(6)은 -.",
+)
+NET_COUNT_CAUTIONS = (
+    "전표 건수도 순액이다. COUNT로 세면 취소전표가 건수를 늘린다.",
+    "매출전표종류구분코드가 정당(1)·취소정정(4)이면 +1, "
+    "정정(2)·취소(3)·청구보류(5)·체크환급(6)이면 -1로 더한다.",
+)
+OLD_NET_AMOUNT_RULE = "취소·환입 순액 규칙은 문서에 없으므로 임의 코드 필터를 만들지 않는다."
+NEW_NET_AMOUNT_RULE = (
+    "취소·환입은 매출전표종류구분코드로 부호를 정해 순액으로 집계한다: "
+    "정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다. "
+    "전표취소구분코드는 취소 사유 코드라 취소 여부를 가려 주지 않는다."
+)
+
+
+def _net_measure_description(description: str) -> str:
+    """Return the measure description with the 순액 규칙 kept inside the render limit."""
+    head = str(description or "").rstrip(". ") + "."
+    room = COLUMN_DESCRIPTION_RENDER_LIMIT - len(NET_MEASURE_SUFFIX)
+    if len(head) > room:
+        head = head[: room - 1].rstrip() + "…"
+    return head + NET_MEASURE_SUFFIX
+
+
+def _net_amount(column: str, prefix: str = "") -> str:
+    """Return the 순액 합계 expression for a 전표 금액 column."""
+    codes = ",".join(f"'{code}'" for code in SLIP_TYPE_POSITIVE_CODES)
+    slip = f'{prefix}"{SLIP_TYPE_COLUMN}"'
+    amount = f'{prefix}"{column}"'
+    return f"SUM(CASE WHEN {slip} IN ({codes}) THEN {amount} ELSE -{amount} END)"
+
+
+def _net_count(prefix: str = "") -> str:
+    """Return the 순액 건수 expression for 전표 rows."""
+    codes = ",".join(f"'{code}'" for code in SLIP_TYPE_POSITIVE_CODES)
+    slip = f'{prefix}"{SLIP_TYPE_COLUMN}"'
+    return f"SUM(CASE WHEN {slip} IN ({codes}) THEN 1 ELSE -1 END)"
+
+
+def _table_column(table: dict, name: str) -> dict | None:
+    for section in COLUMN_SECTIONS:
+        for column in table.get(section) or []:
+            if column.get("name") == name:
+                return column
+    return None
+
+
+def apply_sales_slip_net_amount(schema: dict) -> int:
+    """Aggregate 전표 금액·건수 as 순액 and declare the codes behind the 부호."""
+    changed = 0
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+
+    for table_name, measures in NET_MEASURES_BY_TABLE.items():
+        table = tables.get(table_name)
+        if table is None:
+            raise SystemExit(f"테이블 없음: {table_name}")
+
+        slip_column = _table_column(table, SLIP_TYPE_COLUMN)
+        if slip_column is None:
+            raise SystemExit(f"{table_name}.{SLIP_TYPE_COLUMN} 없음")
+        slip_column["description"] = SLIP_TYPE_DESCRIPTION
+        slip_column["value_semantics"] = deepcopy(SLIP_TYPE_VALUE_SEMANTICS)
+        slip_column["value_semantics_provenance"] = "user_provided_business_codebook"
+        changed += 1
+
+        # 취소 사유 코드는 국내 전표에만 있다.
+        cancel_column = _table_column(table, SLIP_CANCEL_REASON_COLUMN)
+        if cancel_column is not None:
+            cancel_column["description"] = SLIP_CANCEL_REASON_DESCRIPTION
+            cancel_column["value_semantics"] = deepcopy(SLIP_CANCEL_REASON_VALUE_SEMANTICS)
+            cancel_column["value_semantics_provenance"] = "user_provided_business_codebook"
+            changed += 1
+
+        for measure_name in measures:
+            measure = _table_column(table, measure_name)
+            if measure is None:
+                raise SystemExit(f"{table_name}.{measure_name} 없음")
+            measure["description"] = _net_measure_description(measure.get("description"))
+            changed += 1
+
+        # 테이블 aggregation_policy 는 전표 테이블이 라우팅되면 항상 렌더되므로,
+        # 매출전표종류구분코드가 프롬프트 컬럼 목록에서 밀려도 공식은 남는다.
+        policy = table.get("aggregation_policy")
+        if not isinstance(policy, dict):
+            raise SystemExit(f"{table_name} aggregation_policy 없음")
+        formulas = policy.setdefault("canonical_formulas", {})
+        for formula_name, column_name in NET_FORMULAS_BY_TABLE[table_name].items():
+            formulas[formula_name] = _net_amount(column_name)
+        formulas[NET_COUNT_FORMULA_NAME] = _net_count()
+        changed += len(NET_FORMULAS_BY_TABLE[table_name]) + 1
+
+    metrics = {
+        str(item.get("name") or ""): item for item in schema.get("canonical_metrics", [])
+    }
+    net_metrics = {
+        "카드매출금액": (_net_amount("매출금액", "tbdaabt30."), NET_AMOUNT_CAUTIONS),
+        "해외매출금액": (_net_amount("매출금액", "tbdaabt08."), NET_AMOUNT_CAUTIONS),
+        "매출건수": (_net_count("tbdaabt30."), NET_COUNT_CAUTIONS),
+    }
+    for metric_name, (expression, cautions) in net_metrics.items():
+        metric = metrics.get(metric_name)
+        if metric is None:
+            raise SystemExit(f"canonical metric 없음: {metric_name}")
+        metric["expression"] = expression
+        existing = metric.setdefault("semantic_cautions", [])
+        for caution in cautions:
+            if caution not in existing:
+                existing.append(caution)
+        changed += 1
+
+    contract = next(
+        (
+            item
+            for item in schema.get("semantic_query_contracts", [])
+            if item.get("name") == "corporate_card_usage_by_merchant_industry"
+        ),
+        None,
+    )
+    if contract is None:
+        raise SystemExit("semantic contract corporate_card_usage_by_merchant_industry 없음")
+    calculation = contract.get("calculation") or {}
+    if "usage_amount" not in calculation:
+        raise SystemExit("corporate_card_usage_by_merchant_industry.calculation.usage_amount 없음")
+    calculation["usage_amount"] = _net_amount("매출금액", "tbdaabt30.")
+    changed += 1
+
+    # query_references 의 recommended_columns 는 라우팅된 질의 유형의 정답 공식이다.
+    reference_columns = {
+        "월별_카드매출_조회": ("매출금액", ""),
+        "업종별_매출": ("매출", "tbdaabt30."),
+        "영업대상군_결제처업종별이용금액": ("이용금액", "tbdaabt30."),
+    }
+    references = {
+        str(item.get("intent") or ""): item for item in schema.get("query_references", [])
+    }
+    for intent, (field, prefix) in reference_columns.items():
+        reference = references.get(intent)
+        if reference is None:
+            raise SystemExit(f"query_reference 없음: {intent}")
+        columns = reference.get("recommended_columns") or {}
+        if field not in columns:
+            raise SystemExit(f"{intent}.recommended_columns.{field} 없음")
+        columns[field] = _net_amount("매출금액", prefix)
+        changed += 1
+
+    target_usage = references["영업대상군_결제처업종별이용금액"]
+    rules = target_usage.get("rules") or []
+    if OLD_NET_AMOUNT_RULE not in rules:
+        raise SystemExit("영업대상군_결제처업종별이용금액 의 순액 미정 규칙을 찾지 못했다")
+    rules[rules.index(OLD_NET_AMOUNT_RULE)] = NEW_NET_AMOUNT_RULE
+    changed += 1
+
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# 10-2. 해외 이용금액은 카드 월실적, 청구금액은 청구금액 컬럼을 본다
+#
+# 10번 규칙(이용금액=카드로 쓴 돈, 매출금액=가맹점이 받은 돈)이 해외와 청구에서
+# 두 군데 새고 있었다.
+#
+#   "해외 이용금액" → tbdaabt08(해외 매출전표)
+#     해외매출금액 지표가 해외이용금액·해외사용액을 동의어로 들고 있어서
+#     _rule_rank_tables 가 tbdaabt08 에 +20 을 얹었고, 지표 컨텍스트에도 전표
+#     매출 공식만 실렸다. 해외 이용금액은 카드 월실적(tmdaa3e16)의
+#     금월해외일시불이용금액 + 금월해외CA이용금액 이다.
+#
+#   "청구금액" → 금월이용합계금액
+#     청구금액을 가진 테이블은 tmdaa3e16 하나인데 컬럼명이 "금월청구금액" 이라
+#     질문 표면형과 맞지 않고 지표·용어도 없었다. 그래서 도메인 라우팅이
+#     merchant_sales 로 빠지고 프롬프트에 청구 컬럼이 한 줄도 안 실려, 모델이
+#     가장 가까운 이용금액 컬럼을 골랐다.
+# ---------------------------------------------------------------------------
+OVERSEAS_CARD_USAGE_METRIC = {
+    "name": "카드월해외이용금액",
+    "domain": "card_usage",
+    "business_definition": "카드 월실적의 해외 이용금액(해외 일시불 + 해외 단기카드대출)",
+    "expression": (
+        'SUM(COALESCE(tmdaa3e16."금월해외일시불이용금액", 0) '
+        '+ COALESCE(tmdaa3e16."금월해외CA이용금액", 0))'
+    ),
+    "source_table": "tmdaa3e16",
+    "source_entity": "card_monthly_performance",
+    "default_time_dimension": "기준년월",
+    "result_grain": "기준년월 (질문이 요청한 분류축 조합별 1행)",
+    "required_filters": ["tmdaa3e16.\"개인기업구분코드\" = '2'"],
+    "semantic_cautions": [
+        "해외 이용금액은 회원·카드가 해외에서 쓴 돈이다. tbdaabt08의 매출금액은 "
+        "가맹점이 카드로 받은 해외 매출이라 다른 지표다.",
+        "카드 월실적의 해외 축은 일시불과 CA 두 컬럼뿐이므로 둘을 더해 해외 이용금액을 만든다.",
+        "기업·법인 단위 해외 이용금액은 tmdaa1d12의 금월해외이용금액을 쓴다.",
+        "국가·MCC업종·가맹점처럼 카드 월실적에 없는 해외 전표 축으로 쪼개는 질문만 "
+        "tbdaabt08의 해외 매출전표를 사용한다.",
+    ],
+    "synonyms": ["해외이용금액", "해외사용액", "해외이용액", "해외카드이용금액"],
+    "unit": "원",
+    "aggregation_behavior": "additive_at_declared_month_grain",
+}
+
+CARD_BILLING_METRIC = {
+    "name": "카드월청구금액",
+    "domain": "card_usage",
+    "business_definition": "카드 월실적에서 금월기준 회원에게 청구된 매출 금액",
+    "expression": 'SUM(COALESCE(tmdaa3e16."금월청구금액", 0))',
+    "source_table": "tmdaa3e16",
+    "source_entity": "card_monthly_performance",
+    "default_time_dimension": "기준년월",
+    "result_grain": "기준년월 (질문이 요청한 분류축 조합별 1행)",
+    "required_filters": ["tmdaa3e16.\"개인기업구분코드\" = '2'"],
+    "semantic_cautions": [
+        "청구금액과 이용금액은 다른 컬럼이다. 청구금액은 금월청구금액, "
+        "이용금액은 금월이용합계금액을 쓰고 서로 대체하지 않는다.",
+        "일시불·CA·할부·해외·리볼빙 청구금액은 금월청구금액의 세부 축이므로 합계와 같이 더하지 않는다.",
+        "미청구금액은 아직 청구되지 않은 잔액이라 청구금액이 아니다.",
+    ],
+    "synonyms": ["청구금액", "청구액", "월청구금액", "카드청구금액"],
+    "unit": "원",
+    "aggregation_behavior": "additive_at_declared_month_grain",
+}
+
+# 할부·CA 이용금액은 카드 월실적(tmdaa3e16)에만 있는 컬럼인데 canonical metric 이
+# 하나도 없었다. 원천을 선언한 표지판이 없으니 라우팅은 "기업카드"·"법인카드" 라는
+# 낱말에 걸린 유효 기업카드 보유 속성(+36)을 따라 기업·가맹점 스냅샷으로 가고,
+# tmdaa3e16 은 컬럼 겹침 점수(15)로 밀렸다. 심하면 후보에도 못 든다.
+#
+#   '기업카드 할부 이용금액은?'  -> ['tbdaa1d12','tbdaaus01','tbdaabt30','tbdaabt08']
+#
+# 회원 쪽에서 tmdaa3e16 으로 가는 선언된 조인이 tbdaaat03(회원 마스터, 매일·
+# 실적기준년월일)에서 시작하고 customer_card_portfolio 도메인의 default_fact_table
+# 도 tbdaaat03 이라, 모델은 금액 컬럼이 아예 없는 회원 마스터부터 조인을 짜게 된다.
+# 그 조인은 오늘 마스터에 남은 회원으로 모집단을 좁히는 필터일 뿐이다.
+CARD_INSTALLMENT_USAGE_METRIC = {
+    "name": "카드월할부이용금액",
+    "domain": "card_usage",
+    "business_definition": "카드 월실적에서 금월 할부(신용판매 할부)로 발생한 이용금액",
+    "expression": 'SUM(COALESCE(tmdaa3e16."금월할부이용금액", 0))',
+    "source_table": "tmdaa3e16",
+    "source_entity": "card_monthly_performance",
+    "default_time_dimension": "기준년월",
+    "result_grain": "기준년월 (질문이 요청한 분류축 조합별 1행)",
+    "required_filters": ["tmdaa3e16.\"개인기업구분코드\" = '2'"],
+    "semantic_cautions": [
+        "할부 이용금액 컬럼을 가진 테이블은 카드 월실적(tmdaa3e16) 하나다. "
+        "기업 월 스냅샷(tmdaa1d12)에는 신용·체크 이용금액만 있고 할부 축이 없다.",
+        "무이자·유이자·부분무이자·복합상환 할부 이용금액은 이 금액의 세부 축이므로 "
+        "합계와 함께 더하지 않는다.",
+        "CA할부이용금액은 단기카드대출(현금서비스) 할부라 신용판매 할부와 다른 지표다.",
+        "회원·기업 속성이 필요 없으면 tmdaa3e16 단독으로 기준년월만 제한한다. "
+        "회원 마스터(tbdaaat03)는 금액 컬럼이 없고 조인하면 모집단이 오늘 기준으로 좁아진다.",
+    ],
+    "synonyms": ["할부이용금액", "할부 이용금액", "할부이용액", "카드할부이용금액"],
+    "unit": "원",
+    "aggregation_behavior": "additive_at_declared_month_grain",
+}
+
+CARD_CASH_ADVANCE_USAGE_METRIC = {
+    "name": "카드월CA이용금액",
+    "domain": "card_usage",
+    "business_definition": "카드 월실적에서 금월 단기카드대출(현금서비스)로 발생한 이용금액",
+    "expression": 'SUM(COALESCE(tmdaa3e16."금월CA이용금액", 0))',
+    "source_table": "tmdaa3e16",
+    "source_entity": "card_monthly_performance",
+    "default_time_dimension": "기준년월",
+    "result_grain": "기준년월 (질문이 요청한 분류축 조합별 1행)",
+    "required_filters": ["tmdaa3e16.\"개인기업구분코드\" = '2'"],
+    "semantic_cautions": [
+        "CA는 단기카드대출(현금서비스)이다. CA 이용금액 컬럼을 가진 테이블은 "
+        "카드 월실적(tmdaa3e16) 하나다.",
+        "해외CA·리볼빙CA·CA할부 이용금액은 이 금액의 세부 축이므로 합계와 함께 더하지 않는다.",
+        "회원·기업 속성이 필요 없으면 tmdaa3e16 단독으로 기준년월만 제한한다. "
+        "회원 마스터(tbdaaat03)는 금액 컬럼이 없고 조인하면 모집단이 오늘 기준으로 좁아진다.",
+    ],
+    "synonyms": ["CA이용금액", "CA 이용금액", "현금서비스이용금액", "단기카드대출이용금액"],
+    "unit": "원",
+    "aggregation_behavior": "additive_at_declared_month_grain",
+}
+
+BILLING_GLOSSARY_TERM = {
+    "term": "청구금액",
+    "canonical": "tmdaa3e16.금월청구금액 (금월기준 회원에게 청구된 매출 금액)",
+    "description": (
+        "회원에게 청구한 금액이다. 회원이 카드로 쓴 이용금액과 다른 컬럼이며, 청구금액 컬럼을 "
+        "가진 테이블은 카드 월실적(tmdaa3e16) 하나다. 아직 청구되지 않은 미청구금액과도 구분한다."
+    ),
+    "aliases": ["청구액", "월청구금액", "카드청구금액", "청구된 금액"],
+    "sql_hint": (
+        "청구금액을 물으면 tmdaa3e16의 금월청구금액을 쓰고, 세부는 금월일시불청구금액·"
+        "금월CA청구금액·금월할부청구금액·금월해외일시불청구금액·금월해외CA청구금액·"
+        "금월리볼빙일시불청구금액을 쓴다. 이용금액 컬럼(금월이용합계금액)으로 대체하지 않고, "
+        "미청구금액(일시불미청구금액 등)은 청구되지 않은 잔액이라 다른 지표다."
+    ),
+}
+
+# 10번에서 넣은 이용금액 용어의 sql_hint 에 해외·청구 갈림길을 덧붙인다.
+USAGE_GLOSSARY_HINT_SUFFIX = (
+    " 해외 이용금액은 카드 월은 tmdaa3e16의 금월해외일시불이용금액+금월해외CA이용금액, "
+    "기업·법인 월은 tmdaa1d12의 금월해외이용금액이며 tbdaabt08의 매출금액은 가맹점이 받은 "
+    "해외 매출이다. 국가·MCC업종처럼 카드 월실적에 없는 해외 전표 축이 필요할 때만 tbdaabt08을 "
+    "쓴다. 청구금액은 이용금액이 아니라 tmdaa3e16의 금월청구금액이다."
+)
+# 전표 매출 지표에서 떼어낼 이용금액 동의어.
+OVERSEAS_SALES_WRONG_SYNONYMS = ("해외이용금액", "해외사용액")
+OVERSEAS_SALES_CAUTION = (
+    "해외 이용금액을 물으면 tmdaa3e16의 카드월해외이용금액을 쓴다. "
+    "이 지표는 가맹점이 카드로 받은 해외 매출이다."
+)
+BILLING_DOMAIN_KEYWORDS = ("청구금액", "청구")
+# _rule_rank_tables 는 테이블 이름·synonyms 가 질문에 잡히면 +14 를 준다.
+# "해외 이용금액" 은 tbdaabt30 의 table synonym "이용금액" 과 매출금액 컬럼 동의어에
+# 걸려 국내 전표가 1순위였다. 카드 월실적에 해외 이용금액 표면형을 달아 뒤집는다.
+OVERSEAS_USAGE_TABLE_SYNONYMS = ("해외이용금액", "해외이용액", "해외사용액")
+
+# query_references 는 when_user_says 가 그대로 잡히면 primary_table 에 120점을 주는
+# 가장 강한 라우팅 증거다. "해외 이용금액"·"해외 사용액" 은 국가·MCC 축을 묻는
+# "해외 카드 이용금액을 국가별로" 와 표면형이 달라서, 이 참조가 그쪽까지 끌어가지 않는다.
+OVERSEAS_USAGE_QUERY_REFERENCE = {
+    "intent": "해외이용금액_조회",
+    "domain": "card_usage",
+    "when_user_says": [
+        "해외 이용금액",
+        "해외 사용액",
+        "해외 이용액",
+        "카드별 해외 이용금액",
+    ],
+    "primary_table": "tmdaa3e16",
+    "join_tables": [],
+    "join_rule": (
+        "카드 월실적 한 테이블로 끝난다. 회원·카드 속성이 필요하면 "
+        "회원일련번호+카드구분키번호로 tbdaaat05를 조인한다."
+    ),
+    "recommended_columns": {
+        "기간필터": "\"기준년월\" = 'YYYYMM' 또는 BETWEEN 으로 기간 지정",
+        "해외이용금액": (
+            'SUM(COALESCE("금월해외일시불이용금액", 0) + COALESCE("금월해외CA이용금액", 0))'
+        ),
+        "기업영업스코프": "\"개인기업구분코드\" = '2'",
+    },
+    "rules": [
+        "해외 이용금액은 카드 월실적의 해외 일시불 이용금액과 해외 CA 이용금액을 더한 값이다.",
+        "tbdaabt08의 매출금액은 가맹점이 받은 해외 매출이라 이용금액 대신 쓰지 않는다. "
+        "국가·MCC업종처럼 카드 월실적에 없는 축이 필요할 때만 해외 매출전표를 쓴다.",
+        "기업·법인 단위 해외 이용금액은 tmdaa1d12의 금월해외이용금액을 쓴다.",
+    ],
+}
+
+
+def apply_billing_and_overseas_usage_vocabulary(schema: dict) -> int:
+    """Route 해외 이용금액 to 카드 월실적 and give 청구금액 its own metric."""
+    metric_list = schema.get("canonical_metrics")
+    if not isinstance(metric_list, list):
+        raise SystemExit("canonical_metrics 없음")
+    metrics = {str(item.get("name") or ""): item for item in metric_list}
+
+    overseas_sales = metrics.get("해외매출금액")
+    if overseas_sales is None:
+        raise SystemExit("canonical metric 해외매출금액 없음")
+    synonyms = overseas_sales.get("synonyms") or []
+    for synonym in OVERSEAS_SALES_WRONG_SYNONYMS:
+        if synonym not in synonyms:
+            raise SystemExit(f"해외매출금액 에 {synonym} 동의어가 없다. 이미 분리됐는지 확인 필요")
+        synonyms.remove(synonym)
+    cautions = overseas_sales.setdefault("semantic_cautions", [])
+    if OVERSEAS_SALES_CAUTION not in cautions:
+        cautions.append(OVERSEAS_SALES_CAUTION)
+
+    # 카드 월 이용금액 지표 옆에 놓는다. 같은 원천·같은 grain 이라 함께 읽힌다.
+    anchor_name = "카드별월이용금액"
+    if anchor_name not in metrics:
+        raise SystemExit(f"기준 지표 없음: {anchor_name}")
+    for new_metric in (
+        OVERSEAS_CARD_USAGE_METRIC,
+        CARD_BILLING_METRIC,
+        CARD_INSTALLMENT_USAGE_METRIC,
+        CARD_CASH_ADVANCE_USAGE_METRIC,
+    ):
+        if new_metric["name"] in metrics:
+            raise SystemExit(f"이미 있는 지표: {new_metric['name']}")
+        source = str(new_metric.get("source_table") or "")
+        declared = {
+            str(column.get("name") or "")
+            for table in schema.get("tables", [])
+            if str(table.get("name") or "") == source
+            for section in COLUMN_SECTIONS
+            for column in table.get(section) or []
+        }
+        missing = [
+            name
+            for name in re.findall(r'"([^"]+)"', str(new_metric.get("expression") or ""))
+            if name not in declared
+        ]
+        if missing:
+            raise SystemExit(f"{source} 에 없는 컬럼: {', '.join(missing)}")
+        anchor = metric_list.index(metrics[anchor_name]) + 1
+        metric_list.insert(anchor, deepcopy(new_metric))
+        metrics[new_metric["name"]] = new_metric
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    if any(item.get("term") == BILLING_GLOSSARY_TERM["term"] for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {BILLING_GLOSSARY_TERM['term']}")
+    usage_term = next(
+        (item for item in glossary if item.get("term") == USAGE_SALES_GLOSSARY_TERM["term"]),
+        None,
+    )
+    if usage_term is None:
+        raise SystemExit(f"용어 없음: {USAGE_SALES_GLOSSARY_TERM['term']}")
+    usage_term["sql_hint"] = str(usage_term["sql_hint"]) + USAGE_GLOSSARY_HINT_SUFFIX
+    glossary.insert(glossary.index(usage_term) + 1, deepcopy(BILLING_GLOSSARY_TERM))
+
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    card_monthly = tables.get("tmdaa3e16")
+    if card_monthly is None:
+        raise SystemExit("테이블 없음: tmdaa3e16")
+    synonyms = card_monthly.setdefault("synonyms", [])
+    for synonym in OVERSEAS_USAGE_TABLE_SYNONYMS:
+        if synonym not in synonyms:
+            synonyms.append(synonym)
+
+    references = schema.get("query_references")
+    if not isinstance(references, list):
+        raise SystemExit("query_references 없음")
+    if any(
+        item.get("intent") == OVERSEAS_USAGE_QUERY_REFERENCE["intent"]
+        for item in references
+    ):
+        raise SystemExit(f"이미 있는 참조 질의: {OVERSEAS_USAGE_QUERY_REFERENCE['intent']}")
+    references.append(deepcopy(OVERSEAS_USAGE_QUERY_REFERENCE))
+
+    # 도메인 라우팅에 청구 단서가 없어서 "청구금액" 질문이 merchant_sales 로 갔다.
+    domains = {str(item.get("name") or ""): item for item in schema.get("canonical_domains", [])}
+    card_usage = domains.get("card_usage")
+    if card_usage is None:
+        raise SystemExit("도메인 없음: card_usage")
+    for keyword in BILLING_DOMAIN_KEYWORDS:
+        if keyword not in card_usage["keywords"]:
+            card_usage["keywords"].append(keyword)
+    card_usage["preferred_metrics"].extend(
+        [OVERSEAS_CARD_USAGE_METRIC["name"], CARD_BILLING_METRIC["name"]]
+    )
+    # "카드별 청구금액" 은 카드 축 때문에 customer_card_portfolio 로도 갈린다.
+    portfolio = domains.get("customer_card_portfolio")
+    if portfolio is None:
+        raise SystemExit("도메인 없음: customer_card_portfolio")
+    portfolio["preferred_metrics"].append(CARD_BILLING_METRIC["name"])
+
+    return (
+        len(OVERSEAS_SALES_WRONG_SYNONYMS)
+        + 1  # 해외매출금액 주의사항
+        + 2  # 신설 지표
+        + 2  # 용어 신설과 sql_hint 보강
+        + len(BILLING_DOMAIN_KEYWORDS)
+        + len(OVERSEAS_USAGE_TABLE_SYNONYMS)
+        + 1  # 해외 이용금액 참조 질의
+        + 3  # preferred_metrics 3건
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10-3. 가맹점 신용판매 매출금액은 이번 달과 지난 달의 원천이 다르다
+#
+# 금년·전년가맹점신용판매매출금액은 가맹점기본(tbdaadt01, 일 적재)·가맹점월실적
+# (tmdaa5e11)·가맹점월스냅샷(tmdaa5d01) 세 곳에 같은 이름으로 있다. 월 실적은 달이
+# 닫힌 뒤 적재되므로 이번 달 값은 일 적재 마스터에만 있고, 지난 달 이전은 월 실적이
+# 원천이다(사용자 제공).
+#
+# v1 에는 이 갈림길이 없었다. 컬럼명이 "금년…" 으로 시작해서 "가맹점 신용판매
+# 매출금액" 이라는 표면형과 맞지 않아 세 테이블 모두 단서를 못 받고, 대신 매출금액
+# 컬럼을 가진 전표 테이블(tbdaabt30·tbdaabt08)이 1순위로 올라왔다. tbdaadt01 을
+# 골라도 기간이 붙으면 적재 정책이 tmdaa5d01(월말 스냅샷)로 돌려 버렸다.
+# ---------------------------------------------------------------------------
+MERCHANT_CREDIT_SALES_ATTRIBUTE = {
+    "name": "merchant_credit_sales",
+    "korean_name": "가맹점 신용판매 매출금액",
+    "domains": ["merchant_sales", "corporate_sales_targeting"],
+    "business_definition": (
+        "가맹점의 신용판매 매출금액(금년·전년 누적). 이번 달은 일 적재 가맹점기본, "
+        "지난 달 이전은 가맹점월실적에서 읽는다"
+    ),
+    "aliases": [
+        "가맹점 신용판매 매출금액",
+        "가맹점신용판매매출금액",
+        "신용판매 매출금액",
+        "신용판매매출금액",
+        "신용판매 매출",
+        "신용판매매출",
+        "가맹점 신용판매 실적",
+        "신용판매 실적",
+    ],
+    "source_mappings": [
+        {
+            "entity": "merchant",
+            "table": "tbdaadt01",
+            "columns": ["금년가맹점신용판매매출금액", "전년가맹점신용판매매출금액"],
+            "role": "current_merchant_credit_sales",
+        },
+        {
+            "entity": "merchant_monthly_performance",
+            "table": "tmdaa5e11",
+            "columns": ["금년가맹점신용판매매출금액", "전년가맹점신용판매매출금액"],
+            "role": "monthly_merchant_credit_sales",
+        },
+    ],
+    "source_selection": {
+        "default_role_prefix": "current_",
+        "period_role_prefix": "monthly_",
+        "current_terms": ["이번 달", "이번달", "당월", "현재", "최신", "지금", "오늘"],
+        # 요청 월이 실행일이 속한 달이면 월 실적에 아직 그 달 행이 없다.
+        "open_month_uses_current": True,
+    },
+    "semantic_cautions": [
+        "월 실적은 달이 닫힌 뒤 적재된다. 이번 달 신용판매 매출금액은 tbdaadt01의 "
+        "실적기준년월일 최신행에서 읽는다.",
+        "지난 달 이전은 tmdaa5e11의 기준년월 행을 쓰고 마스터로 대체하지 않는다.",
+        "가맹점월스냅샷(tmdaa5d01)에도 같은 컬럼이 있지만 실적 축의 과거 원천은 tmdaa5e11이다.",
+        "금년·전년가맹점신용판매매출금액은 기준 시점까지의 연 누적이다. 한 달치 매출은 "
+        "tmdaa5e11의 가맹점일시불매출금액+가맹점할부매출금액을 쓴다.",
+    ],
+}
+
+
+def apply_merchant_credit_sales_semantics(schema: dict) -> int:
+    """Split 가맹점 신용판매 매출금액 into the open month and closed months."""
+    attributes = schema.get("semantic_attributes")
+    if not isinstance(attributes, list):
+        raise SystemExit("semantic_attributes 없음")
+    if any(
+        item.get("name") == MERCHANT_CREDIT_SALES_ATTRIBUTE["name"] for item in attributes
+    ):
+        raise SystemExit(f"이미 있는 속성: {MERCHANT_CREDIT_SALES_ATTRIBUTE['name']}")
+
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    for mapping in MERCHANT_CREDIT_SALES_ATTRIBUTE["source_mappings"]:
+        table = tables.get(str(mapping["table"]))
+        if table is None:
+            raise SystemExit(f"테이블 없음: {mapping['table']}")
+        declared = {
+            str(column.get("name") or "")
+            for section in COLUMN_SECTIONS
+            for column in table.get(section) or []
+        }
+        missing = [name for name in mapping["columns"] if name not in declared]
+        if missing:
+            raise SystemExit(f"{mapping['table']} 에 없는 컬럼: {', '.join(missing)}")
+
+    # 가맹점 주소 속성 옆에 둔다. 둘 다 가맹점 마스터를 원천으로 가리키는 속성이다.
+    anchor = next(
+        (
+            position
+            for position, item in enumerate(attributes)
+            if item.get("name") == MERCHANT_ADDRESS_ATTRIBUTE["name"]
+        ),
+        len(attributes) - 1,
+    )
+    attributes.insert(anchor + 1, deepcopy(MERCHANT_CREDIT_SALES_ATTRIBUTE))
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# 10-4. 가맹점 월매출 지표의 빠진 표면형
+#
+# 가맹점월매출건수는 동의어에 '가맹점매출건수' 를 갖고 있는데 가맹점월매출금액은
+# '가맹점매출금액' 을 갖고 있지 않다(v1 원본의 비대칭). 매처는 어절 경계를 지켜서
+# '가맹점매출' 로는 "가맹점매출금액" 을 잡지 못한다 — 뒤에 '금액' 이 붙어 있다.
+#
+# 그동안은 named_merchant_monthly_sales 계약이 이름 없는 질문에도 tmdaa5e11 에
+# +28 을 줘서 이 구멍이 가려져 있었다. 그 계약은 가맹점명이 required 라서 이름 없는
+# 질문의 근거가 될 수 없고(그 보너스를 빼면 "2026년 상반기 월별 가맹점매출금액" 이
+# 원천을 못 찾는다), 지표 동의어로 제대로 세우는 게 맞다.
+# ---------------------------------------------------------------------------
+MERCHANT_MONTHLY_SALES_METRIC = "가맹점월매출금액"
+MERCHANT_MONTHLY_SALES_SYNONYMS = ("가맹점매출금액", "가맹점 매출 금액", "월가맹점매출금액")
+
+
+def apply_merchant_monthly_sales_surface_forms(schema: dict) -> int:
+    """Give 가맹점월매출금액 the same surface forms its 건수 sibling already has."""
+    metrics = {
+        str(item.get("name") or ""): item for item in schema.get("canonical_metrics") or []
+    }
+    metric = metrics.get(MERCHANT_MONTHLY_SALES_METRIC)
+    if metric is None:
+        raise SystemExit(f"canonical metric 없음: {MERCHANT_MONTHLY_SALES_METRIC}")
+    synonyms = metric.setdefault("synonyms", [])
+    added = 0
+    for synonym in MERCHANT_MONTHLY_SALES_SYNONYMS:
+        if synonym in synonyms:
+            continue
+        synonyms.append(synonym)
+        added += 1
+    if not added:
+        raise SystemExit(f"{MERCHANT_MONTHLY_SALES_METRIC} 에 이미 표면형이 다 있다")
+    return added
+
+
+# ---------------------------------------------------------------------------
+# 10-5. 앱구분코드의 빠진 표면형
+#
+# 질문은 이 컬럼을 "앱별로" 라고만 부른다(goldenset v3 의 cs-golden-v3-0007·0021).
+# 선언된 동의어는 '앱구분' 하나뿐이고, 매처는 어절 경계를 지켜서 '앱구분' 으로는
+# "앱별로" 를 잡지 못한다 — '앱' 다음에 오는 '별' 이 어절 경계가 아니다. 컬럼명에서
+# 표면형을 유도하는 쪽도 접미사를 벗기면 어간이 한 글자여서 최소 길이에 걸려
+# 버려진다. 그래서 두 질문 모두 앱구분코드가 프롬프트 컬럼 예산에서 잘려 나갔다.
+#
+# '앱' 은 한 글자지만 기준년월에 달려 있던 '월' 과 다르다. '월' 은 기간을 말하는
+# 질문마다 나오는 단위라서 기준년월을 가진 테이블 11개 전부에 단서 점수를 줬는데,
+# '앱' 은 앱결제만 가리키는 낱말이고 이 컬럼을 가진 테이블은 tbdaabt30 하나뿐이다.
+# 그래서 한 글자 동의어 금지의 예외로 이 한 쌍만 열어 둔다.
+# ---------------------------------------------------------------------------
+APP_SEGMENT_COLUMN = ("tbdaabt30", "앱구분코드")
+APP_SEGMENT_SYNONYMS = ("앱",)
+
+# 한 글자 동의어 금지(_MIN_DECLARED_SYNONYM_LENGTH)의 예외 목록. 테스트가 이걸
+# 그대로 읽어서, 예외가 여기 적힌 것뿐인지 확인한다.
+SINGLE_CHARACTER_SYNONYM_EXCEPTIONS: frozenset[tuple[str, str, str]] = frozenset(
+    (*APP_SEGMENT_COLUMN, synonym)
+    for synonym in APP_SEGMENT_SYNONYMS
+    if len(compact(synonym)) < _MIN_DECLARED_SYNONYM_LENGTH
+)
+
+
+def apply_app_segment_surface_forms(schema: dict) -> int:
+    """Let 앱구분코드 answer questions that say only "앱별로"."""
+    table_name, column_name = APP_SEGMENT_COLUMN
+    table = next(
+        (item for item in schema.get("tables") or [] if item.get("name") == table_name),
+        None,
+    )
+    if table is None:
+        raise SystemExit(f"테이블 없음: {table_name}")
+    column = _table_column(table, column_name)
+    if column is None:
+        raise SystemExit(f"{table_name} 에 {column_name} 컬럼이 없다")
+    synonyms = column.setdefault("synonyms", [])
+    added = 0
+    for synonym in APP_SEGMENT_SYNONYMS:
+        if synonym in synonyms:
+            continue
+        synonyms.append(synonym)
+        added += 1
+    if not added:
+        raise SystemExit(f"{column_name} 에 이미 표면형이 다 있다")
+    return added
+
+
+# ---------------------------------------------------------------------------
+# 10-6. 법인카드 이용금액은 카드 월실적에서, 이용 기업수는 전표에서 센다
+#
+# 카드브랜드 속성이 그 코드를 가진 테이블 8곳에 똑같이 +36 을 얹는다. 그 뒤로는
+# 남은 몇 점이 순서를 정하는데, 두 질문 모두 엉뚱한 쪽에 그 점수가 붙어 있었다.
+#
+#   "법인카드 이용금액을 카드브랜드별로 알려줘"  -> tbdaabt30(전표) 1순위
+#     전표는 테이블 동의어 "이용금액"(+14)과 매출금액 컬럼의 동의어 "이용금액"(+3)을
+#     들고 있다. 정작 이용금액을 가진 카드 월실적(tmdaa3e16)은 컬럼명이
+#     "금월이용합계금액" 이라 표면형이 어긋났고, 그 원천을 선언한 법인카드월이용금액
+#     지표의 동의어도 '법인카드 이용금액 합계' 처럼 사람이 쓰지 않는 꼴이라
+#     "법인카드 이용금액" 을 못 잡았다. 전표의 매출금액은 취소·정정을 순액으로 풀어야
+#     하는 값이고(10-1), 카드가 쓴 돈은 월실적의 금월이용합계금액이다(10번 용어).
+#
+#   "법인카드 이용 기업수를 카드브랜드별로 알려줘"  -> tbdaaat05(회원카드기본) 1순위
+#     이용한 기업을 셀 수 있는 곳은 기업고객식별자를 든 전표뿐인데, 8곳이 +36 으로
+#     묶이자 선언 순서가 앞선 회원카드기본이 이기고 전표는 후보 4칸에도 못 들었다.
+#     "기업수" 라는 낱말이 부르는 기업고객수 지표는 고객 마스터(tbdaaat01)를 가리켜,
+#     카드를 쓴 기업이 아니라 등록만 된 기업까지 세게 만든다.
+# ---------------------------------------------------------------------------
+CORPORATE_CARD_USAGE_METRIC = "법인카드월이용금액"
+CORPORATE_CARD_USAGE_SYNONYMS = (
+    "법인카드 이용금액",
+    "기업카드 이용금액",
+    "법인카드 사용액",
+    "기업카드 사용액",
+)
+# 10번이 갈라 놓은 두 낱말이 v1 의 전표 표면형에 그대로 붙어 있다. 테이블 동의어
+# "이용금액"(+14)과 매출금액 컬럼 동의어 "이용금액"(+3, 두 테이블만 가진 컬럼이라
+# 희소 가점 +12 까지)이 얹혀서, 이용금액을 물을 때마다 전표가 카드 월실적을 이겼다.
+# 10-2 가 해외매출금액 지표에서 해외이용금액을 떼어낸 것과 같은 정리다.
+SALES_SLIP_USAGE_SURFACE_FORMS = {
+    "tbdaabt30": ("매출금액",),
+    "tbdaabt08": ("매출금액",),
+}
+SALES_SLIP_USAGE_SYNONYM = "이용금액"
+SALES_SLIP_TABLE_SYNONYM_OWNER = "tbdaabt30"
+
+CARD_USING_CORPORATE_COUNT_METRIC = {
+    "name": "이용기업수",
+    "domain": "card_usage",
+    "business_definition": "해당 기간에 카드 이용이 실제로 발생한 고유 기업 수",
+    "expression": 'COUNT(DISTINCT tbdaabt30."기업고객식별자")',
+    "source_table": "tbdaabt30",
+    "source_entity": "domestic_sales",
+    "default_time_dimension": "기준년월",
+    "result_grain": "기준년월 (질문이 요청한 분류축 조합별 1행)",
+    "required_filters": ["tbdaabt30.\"개인기업구분코드\" = '2'"],
+    "semantic_cautions": [
+        "이용 기업수는 전표에 기업고객식별자가 찍힌 기업만 센다. "
+        "고객 마스터(tbdaaat01)의 기업고객수는 카드를 쓰지 않은 기업까지 센다.",
+        "회원일련번호·카드구분키번호로 세면 한 기업의 부서·카드가 여러 건으로 갈라진다.",
+        "가맹점업종·MCC·결제처·카드브랜드처럼 전표가 들고 있는 축은 이 지표로 함께 쪼갠다.",
+        "카드 상품·등급처럼 전표에 없는 카드 속성으로 쪼개는 질문은 "
+        "tmdaa3e16의 고객식별자를 DISTINCT 집계한다.",
+    ],
+    "synonyms": ["카드이용기업수", "이용한 기업수", "카드를 이용한 기업수"],
+    "unit": "개",
+    "aggregation_behavior": "distinct_count",
+}
+
+CARD_USAGE_COUNT_GLOSSARY_TERM = {
+    "term": "이용 기업수",
+    "canonical": 'COUNT(DISTINCT tbdaabt30."기업고객식별자") (전표에 이용이 찍힌 기업)',
+    "description": (
+        "카드를 실제로 쓴 기업의 수다. 등록된 기업을 세는 기업고객수와 다르고, "
+        "부서·사업장 단위인 회원 수와도 다르다. 전표(tbdaabt30)는 기업고객식별자를, "
+        "카드 월실적(tmdaa3e16)은 고객식별자를 같은 뜻으로 들고 있다."
+    ),
+    "aliases": ["이용기업수", "카드이용기업수", "이용한 기업수", "이용 업체수"],
+    "sql_hint": (
+        "이용 기업수는 COUNT(DISTINCT \"기업고객식별자\")로 세고 개인기업구분코드 = '2' 를 "
+        "함께 적용한다. 업종·결제처·카드브랜드 축은 tbdaabt30, 카드 상품·등급 축은 "
+        "tmdaa3e16의 고객식별자를 쓴다. 회원일련번호로 세지 않는다."
+    ),
+}
+
+
+def apply_card_usage_amount_and_corporate_count(schema: dict) -> int:
+    """Split 카드 이용금액(월실적) from 이용 기업수(전표 기업고객식별자)."""
+    metric_list = schema.get("canonical_metrics")
+    if not isinstance(metric_list, list):
+        raise SystemExit("canonical_metrics 없음")
+    metrics = {str(item.get("name") or ""): item for item in metric_list}
+
+    usage = metrics.get(CORPORATE_CARD_USAGE_METRIC)
+    if usage is None:
+        raise SystemExit(f"canonical metric 없음: {CORPORATE_CARD_USAGE_METRIC}")
+    synonyms = usage.setdefault("synonyms", [])
+    added = 0
+    for synonym in CORPORATE_CARD_USAGE_SYNONYMS:
+        if synonym in synonyms:
+            continue
+        synonyms.append(synonym)
+        added += 1
+    if not added:
+        raise SystemExit(f"{CORPORATE_CARD_USAGE_METRIC} 에 이미 표면형이 다 있다")
+
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    removed = 0
+    for table_name, column_names in SALES_SLIP_USAGE_SURFACE_FORMS.items():
+        table = tables.get(table_name)
+        if table is None:
+            raise SystemExit(f"테이블 없음: {table_name}")
+        for column_name in column_names:
+            column = _table_column(table, column_name)
+            if column is None:
+                raise SystemExit(f"{table_name} 에 {column_name} 컬럼이 없다")
+            column_synonyms = column.get("synonyms") or []
+            if SALES_SLIP_USAGE_SYNONYM not in column_synonyms:
+                raise SystemExit(
+                    f"{table_name}.{column_name} 에 {SALES_SLIP_USAGE_SYNONYM} 동의어가 없다. "
+                    "이미 분리됐는지 확인 필요"
+                )
+            column_synonyms.remove(SALES_SLIP_USAGE_SYNONYM)
+            removed += 1
+    slip_table = tables[SALES_SLIP_TABLE_SYNONYM_OWNER]
+    table_synonyms = slip_table.get("synonyms") or []
+    if SALES_SLIP_USAGE_SYNONYM not in table_synonyms:
+        raise SystemExit(
+            f"{SALES_SLIP_TABLE_SYNONYM_OWNER} 테이블 동의어에 {SALES_SLIP_USAGE_SYNONYM} 이 없다"
+        )
+    table_synonyms.remove(SALES_SLIP_USAGE_SYNONYM)
+    removed += 1
+
+    new_metric = CARD_USING_CORPORATE_COUNT_METRIC
+    if new_metric["name"] in metrics:
+        raise SystemExit(f"이미 있는 지표: {new_metric['name']}")
+    source = str(new_metric["source_table"])
+    declared = {
+        str(column.get("name") or "")
+        for table in schema.get("tables", [])
+        if str(table.get("name") or "") == source
+        for section in COLUMN_SECTIONS
+        for column in table.get(section) or []
+    }
+    missing = [
+        name
+        for name in re.findall(r'"([^"]+)"', str(new_metric["expression"]))
+        if name not in declared
+    ]
+    if missing:
+        raise SystemExit(f"{source} 에 없는 컬럼: {', '.join(missing)}")
+    # 전표 매출 지표 옆에 놓는다. 같은 원천이라 함께 읽힌다.
+    anchor_name = "매출건수"
+    if anchor_name not in metrics:
+        raise SystemExit(f"기준 지표 없음: {anchor_name}")
+    metric_list.insert(metric_list.index(metrics[anchor_name]) + 1, deepcopy(new_metric))
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    if any(item.get("term") == CARD_USAGE_COUNT_GLOSSARY_TERM["term"] for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {CARD_USAGE_COUNT_GLOSSARY_TERM['term']}")
+    # 기업고객 용어 바로 뒤에 놓는다. 등록된 기업과 쓴 기업의 차이가 붙어 읽혀야 한다.
+    anchor = next(
+        (
+            position
+            for position, item in enumerate(glossary)
+            if item.get("term") == "기업고객"
+        ),
+        len(glossary) - 1,
+    )
+    glossary.insert(anchor + 1, deepcopy(CARD_USAGE_COUNT_GLOSSARY_TERM))
+
+    domains = {str(item.get("name") or ""): item for item in schema.get("canonical_domains", [])}
+    card_usage = domains.get("card_usage")
+    if card_usage is None:
+        raise SystemExit("도메인 없음: card_usage")
+    card_usage["preferred_metrics"].append(new_metric["name"])
+
+    return added + removed + 3  # 지표 신설, 용어 신설, preferred_metrics
+
+
+# ---------------------------------------------------------------------------
 # 11~12. SQL 생성 계약
 # ---------------------------------------------------------------------------
 def apply_sql_contract(schema: dict) -> dict:
@@ -1251,6 +2213,12 @@ def main() -> None:
     corporate_customer_semantic_count = apply_corporate_customer_semantic_overrides(schema)
     identity_count = apply_customer_member_identity_overrides(schema)
     usage_sales_count = apply_usage_sales_vocabulary(schema)
+    slip_net_amount_count = apply_sales_slip_net_amount(schema)
+    billing_overseas_count = apply_billing_and_overseas_usage_vocabulary(schema)
+    merchant_credit_sales_count = apply_merchant_credit_sales_semantics(schema)
+    merchant_sales_surface_count = apply_merchant_monthly_sales_surface_forms(schema)
+    app_segment_surface_count = apply_app_segment_surface_forms(schema)
+    card_usage_count = apply_card_usage_amount_and_corporate_count(schema)
     contract_stats = apply_sql_contract(schema)
 
     metadata = schema.get("semantic_layer_metadata")
@@ -1260,6 +2228,8 @@ def main() -> None:
         metadata["v2_changes"] = [
             "같은 이름의 컬럼은 테이블을 넘어 동의어를 공유한다.",
             "컬럼명에서 질문 표면형 동의어를 유도해 추가했다(구분코드/여부 접미사 제거, 띄어쓰기 변형).",
+            "월 지표의 기준월 접두사를 뗀 표면형을 동의어로 추가했다(금월체크카드이용금액 → 체크카드이용금액).",
+            "어디에나 걸리는 한 글자 동의어(기준년월의 '월')를 걷어냈다.",
             "0811 상세 컬럼 코드북 7종을 같은 이름의 모든 컬럼에 value_semantics 로 적용했다.",
             "SQL 생성 계약에서 되묻기 지시를 제거하고 항상 SQL을 내보내는 output_contract 로 교체했다.",
             "Athena 방언 규칙에 QUALIFY·expr::type·윈도함수 WHERE 금지를 명시했다.",
@@ -1269,9 +2239,16 @@ def main() -> None:
             "가맹점 주소를 가맹점기본(tbdaadt01) 한 곳만 가리키는 semantic attribute 로 선언했다.",
             "전일 적재 테이블의 지표·계약·질의 참조를 KST D-1 기준으로 통일했다.",
             "기업고객 현재 상태는 tbdaa1d12 KST D-1, 명시한 과거 월은 tmdaa1d12 기준년월, 현재+이력 질의는 두 소스를 함께 사용하도록 분리했다.",
+            "유효 기업카드 보유 속성의 원천을 현재(tbdaa1d12)·과거 월(tmdaa1d12)로 갈라 선언했다.",
             "tbmaisd06 의 물리 시간축은 유지하고 연 단위 적재 조회 컬럼을 정책으로 분리했으며, 기업영업 스코프 필터를 기본값으로 못 박았다.",
             "기업 수는 고객식별자, 회원 수는 회원일련번호로 세도록 지표·용어·grain 규칙을 분리했다(기업고객수·연체기업수 지표 신설).",
             "이용금액과 매출금액이 같은 금액의 다른 관점임을 용어로 선언하고, 기업·카드·가맹점·전표 단위별 원천 컬럼을 못 박았다.",
+            "매출전표종류구분코드 코드값 6종을 선언하고, 전표 매출금액·이용금액을 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 빼는 순액 집계로 바꿨다.",
+            "해외 이용금액을 카드 월실적(tmdaa3e16)의 해외 일시불+CA 이용금액 지표로 분리하고, 청구금액을 금월청구금액 지표·용어로 신설해 이용금액 컬럼과 갈라 놓았다.",
+            "가맹점 신용판매 매출금액을 이번 달은 tbdaadt01, 지난 달 이전은 tmdaa5e11에서 읽는 속성으로 선언했다.",
+            "가맹점월매출금액에 건수 지표와 같은 표면형(가맹점매출금액)을 동의어로 세웠다.",
+            "앱구분코드에 질문 표면형 '앱' 을 동의어로 세웠다(한 글자 금지의 유일한 예외).",
+            "법인카드 이용금액에 사용자 표면형을 달아 카드 월실적(tmdaa3e16)으로 돌리고, 이용 기업수를 전표(tbdaabt30) 기업고객식별자를 세는 지표·용어로 신설했다.",
             "실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.",
         ]
 
@@ -1305,6 +2282,12 @@ def main() -> None:
     print(f"  corporate customer semantics: {corporate_customer_semantic_count} entries")
     print(f"  customer/member identity: {identity_count} entries")
     print(f"  usage/sales vocabulary: {usage_sales_count} entries")
+    print(f"  slip-type net amount : {slip_net_amount_count} entries")
+    print(f"  billing/overseas usage: {billing_overseas_count} entries")
+    print(f"  merchant credit sales : {merchant_credit_sales_count} entries")
+    print(f"  merchant sales surface: {merchant_sales_surface_count} synonyms")
+    print(f"  app segment surface   : {app_segment_surface_count} synonyms")
+    print(f"  card usage/count      : {card_usage_count} entries")
     print(f"  contract list sizes  : {contract_stats['before']} -> {contract_stats['after']}")
 
 
