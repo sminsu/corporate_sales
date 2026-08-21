@@ -810,7 +810,9 @@ ORDER BY 한도사용률_퍼센트 DESC LIMIT {limit}"""
 
 
 def _vq_sql_업종별매출(params: dict) -> str:
-    conds = ["a.개인기업구분코드 = '2'", "(a.전표취소구분코드 IS NULL OR a.전표취소구분코드 = '0')"]
+    # 취소 건은 전표취소구분코드로 빼지 않는다. 매출전표종류구분코드 부호 규칙이
+    # 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.
+    conds = ["a.개인기업구분코드 = '2'"]
     conds.extend(_period_conds_daily(params, "a.전표매출년월일"))
     conds.extend(_partition_conds_from_params("tbdaabt30", params, alias="a", daily=True))
     if params.get("업종"):
@@ -818,8 +820,10 @@ def _vq_sql_업종별매출(params: dict) -> str:
     where = _build_where(conds)
     limit = f"LIMIT {int(params['limit'])}" if params.get("limit") else ""
     return f"""SELECT b.업종대분류코드명, b.가맹점업종명,
-    SUM(a.매출금액) AS 총매출금액, COUNT(DISTINCT a.매출전표번호) AS 매출건수,
-    AVG(a.매출금액) AS 건당평균금액
+    SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN a.매출금액 ELSE -a.매출금액 END) AS 총매출금액,
+    SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS 매출건수,
+    SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN a.매출금액 ELSE -a.매출금액 END)
+      / NULLIF(CAST(SUM(CASE WHEN a.매출전표종류구분코드 IN ('1','4') THEN 1 ELSE -1 END) AS DOUBLE), 0.0) AS 건당평균금액
 FROM card_system.tbdaabt30 a
 JOIN card_system.tbdaadb17 b ON a.가맹점업종코드 = b.가맹점업종코드
 {where}

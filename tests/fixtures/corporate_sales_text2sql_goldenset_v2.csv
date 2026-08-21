@@ -655,22 +655,23 @@ ORDER BY ""해외매출금액"" DESC,
   o.""국가코드""
 LIMIT 10",tbdaabt08,해외매출금액,,2026-08-10,2026-08-14.1-v2
 cs-golden-v2-0041,card_usage,해외 법인카드 이용금액,business_case,grouped,easy,False,True,False,,,2026년 1월부터 7월까지 월별 해외 카드 이용금액과 건수를 보여줘,"SELECT
-  o.""기준년월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""해외매출금액"",
-  COUNT(o.""해외매출전표번호"") AS ""해외매출건수""
-FROM tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202601' AND '202607'
-GROUP BY o.""기준년월""
-ORDER BY o.""기준년월""",tbdaabt08,해외매출금액,,2026-08-10,2026-08-14.1-v2
+  f.""기준년월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""해외이용금액"",
+  SUM(COALESCE(f.""금월해외일시불이용건수"", 0) + COALESCE(f.""금월해외CA이용건수"", 0)) AS ""해외이용건수""
+FROM tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202601' AND '202607'
+GROUP BY f.""기준년월""
+ORDER BY f.""기준년월""",tmdaa3e16,카드월해외이용금액,,2026-08-10,2026-08-14.1-v2
 cs-golden-v2-0042,card_usage,해외 최다 이용 월,business_case,grouped,medium,True,True,False,1,,2026년 1월부터 7월까지 해외 업종에서 가장 많이 사용한 달과 이용금액을 알려줘,"SELECT
-  o.""기준년월"" AS ""최다이용월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""이용금액""
-FROM tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202601' AND '202607'
-GROUP BY o.""기준년월""
-ORDER BY ""이용금액"" DESC, ""최다이용월"",
-  o.""기준년월""
-LIMIT 1",tbdaabt08,해외매출금액,overseas_peak_month_usage,2026-08-10,2026-08-14.1-v2
+  f.""기준년월"" AS ""최다이용월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""이용금액""
+FROM tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202601' AND '202607'
+GROUP BY f.""기준년월""
+ORDER BY ""이용금액"" DESC, ""최다이용월""
+LIMIT 1",tmdaa3e16,카드월해외이용금액,overseas_peak_month_usage,2026-08-10,2026-08-14.1-v2
 cs-golden-v2-0043,card_usage,회원자산관리부점별 법인카드 매출,business_case,grouped,hard,True,True,False,20,부점 적용기간 유효행만,2026년 7월 회원자산관리부점별 법인카드 매출금액 상위 20곳을 알려줘,"SELECT
   t.""회원자산관리부점코드"",
   b.""한글부점명"",

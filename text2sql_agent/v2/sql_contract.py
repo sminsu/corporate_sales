@@ -75,10 +75,18 @@ GRAIN_RULES_V2: tuple[str, ...] = (
     "일·월 snapshot은 table aggregation_policy의 최신행 축소를 먼저 적용한다. "
     "월 최신행은 서브쿼리에서 ROW_NUMBER() OVER (PARTITION BY 키 ORDER BY 기준년월일 DESC) AS rn 을 만든 뒤 WHERE rn = 1 로 거른다.",
     "1:N JOIN 뒤 상위 grain 개체 수는 COUNT(DISTINCT key)로 계산하고 fact 금액 중복을 점검한다.",
-    "고객·기업·업체·법인 수는 고객식별자(전표·가맹점 테이블은 기업고객식별자, 부서사업장은 법인고객식별자)를, "
+    "고객·기업·업체·회사·법인 수는 고객식별자(전표·가맹점 테이블은 기업고객식별자, 부서사업장은 법인고객식별자)를, "
     "회원 수는 회원일련번호를 COUNT DISTINCT한다. 한 고객식별자에 부서·사업장 회원일련번호가 여러 개 달리므로 "
-    "둘을 바꿔 쓰면 수가 달라진다.",
-    "measure aggregation이 recompute_or_weighted_avg 또는 semi_additive_latest_snapshot이면 무조건 SUM하지 않는다.",
+    "둘을 바꿔 쓰면 수가 달라진다. 목록·순위의 단위도 같은 키를 따른다. "
+    "'상위 N개 업체·회사·기업·법인'은 고객식별자로 GROUP BY 해 1행씩 내고 고객식별자를 SELECT에 남기며, "
+    "회원일련번호·카드구분키번호로 쪼개지 않는다.",
+    "measure aggregation이 recompute_or_weighted_avg 또는 semi_additive_latest_snapshot이면 무조건 SUM하지 않는다. "
+    "매출전표(tbdaabt30 국내·tbdaabt08 해외) 한 행은 정당·정정·취소 중 한 종류의 전표여서 금액·건수를 "
+    "그대로 SUM·COUNT하면 취소·환급까지 더해진다. 매출금액·매출미화금액·봉사료·미화봉사료·부가가치세·가맹점수수료는 "
+    "SUM(CASE WHEN \"매출전표종류구분코드\" IN ('1','4') THEN \"매출금액\" ELSE -\"매출금액\" END), 건수는 "
+    "SUM(CASE WHEN \"매출전표종류구분코드\" IN ('1','4') THEN 1 ELSE -1 END) 로 정당(1)·취소정정(4)은 더하고 "
+    "정정(2)·취소(3)·청구보류(5)·체크환급(6)은 빼서 순액으로 집계한다. 취소 여부는 이 코드로 가리며 "
+    "전표취소구분코드는 취소 사유(가맹점번호 상이·원인전표검증생략·분할취소·자동상계비대상) 코드라 취소 필터로 쓰지 않는다.",
     "기업카드 신용+체크 축과 개별+공용 축, 총이용액과 세부 이용액처럼 overlap_group이 다른 값을 함께 더하지 않는다.",
     "기업 총한도와 잔여한도는 현재 조회이면 tbdaa1d12의 KST 전일 고객별 1행을 쓰고, 명시한 과거 월 조회이면 tmdaa1d12를 고객×월 최신 기준년월일 1건으로 축소한다. snapshot 행을 기간 합계로 더하지 않는다.",
     "기업별 한도소진율은 1 - 잔여한도/총한도, 포트폴리오 한도소진율은 1 - SUM(잔여한도)/NULLIF(SUM(총한도), 0)으로 재계산하며 기업별 비율을 AVG하지 않는다.",

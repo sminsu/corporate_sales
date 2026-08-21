@@ -1473,22 +1473,57 @@ def _keyword_rule_domain_scores(schema: dict, question: str) -> dict[str, float]
     return scores
 
 
+# 한 도메인만 선언한 차원·지표 컬럼을 질문이 이름째 부르면 그 자체가 도메인을
+# 고르는 단서다. 여러 도메인이 함께 선언한 이름(회원일련번호·가맹점번호처럼)은
+# 약한 단서로만 센다. 지표 이름 적중(10.0)과 같은 급으로 둔다.
+_DOMAIN_EXCLUSIVE_ENTITY_TERM_WEIGHT = 10.0
+_SHARED_ENTITY_TERM_WEIGHT = 3.0
+
+
+@_memoize_by_schema_identity
+def _entity_terms_by_domain_count(schema: dict) -> dict[str, int]:
+    """How many domains declare each entity dimension/fact name."""
+    counts: dict[str, int] = {}
+    entity_index = _entity_by_name(schema)
+    for domain in schema.get("canonical_domains", []):
+        declared = {
+            str(term)
+            for entity_name in domain.get("primary_entities", [])
+            for term in (
+                *entity_index.get(entity_name, {}).get("canonical_dimensions", []),
+                *entity_index.get(entity_name, {}).get("canonical_facts", []),
+            )
+            if term
+        }
+        for term in declared:
+            counts[term] = counts.get(term, 0) + 1
+    return counts
+
+
 def _metric_entity_domain_scores(schema: dict, question: str) -> dict[str, float]:
-    q_lower = question.lower()
+    """Score domains by the metrics and entity columns the question names.
+
+    v2: 두 군데를 고쳤다. 사용자는 컬럼 이름을 띄어 쓰고("유효 기업개별카드 수")
+    선언 이름은 붙여 쓴다(유효기업개별카드수). 원본은 raw substring 으로 비교해서
+    선언 이름은 하나도 못 맞히고, 대신 use_when 문장을 낱말로 쪼갠 "카드"·"개별"·
+    "월" 같은 조각이 3점씩 붙었다. "26년 4월 유효 기업개별카드 수 알려줘" 가
+    회원(회원일련번호) 도메인인 customer_card_portfolio 로 갔고, 그 도메인 컨텍스트가
+    기업고객(고객식별자) 대신 회원 마스터를 기본 테이블로 제시했다.
+    """
     q_tokens = _tokenize_text(question)
     scores: dict[str, float] = {}
     entity_index = _entity_by_name(schema)
+    domain_counts = _entity_terms_by_domain_count(schema)
     for metric in schema.get("canonical_metrics", []):
         domain = metric.get("domain", "")
         if not domain:
             continue
         score = scores.get(domain, 0.0)
-        metric_name = str(metric.get("name", "")).lower()
-        if metric_name and metric_name in q_lower:
+        metric_name = str(metric.get("name", ""))
+        if metric_name and _phrase_in_text(question, metric_name):
             score += 10.0
         for synonym in metric.get("synonyms", []):
-            synonym_lower = str(synonym).lower()
-            if synonym_lower and synonym_lower in q_lower:
+            if synonym and _phrase_in_text(question, str(synonym)):
                 score += 7.0
             synonym_tokens = _tokenize_text(str(synonym))
             if synonym_tokens and q_tokens.intersection(synonym_tokens):
@@ -1501,19 +1536,32 @@ def _metric_entity_domain_scores(schema: dict, question: str) -> dict[str, float
         score = scores.get(domain_name, 0.0)
         for entity_name in domain.get("primary_entities", []):
             entity = entity_index.get(entity_name, {})
-            entity_terms = [
+            declared_terms = [
                 entity.get("name", ""),
                 entity.get("korean_name", ""),
                 entity.get("physical_table", ""),
                 *entity.get("canonical_dimensions", []),
                 *entity.get("canonical_facts", []),
-                *_join_texts(entity.get("use_when", [])).split(),
             ]
-            for term in entity_terms:
-                term_lower = str(term).lower()
-                if term_lower and term_lower in q_lower:
-                    score += 3.0
-            entity_token_overlap = q_tokens.intersection(_tokenize_text(_join_texts(entity_terms)))
+            for term in declared_terms:
+                name = str(term)
+                if not name or name.lower() in _GENERIC_RETRIEVAL_TOKENS:
+                    continue
+                if _phrase_in_text(question, name):
+                    score += (
+                        _DOMAIN_EXCLUSIVE_ENTITY_TERM_WEIGHT
+                        if domain_counts.get(name) == 1
+                        else _SHARED_ENTITY_TERM_WEIGHT
+                    )
+            # use_when 은 문장이다. 낱말 하나가 질문에 있다는 사실은 토큰 겹침
+            # 상한(8개) 안에서만 센다.
+            entity_token_overlap = q_tokens.intersection(
+                _tokenize_text(
+                    _join_texts(
+                        [*declared_terms, *_join_texts(entity.get("use_when", [])).split()]
+                    )
+                )
+            )
             score += min(len(entity_token_overlap), 8) * 0.8
         scores[domain_name] = score
     return scores
@@ -1539,7 +1587,8 @@ def _weighted_domain_scores(
             "metric_entity_score": round(metric_entity, 4),
             "embedding_score": round(embedding, 4),
         })
-    candidates.sort(key=lambda item: item["score"], reverse=True)
+    # 후보 이름을 set 에서 꺼내 담으므로, 점수가 같으면 실행마다 순서가 달라진다.
+    candidates.sort(key=lambda item: (-item["score"], item["domain"]))
     return candidates
 
 
@@ -1552,7 +1601,10 @@ def _needs_domain_adjudication(candidates: list[dict]) -> bool:
     second = candidates[1]["score"]
     if top <= 0:
         return True
-    if top < 5.0:
+    # 이 하한은 use_when 문장 조각까지 점수로 세던 시절의 눈금이었다. 선언 이름만
+    # 세도록 바꾸면서 점수대가 내려갔고, 근거가 뚜렷한 질문까지 LLM 판정으로
+    # 넘어갔다.
+    if top < 2.0:
         return True
     return (top - second) <= max(2.0, top * 0.12)
 

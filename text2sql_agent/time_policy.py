@@ -59,6 +59,14 @@ TABLE_ACCUMULATION_POLICIES: dict[str, dict[str, object]] = {
         "cadence": "monthly",
         "query_time_dimension": "기준년월",
         "format": "YYYYMM",
+        # 월 실적은 달이 닫힌 뒤 적재된다. 이번 달 실적은 일 적재 가맹점기본에만
+        # 있는데 이름 접미사가 달라 tbd/tmd 짝으로는 못 찾으므로 직접 선언한다.
+        # 두 테이블이 함께 가진 컬럼만 돌릴 수 있다(_live_source_missing_columns).
+        "live_source": {
+            "table": "tbdaadt01",
+            "query_time_dimension": "실적기준년월일",
+            "format": "YYYYMMDD",
+        },
     },
     "tmdaa1d01": {
         "cadence": "monthly",
@@ -154,8 +162,14 @@ def live_source_for(table_name: str) -> dict[str, object] | None:
     has no 202608 row on 2026-08-14 while its daily twin ``tbdaaus01`` does.
     The pair is read back out of ``historical_source`` rather than listed a
     second time, so registering one new tbd/tmd twin governs both directions.
+
+    Pairs whose names do not share a suffix (``tmdaa5e11`` and its daily
+    ``tbdaadt01``) declare ``live_source`` explicitly instead.
     """
     target = str(table_name).strip().lower()
+    declared = (TABLE_ACCUMULATION_POLICIES.get(target) or {}).get("live_source")
+    if isinstance(declared, Mapping):
+        return dict(declared)
     if not target.startswith("tmd"):
         return None
     sibling = f"tbd{target[3:]}"

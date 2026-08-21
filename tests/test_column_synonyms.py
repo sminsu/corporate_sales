@@ -35,10 +35,67 @@ def test_derives_observed_surface_form(column: str, expected: str) -> None:
     assert expected in derive_column_synonyms(column)
 
 
+@pytest.mark.parametrize(
+    ("column", "expected"),
+    [
+        # 질문은 엔티티 접두사를 떼고 부른다: "사업주체별로", "해지사유 기준으로".
+        ("가맹점사업주체구분코드", "사업주체"),
+        ("가맹점해지사유구분코드", "해지사유"),
+        ("가맹점거래정지상태구분코드", "거래정지상태"),
+        ("카드신용체크이원화구분코드", "신용체크이원화"),
+    ],
+)
+def test_derives_the_surface_form_without_its_entity_prefix(
+    column: str, expected: str
+) -> None:
+    """접두사가 붙은 동의어만 있어서 사용자 표면형이 하나도 안 걸리던 회귀를 막는다."""
+    assert expected in derive_column_synonyms(column)
+
+
+def test_entity_prefix_stem_yields_to_a_real_column_of_that_name() -> None:
+    assert "사업주체구분코드" not in derive_column_synonyms(
+        "가맹점사업주체구분코드", [], ["사업주체구분코드"]
+    )
+
+
 def test_skips_synonyms_already_present() -> None:
     derived = derive_column_synonyms("가맹점상태구분코드", ["가맹점상태"])
     assert "가맹점상태" not in derived
     assert "가맹점상태구분" in derived
+
+
+@pytest.mark.parametrize(
+    ("column", "expected"),
+    [
+        # 한 행이 이미 기준년월 한 달이라 "금월" 은 그 행의 달을 가리키는 접두사다.
+        # 질문은 접두사를 빼고 지표만 부른다.
+        ("금월체크카드이용금액", "체크카드이용금액"),
+        ("금월유이자할부이용금액", "유이자할부이용금액"),
+        ("금월일시불이용건수", "일시불이용건수"),
+        ("금월KB페이이용금액", "KB페이이용금액"),
+    ],
+)
+def test_derives_the_metric_without_its_reference_month_prefix(
+    column: str, expected: str
+) -> None:
+    assert expected in derive_column_synonyms(column)
+
+
+def test_keeps_other_period_prefixes() -> None:
+    """전월·전년·금년·최근 은 그 행의 달이 아닌 다른 기간을 가리킨다."""
+    for column in ("전월일시불매입금액", "전년가맹점신용판매매출금액", "최근1년카드이용금액"):
+        assert column[2:] not in derive_column_synonyms(column)
+
+
+def test_reference_month_stem_yields_to_a_real_column_of_that_name() -> None:
+    """금월CA수수료의 어간은 다른 테이블에 실제로 있는 컬럼명이다."""
+    assert "CA수수료" not in derive_column_synonyms("금월CA수수료", None, ["CA수수료"])
+    assert "CA수수료" in derive_column_synonyms("금월CA수수료")
+
+
+def test_reference_month_stem_is_not_trimmed_further() -> None:
+    """"체크카드이용" 까지 가면 금월체크카드이용건수 질문에도 이 컬럼이 잡힌다."""
+    assert "체크카드이용" not in derive_column_synonyms("금월체크카드이용금액")
 
 
 def test_drops_generic_stems() -> None:

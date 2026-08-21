@@ -137,3 +137,43 @@ def test_sales_intent_rejects_recent_closed_brand_vq_even_if_similarity_selects_
         "도미노피자 최근 1년 매출액 알려줘",
         closed_vq,
     ) is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "26년 7월 9일 하루 기준 기업신용매출건수랑 금액",
+        "2026년 7월 기업 매출건수",
+        "2026년 6월 가맹점 매출금액 알려줘",
+    ],
+)
+def test_nameless_question_is_not_routed_by_the_named_merchant_contract(
+    question: str,
+) -> None:
+    """가맹점명이 required 인 계약은 이름 없는 질문의 라우팅 근거가 못 된다.
+
+    점수 경로의 +28 보너스에 이 가드가 없어서 "기업신용매출건수" 질문이 가맹점
+    월매출(tmdaa5e11)을 1순위로 받았다.
+    """
+    contract = next(
+        item
+        for item in workflow.SCHEMA["semantic_query_contracts"]
+        if item["name"] == "named_merchant_monthly_sales"
+    )
+
+    assert workflow._contract_entity_bindings_available(question, contract) is False
+    assert workflow._rule_rank_tables(question)[0] != "tmdaa5e11"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2026년 상반기 월별 가맹점매출금액과 전월 대비 증감률을 보여줘",
+        "2026년 6월 가맹점매출금액 알려줘",
+    ],
+)
+def test_nameless_merchant_sales_still_reaches_the_monthly_performance_table(
+    question: str,
+) -> None:
+    """이름 없는 가맹점 매출 질문의 원천은 계약 보너스가 아니라 지표 동의어다."""
+    assert "tmdaa5e11" in workflow._rule_rank_tables(question)

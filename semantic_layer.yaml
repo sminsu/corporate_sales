@@ -64,6 +64,8 @@ semantic_layer_metadata:
   v2_changes:
   - 같은 이름의 컬럼은 테이블을 넘어 동의어를 공유한다.
   - 컬럼명에서 질문 표면형 동의어를 유도해 추가했다(구분코드/여부 접미사 제거, 띄어쓰기 변형).
+  - 월 지표의 기준월 접두사를 뗀 표면형을 동의어로 추가했다(금월체크카드이용금액 → 체크카드이용금액).
+  - 어디에나 걸리는 한 글자 동의어(기준년월의 '월')를 걷어냈다.
   - 0811 상세 컬럼 코드북 7종을 같은 이름의 모든 컬럼에 value_semantics 로 적용했다.
   - SQL 생성 계약에서 되묻기 지시를 제거하고 항상 SQL을 내보내는 output_contract 로 교체했다.
   - Athena 방언 규칙에 QUALIFY·expr::type·윈도함수 WHERE 금지를 명시했다.
@@ -73,9 +75,16 @@ semantic_layer_metadata:
   - 가맹점 주소를 가맹점기본(tbdaadt01) 한 곳만 가리키는 semantic attribute 로 선언했다.
   - 전일 적재 테이블의 지표·계약·질의 참조를 KST D-1 기준으로 통일했다.
   - 기업고객 현재 상태는 tbdaa1d12 KST D-1, 명시한 과거 월은 tmdaa1d12 기준년월, 현재+이력 질의는 두 소스를 함께 사용하도록 분리했다.
+  - 유효 기업카드 보유 속성의 원천을 현재(tbdaa1d12)·과거 월(tmdaa1d12)로 갈라 선언했다.
   - tbmaisd06 의 물리 시간축은 유지하고 연 단위 적재 조회 컬럼을 정책으로 분리했으며, 기업영업 스코프 필터를 기본값으로 못 박았다.
   - 기업 수는 고객식별자, 회원 수는 회원일련번호로 세도록 지표·용어·grain 규칙을 분리했다(기업고객수·연체기업수 지표 신설).
   - 이용금액과 매출금액이 같은 금액의 다른 관점임을 용어로 선언하고, 기업·카드·가맹점·전표 단위별 원천 컬럼을 못 박았다.
+  - 매출전표종류구분코드 코드값 6종을 선언하고, 전표 매출금액·이용금액을 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 빼는 순액 집계로 바꿨다.
+  - 해외 이용금액을 카드 월실적(tmdaa3e16)의 해외 일시불+CA 이용금액 지표로 분리하고, 청구금액을 금월청구금액 지표·용어로 신설해 이용금액 컬럼과 갈라 놓았다.
+  - 가맹점 신용판매 매출금액을 이번 달은 tbdaadt01, 지난 달 이전은 tmdaa5e11에서 읽는 속성으로 선언했다.
+  - 가맹점월매출금액에 건수 지표와 같은 표면형(가맹점매출금액)을 동의어로 세웠다.
+  - 앱구분코드에 질문 표면형 '앱' 을 동의어로 세웠다(한 글자 금지의 유일한 예외).
+  - 법인카드 이용금액에 사용자 표면형을 달아 카드 월실적(tmdaa3e16)으로 돌리고, 이용 기업수를 전표(tbdaabt30) 기업고객식별자를 세는 지표·용어로 신설했다.
   - 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.
 tables:
 - name: tbdaa1d12
@@ -100,7 +109,10 @@ tables:
     synonyms:
     - 고객고유번호구분
     - 고객고유번호
+    - 고유번호구분
+    - 고유번호
     - 고객고유번호 구분
+    - 고유번호 구분
   - name: 기업명
     data_type: VARCHAR
     description: "해당 고객식별자에 대한 기업의 명칭을 관리한다. / KED기업정식명 기준으로 먼저 셋팅하며, 해당 값이 없을 경우 당사 기준의 기업명을 셋팅한다."
@@ -241,8 +253,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -346,7 +361,10 @@ tables:
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 가맹점명
     data_type: VARCHAR
     description: 위 대표가맹점번호 기준의 데이터이다. / 당사와 가맹점 계약을 체결한 사업장의 명칭을 나타낸다.
@@ -514,67 +532,89 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 신용카드이용금액
     - 금월신용카드이용 금액
+    - 신용카드이용 금액
   - name: 금월체크카드이용금액
     data_type: DECIMAL
     description: "해당 금월기준 발생한 회원의 체크카드 이용 매출 금액을 나타낸다. / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다. · 상품중분류구분코드 IN(CP53, CP54)"
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 체크카드이용금액
     - 금월체크카드이용 금액
+    - 체크카드이용 금액
   - name: 금월해외이용금액
     data_type: DECIMAL
     description: "해당 금월 회원이 해외에서 카드로 매출이 발생한 이용금액을 나타낸다. / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다. · 가맹점소속회사구분코드 = '4'"
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 해외이용금액
     - 금월해외이용 금액
+    - 해외이용 금액
   - name: 금월KB페이이용금액
     data_type: DECIMAL
     description: "당월에 이용한 카드 매출 중 KB페이로 결제한 이용금액을 나타낸다. (KB페이 전용 SWIPE구분코드에 한함) / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다."
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - KB페이이용금액
     - 금월 KB 페이이용금액
     - 금월KB페이이용 금액
     - 금월 KB 페이이용 금액
+    - KB 페이이용금액
+    - KB페이이용 금액
+    - KB 페이이용 금액
   - name: 금월국세이용금액
     data_type: DECIMAL
     description: "당월에 발생한 카드 특화매출 중 국세업종에서 발생한 이용금액을 나타낸다. (업종코드:8219) / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다."
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 국세이용금액
     - 금월국세이용 금액
+    - 국세이용 금액
   - name: 금월지방세이용금액
     data_type: DECIMAL
     description: "당월에 발생한 카드 특화매출 중 지방세업종에서 발생한 이용금액을 나타낸다. (업종코드:8220) / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다."
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 지방세이용금액
     - 금월지방세이용 금액
+    - 지방세이용 금액
   - name: 금월4대보험이용금액
     data_type: DECIMAL
     description: "당월에 발생한 카드 특화매출 중 4대보험업종에서 발생한 이용금액을 나타낸다. (업종코드:8099) / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다."
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 4대보험이용금액
     - 금월 4 대보험이용금액
     - 금월4대보험이용 금액
     - 금월 4 대보험이용 금액
+    - 4 대보험이용금액
+    - 4대보험이용 금액
+    - 4 대보험이용 금액
   - name: 금월일반매출이용금액
     data_type: DECIMAL
     description: "당월에 발생한 일반매출 이용금액을 나타낸다. · 일반매출 = 신용카드이용금액 + 체크카드이용금액 - 국세이용금액 - 지방세이용금액 - 4대보험이용금액 / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다."
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 일반매출이용금액
     - 금월일반매출이용 금액
+    - 일반매출이용 금액
   - name: 금월전략매출이용금액
     data_type: DECIMAL
     description: "당월에 발생한 전략매출 이용금액을 나타낸다. · 전략매출 = 국세이용금액 + 지방세이용금액 + 4대보험이용금액 / 당사 매입전표(TBDAABT30) 기준으로 산출된 데이터이다."
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 전략매출이용금액
     - 금월전략매출이용 금액
+    - 전략매출이용 금액
   - name: 카드연체원금
     data_type: DECIMAL
     description: 카드 연체건에 대한 원금 합계금액을 나타낸다.
@@ -716,7 +756,10 @@ tables:
     synonyms:
     - 고객고유번호구분
     - 고객고유번호
+    - 고유번호구분
+    - 고유번호
     - 고객고유번호 구분
+    - 고유번호 구분
   - name: 기업명
     data_type: VARCHAR
     physical_data_type: VARCHAR2(70)
@@ -878,8 +921,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -989,7 +1035,10 @@ tables:
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 가맹점명
     data_type: VARCHAR
     physical_data_type: VARCHAR2(50)
@@ -1196,7 +1245,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 신용카드이용금액
     - 금월신용카드이용 금액
+    - 신용카드이용 금액
   - name: 금월체크카드이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1204,7 +1255,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 체크카드이용금액
     - 금월체크카드이용 금액
+    - 체크카드이용 금액
   - name: 금월해외이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1212,7 +1265,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 해외이용금액
     - 금월해외이용 금액
+    - 해외이용 금액
   - name: 금월KB페이이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1220,9 +1275,13 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - KB페이이용금액
     - 금월 KB 페이이용금액
     - 금월KB페이이용 금액
     - 금월 KB 페이이용 금액
+    - KB 페이이용금액
+    - KB페이이용 금액
+    - KB 페이이용 금액
   - name: 금월국세이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1230,7 +1289,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 국세이용금액
     - 금월국세이용 금액
+    - 국세이용 금액
   - name: 금월지방세이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1238,7 +1299,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 지방세이용금액
     - 금월지방세이용 금액
+    - 지방세이용 금액
   - name: 금월4대보험이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1246,9 +1309,13 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 4대보험이용금액
     - 금월 4 대보험이용금액
     - 금월4대보험이용 금액
     - 금월 4 대보험이용 금액
+    - 4 대보험이용금액
+    - 4대보험이용 금액
+    - 4 대보험이용 금액
   - name: 금월일반매출이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1256,7 +1323,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 일반매출이용금액
     - 금월일반매출이용 금액
+    - 일반매출이용 금액
   - name: 금월전략매출이용금액
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1264,7 +1333,9 @@ tables:
     unit: KRW
     aggregation: sum_after_snapshot_dedup
     synonyms:
+    - 전략매출이용금액
     - 금월전략매출이용 금액
+    - 전략매출이용 금액
   - name: 카드연체원금
     data_type: DECIMAL
     physical_data_type: NUMBER(15)
@@ -1282,7 +1353,9 @@ tables:
     data_type: VARCHAR
     physical_data_type: VARCHAR2(6)
     description: 해당 기준년월 말일 시점의 월 스냅샷을 식별하는 년월
-    synonyms: [기준월, 년월, 월]
+    synonyms:
+    - 기준월
+    - 년월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -1480,15 +1553,20 @@ tables:
     synonyms:
     - 고객상태구분
     - 고객상태
+    - 상태구분
     - 고객상태 구분
     - 고객 상태
+    - 상태 구분
   - name: 고객고유번호구분코드
     data_type: VARCHAR
     description: 00(해당무)가 있으면 안됨. 99(기타)를 사용해야 함
     synonyms:
     - 고객고유번호구분
     - 고객고유번호
+    - 고유번호구분
+    - 고유번호
     - 고객고유번호 구분
+    - 고유번호 구분
   - name: 고객고유번호
     data_type: VARCHAR
     description: 고객을 식별할 수 있는 고유번호 (주민등록번호,운전면허번호,외국인등록번호,사업자등록번호 등)
@@ -1515,7 +1593,10 @@ tables:
     synonyms:
     - 고객등록거래구분
     - 고객등록거래
+    - 등록거래구분
+    - 등록거래
     - 고객등록거래 구분
+    - 등록거래 구분
   - name: 고객유형분류구분코드
     data_type: VARCHAR
     description: 고객의 유형을 분류하는 구분코드
@@ -1523,9 +1604,13 @@ tables:
     - 고객유형분류구분
     - 고객유형분류
     - 고객유형
+    - 유형분류구분
+    - 유형분류
     - 고객유형분류 구분
     - 고객유형 분류
     - 고객 유형
+    - 유형분류 구분
+    - 유형 분류
   - name: 세부고객유형분류구분코드
     data_type: VARCHAR
     description: 고객의 형태를 세부적으로 분류한 구분코드(개인,개인사업자,법인등)
@@ -1580,7 +1665,10 @@ tables:
     synonyms:
     - 카드고객서비스구분
     - 카드고객서비스
+    - 고객서비스구분
+    - 고객서비스
     - 카드고객서비스 구분
+    - 고객서비스 구분
   - name: 최고고객구분코드
     data_type: VARCHAR
     description: 가족포함된 최고 우대서비스가 가능한 고객의 등급(MVP,로얄,우대,프리미엄,잠재,일반등)을 구분하는 구분코드
@@ -1726,7 +1814,9 @@ tables:
     - 기업규모코드
     - 대기업구분
     - 기업규모구분
+    - 규모구분
     - 기업규모 구분
+    - 규모 구분
     codebook_ref: enterprise_size
   - name: 업종구분코드
     data_type: VARCHAR
@@ -1751,7 +1841,9 @@ tables:
     synonyms:
     - 기업형태구분
     - 기업형태
+    - 형태구분
     - 기업형태 구분
+    - 형태 구분
   - name: 자택전화사용가능여부
     data_type: VARCHAR
     description: 등록된 자택전화번호가 사용이 가능한지에 대한 정보를 관리
@@ -1871,7 +1963,10 @@ tables:
     synonyms:
     - 고객대표주소표시구분
     - 고객대표주소표시
+    - 대표주소표시구분
+    - 대표주소표시
     - 고객대표주소표시 구분
+    - 대표주소표시 구분
   - name: 고객대표주소사용가능여부
     data_type: VARCHAR
     description: 고객의 대표주소(자택 또는 직장주소)가 정상적으로 사용 가능한지 여부를 관리
@@ -1911,7 +2006,10 @@ tables:
     synonyms:
     - 고객대표도로명지하구분
     - 고객대표도로명지하
+    - 대표도로명지하구분
+    - 대표도로명지하
     - 고객대표도로명지하 구분
+    - 대표도로명지하 구분
   - name: 이용권유전화동의구분코드
     data_type: VARCHAR
     description: 카드사에서 제공하는 서비스나 제휴혜택등을 전화로 받는데 동의하는지에 대한 여부를 구분코드로 정의한다.
@@ -1950,7 +2048,10 @@ tables:
     synonyms:
     - 카드이용권유동의구분
     - 카드이용권유동의
+    - 이용권유동의구분
+    - 이용권유동의
     - 카드이용권유동의 구분
+    - 이용권유동의 구분
   - name: 마케팅활용동의구분코드
     data_type: VARCHAR
     description: 고객의 정보를 마케팅 활동에 동의했는지를 구분코드로 관리
@@ -2131,7 +2232,9 @@ tables:
     - 회원 자산관리 부점
     - 자산관리부점
     - 회원자산관리
+    - 자산관리
     - 회원자산관리 부점
+    - 자산관리 부점
   - name: 회원자격코드
     data_type: VARCHAR
     description: 통합코드의 회원자격코드
@@ -2145,7 +2248,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -2227,7 +2332,10 @@ tables:
     synonyms:
     - 카드신용체크이원화구분
     - 카드신용체크이원화
+    - 신용체크이원화구분
+    - 신용체크이원화
     - 카드신용체크이원화 구분
+    - 신용체크이원화 구분
   - name: 카드결제기관구분코드
     data_type: VARCHAR
     description: 카드결제계좌의 기관구분코드
@@ -2237,8 +2345,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -2431,7 +2542,10 @@ tables:
     synonyms:
     - 카드일반특정이원화구분
     - 카드일반특정이원화
+    - 일반특정이원화구분
+    - 일반특정이원화
     - 카드일반특정이원화 구분
+    - 일반특정이원화 구분
   - name: 결제다원화회원여부
     data_type: VARCHAR
     description: 결제계좌 다원화를 사용하는 회원인지 아닌지를 나타낸다.
@@ -2715,7 +2829,10 @@ tables:
     synonyms:
     - 카드소유자구분
     - 카드소유자
+    - 소유자구분
+    - 소유자
     - 카드소유자 구분
+    - 소유자 구분
   - name: 본인카드구분키번호
     data_type: VARCHAR
     description: 가족 또는 사업자/사업장카드일 경우 본인 또는 대표에 해당하는 카드구분키번호이다.
@@ -2746,8 +2863,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -2755,7 +2875,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -2788,8 +2911,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -2820,7 +2945,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
   - name: KB카드BC카드구분코드
     data_type: VARCHAR
     description: KB카드와 BC카드를 구분하는코드
@@ -2839,7 +2967,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -2889,8 +3019,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -2989,8 +3122,12 @@ tables:
     - 카드이용한도구분
     - 카드이용한도
     - 카드이용
+    - 이용한도구분
+    - 이용한도
     - 카드이용한도 구분
     - 카드이용 한도
+    - 이용한도 구분
+    - 이용 한도
   - name: 카드당한도사용여부
     data_type: VARCHAR
     description: 카드에 해당하는 한도를 카드당 한도를 사용할지에 대한 여부
@@ -3133,8 +3270,12 @@ tables:
     - 카드거래매체구분
     - 카드거래매체
     - 카드거래
+    - 거래매체구분
+    - 거래매체
     - 카드거래매체 구분
     - 카드거래 매체
+    - 거래매체 구분
+    - 거래 매체
   - name: 교부유형구분코드
     data_type: VARCHAR
     description: 카드 교부방법 종류 (인편/우편/지점방문/등등)
@@ -3193,14 +3334,20 @@ tables:
     synonyms:
     - 카드교부희망부점
     - 카드교부희망
+    - 교부희망부점
+    - 교부희망
     - 카드교부희망 부점
+    - 교부희망 부점
   - name: 카드실물보유부점코드
     data_type: VARCHAR
     description: 카드를 실물 부유하고 있는 영업점부점코드이다.
     synonyms:
     - 카드실물보유부점
     - 카드실물보유
+    - 실물보유부점
+    - 실물보유
     - 카드실물보유 부점
+    - 실물보유 부점
   - name: 실물보유구분코드
     data_type: VARCHAR
     description: 실물 카드 보유/미보유 구분
@@ -3236,14 +3383,20 @@ tables:
     synonyms:
     - 카드신용체크이원화구분
     - 카드신용체크이원화
+    - 신용체크이원화구분
+    - 신용체크이원화
     - 카드신용체크이원화 구분
+    - 신용체크이원화 구분
   - name: 카드일반특정이원화구분코드
     data_type: VARCHAR
     description: 카드의 결제단위가 일반카드/특정카드이원화 인지 통합인지 구분하는 코드 이다.
     synonyms:
     - 카드일반특정이원화구분
     - 카드일반특정이원화
+    - 일반특정이원화구분
+    - 일반특정이원화
     - 카드일반특정이원화 구분
+    - 일반특정이원화 구분
   - name: 결제다원화카드여부
     data_type: VARCHAR
     description: 결제계좌 다원화를 이용하는 회원에 대한 카드 여부를 나타낸다.
@@ -3255,7 +3408,10 @@ tables:
     synonyms:
     - 고객선택자재구분
     - 고객선택자재
+    - 선택자재구분
+    - 선택자재
     - 고객선택자재 구분
+    - 선택자재 구분
   - name: 비계좌선불카드여부
     data_type: VARCHAR
     description: 비계좌 선불카드 여부 인지를 나타낸다. ※ 선불전자지급수단을 충전계정(결제계좌)으로 하는 선불카드 (은행의 리브포켓, 당사의 머니 등)
@@ -3562,8 +3718,13 @@ tables:
     - 카드상세통합변경유형구분
     - 카드상세통합변경유형
     - 카드상세통합변경
+    - 상세통합변경유형구분
+    - 상세통합변경유형
+    - 상세통합변경
     - 카드상세통합변경유형 구분
     - 카드상세통합변경 유형
+    - 상세통합변경유형 구분
+    - 상세통합변경 유형
   - name: 카드상세변경유형일련번호
     data_type: DECIMAL
     description: "카드상세(카드단위)에 변경이 처리가 되는 경우 카드상세변경유형구분코드별로 증가하는 일련번호이다. / 카드상세중요변경유형구분코드와 카드상세단순변경유형구분코드에 따른 일련번호와 동일하게 구성된다."
@@ -3608,7 +3769,9 @@ tables:
     synonyms:
     - 카드수령부점
     - 카드수령
+    - 수령부점
     - 카드수령 부점
+    - 수령 부점
   - name: 카드정보변경발송업체내용
     data_type: VARCHAR
     description: 카드에 해당하는 정보(재발송, 반송 등)를 변경할 때 발송 업체에 기술하는 내용이다.
@@ -3621,7 +3784,10 @@ tables:
     synonyms:
     - 회원카드추가구분
     - 회원카드추가
+    - 카드추가구분
+    - 카드추가
     - 회원카드추가 구분
+    - 카드추가 구분
   - name: 카드정보변경추가내용1
     data_type: VARCHAR
     description: 카드정보 변경시 추가로 입력하는 내용
@@ -3945,7 +4111,10 @@ tables:
     synonyms:
     - 가맹점소속회사구분
     - 가맹점소속회사
+    - 소속회사구분
+    - 소속회사
     - 가맹점소속회사 구분
+    - 소속회사 구분
   - name: 가맹점번호
     data_type: VARCHAR
     description: KB카드와 가맹점 계약을 체결한 사업장에 부여하는 식별번호
@@ -3959,8 +4128,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 상품의 대분류에 대한 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -3968,7 +4140,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -4001,8 +4176,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -4028,7 +4205,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
   - name: 카드매출유형구분코드
     data_type: VARCHAR
     description: 카드매출 유형 관리를 의미한다.
@@ -4036,17 +4216,29 @@ tables:
     - 카드매출유형구분
     - 카드매출유형
     - 카드매출
+    - 매출유형구분
+    - 매출유형
     - 카드매출유형 구분
     - 카드매출 유형
+    - 매출유형 구분
+    - 매출 유형
   - name: 매출전표종류구분코드
     data_type: VARCHAR
-    description: 매출전표의 종류관리코드를 의미한다.
+    description: '매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.'
     synonyms:
     - 매출전표종류구분
     - 매출전표종류
     - 매출전표
     - 매출전표종류 구분
     - 매출전표 종류
+    value_semantics:
+      '1': 정당전표
+      '2': 정정전표
+      '3': 취소전표
+      '4': 취소정정전표
+      '5': 청구보류
+      '6': 체크환급
+    value_semantics_provenance: user_provided_business_codebook
   - name: 현지거래통화코드
     data_type: VARCHAR
     description: 현지거래시 사용된 통화코드
@@ -4084,8 +4276,10 @@ tables:
     synonyms:
     - 가맹점유형구분
     - 가맹점유형
+    - 유형구분
     - 가맹점유형 구분
     - 가맹점 유형
+    - 유형 구분
   - name: 온라인거래여부
     data_type: VARCHAR
     description: 온라인 거래 여부식별값
@@ -4127,18 +4321,17 @@ tables:
   measures:
   - name: 매출금액
     data_type: DECIMAL
-    description: 회원이 사용하여 발생된 매출에 대한 금액 정보를 관리함
+    description: 회원이 사용하여 발생된 매출에 대한 금액 정보를 관리함. 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     synonyms:
     - 매출
     - 매출액
-    - 이용금액
     - 매출 금액
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
   - name: 매출미화금액
     data_type: DECIMAL
-    description: 접수기관 또는 가맹점에서 매입요청한 매출전표의 미화금액
+    description: 접수기관 또는 가맹점에서 매입요청한 매출전표의 미화금액. 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
@@ -4148,7 +4341,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: 결정 및 판단의 기준이 되는 년월 - 전표매입년월일의 년월을 입력한다.
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -4186,6 +4381,9 @@ tables:
     deduplicate_before_aggregation: false
     aggregate_across_time: true
     default_measure_behavior: sum_at_transaction_grain
+    canonical_formulas:
+      해외매출금액: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "매출금액" ELSE -"매출금액" END)
+      매출건수: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN 1 ELSE -1 END)
   accumulation_policy:
     cadence: monthly
     query_time_dimension: 기준년월
@@ -4196,7 +4394,7 @@ tables:
   description: "카드 매출전표 단위의 핵심 거래/매출 팩트 테이블. 한 행은 하나의 매출전표(기준년월+매출전표번호)를 의미한다. 전표매입/매출 일시, 회원·카드 식별자, 가맹점번호·업종, 카드매출유형·매출전표종류, 매출금액·할부·수수료 등 매출 분석에 필요한 거의 모든 측정값을 담는다. 카드 매출/이용금액 분석의 중심 팩트 테이블이다."
   grain: 기준년월 × 매출전표번호 1건 (국내 매출전표)
   primary_key: [기준년월, 매출전표번호]
-  synonyms: [매출, 이용내역, 거래내역, 전표, 카드매출, 이용금액]
+  synonyms: [매출, 이용내역, 거래내역, 전표, 카드매출]
   dimensions:
   - name: 매출전표번호
     data_type: VARCHAR
@@ -4212,17 +4410,29 @@ tables:
     - 카드매출유형구분
     - 카드매출유형
     - 카드매출
+    - 매출유형구분
+    - 매출유형
     - 카드매출유형 구분
     - 카드매출 유형
+    - 매출유형 구분
+    - 매출 유형
   - name: 매출전표종류구분코드
     data_type: VARCHAR
-    description: MFX_KB카드전표입력내역의 매출전표의 종류관리코드
+    description: '매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.'
     synonyms:
     - 매출전표종류구분
     - 매출전표종류
     - 매출전표
     - 매출전표종류 구분
     - 매출전표 종류
+    value_semantics:
+      '1': 정당전표
+      '2': 정정전표
+      '3': 취소전표
+      '4': 취소정정전표
+      '5': 청구보류
+      '6': 체크환급
+    value_semantics_provenance: user_provided_business_codebook
   - name: 회원일련번호
     data_type: VARCHAR
     description: 당사(KB국민카드)와 계약한 회원을 관리하는 식별번호
@@ -4244,8 +4454,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -4253,7 +4466,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -4286,8 +4502,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -4341,14 +4559,20 @@ tables:
     synonyms:
     - 회원소속회사구분
     - 회원소속회사
+    - 소속회사구분
+    - 소속회사
     - 회원소속회사 구분
+    - 소속회사 구분
   - name: 가맹점소속회사구분코드
     data_type: VARCHAR
     description: MFX_KB카드전표입력내역의 가맹점의 소속를 관리하는 코드
     synonyms:
     - 가맹점소속회사구분
     - 가맹점소속회사
+    - 소속회사구분
+    - 소속회사
     - 가맹점소속회사 구분
+    - 소속회사 구분
   - name: 전산처리방법구분코드
     data_type: VARCHAR
     description: 매입전표의 전산처리방법을 구분하는 코드이다.
@@ -4494,11 +4718,17 @@ tables:
     description: 취소매출전표 매입시 해당 승인건 정상매출전표원장의 매출전표번호
   - name: 전표취소구분코드
     data_type: VARCHAR
-    description: 취소전표의 사유를 관리하는 코드
+    description: 취소전표의 사유 코드(가맹점번호 상이·원인전표검증생략·분할취소·자동상계비대상). 취소 여부는 매출전표종류구분코드로 가리며 이 컬럼으로 취소를 걸러내지 않는다.
     synonyms:
     - 전표취소구분
     - 전표취소
     - 전표취소 구분
+    value_semantics:
+      '1': 가맹점번호 상이
+      '2': 원인전표검증생략
+      '3': 분할취소
+      '4': 자동상계비대상
+    value_semantics_provenance: user_provided_business_codebook
   - name: 강제입력사유구분코드
     data_type: VARCHAR
     description: MFX_KB카드전표입력내역의 매출전표의 강제입력관리코드
@@ -4516,7 +4746,9 @@ tables:
     - 회원 자산관리 부점
     - 자산관리부점
     - 회원자산관리
+    - 자산관리
     - 회원자산관리 부점
+    - 자산관리 부점
   - name: 매입카드종류구분코드
     data_type: VARCHAR
     description: MFX_KB카드전표입력내역의 KB카드,KB체크카드 구분
@@ -4541,14 +4773,18 @@ tables:
     synonyms:
     - 가맹점모집부점
     - 가맹점모집
+    - 모집부점
     - 가맹점모집 부점
+    - 모집 부점
   - name: 가맹점관리부점코드
     data_type: VARCHAR
     description: 가맹점 대금지급 대상건의 가맹점을 관리하는 지점의 부점코드
     synonyms:
     - 가맹점관리부점
     - 가맹점관리
+    - 관리부점
     - 가맹점관리 부점
+    - 관리 부점
   - name: 가맹점업종코드
     data_type: VARCHAR
     description: 가맹점업종코드를 관리하는 항목
@@ -4560,8 +4796,10 @@ tables:
     synonyms:
     - 가맹점유형구분
     - 가맹점유형
+    - 유형구분
     - 가맹점유형 구분
     - 가맹점 유형
+    - 유형 구분
   - name: 제휴업체코드
     data_type: VARCHAR
     description: 제휴된 업체코드를 관리하는 코드이다.
@@ -4587,7 +4825,10 @@ tables:
     synonyms:
     - 가맹점수수료구분
     - 가맹점수수료
+    - 수수료구분
+    - 수수료
     - 가맹점수수료 구분
+    - 수수료 구분
   - name: 가맹점결제기관구분코드
     data_type: VARCHAR
     description: 가맹점의 대금지급에 대한 결제기관을 구분하는 코드
@@ -4595,8 +4836,12 @@ tables:
     - 가맹점결제기관구분
     - 가맹점결제기관
     - 가맹점결제
+    - 결제기관구분
+    - 결제기관
     - 가맹점결제기관 구분
     - 가맹점결제 기관
+    - 결제기관 구분
+    - 결제 기관
   - name: MCC업종코드
     data_type: VARCHAR
     description: 해외기준에 매핑되는가맹점업종 코드이다.
@@ -4619,7 +4864,10 @@ tables:
     synonyms:
     - 가맹점고객서비스구분
     - 가맹점고객서비스
+    - 고객서비스구분
+    - 고객서비스
     - 가맹점고객서비스 구분
+    - 고객서비스 구분
   - name: 회수방법구분코드
     data_type: VARCHAR
     description: MFX_KB카드전표입력내역의 결제 대금 회수방법구분코드
@@ -4643,14 +4891,20 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
   - name: 카드소유자구분코드
     data_type: VARCHAR
     description: 카드 소유자 유형 (본인/가족/대표/공용/개별)
     synonyms:
     - 카드소유자구분
     - 카드소유자
+    - 소유자구분
+    - 소유자
     - 카드소유자 구분
+    - 소유자 구분
   - name: 카드등급구분코드
     data_type: VARCHAR
     description: 신용카드의 등급을 구분하는 코드이다.
@@ -4658,7 +4912,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -4675,6 +4931,7 @@ tables:
     synonyms:
     - 카드칩구분
     - 카드칩
+    - 칩구분
     - 카드칩 구분
   - name: 카드환율적용구분코드
     data_type: VARCHAR
@@ -4682,7 +4939,10 @@ tables:
     synonyms:
     - 카드환율적용구분
     - 카드환율적용
+    - 환율적용구분
+    - 환율적용
     - 카드환율적용 구분
+    - 환율적용 구분
   - name: 우수고객서비스구분코드
     data_type: VARCHAR
     description: 관리회계에서 사용하는 우수고객서비스구분코드 속성을 관리한다.
@@ -4856,13 +5116,19 @@ tables:
     - 카드론거래매체구분
     - 카드론거래매체
     - 카드론거래
+    - 론거래매체구분
+    - 론거래매체
+    - 론거래
     - 카드론거래매체 구분
     - 카드론거래 매체
+    - 론거래매체 구분
+    - 론거래 매체
   - name: 앱구분코드
     data_type: VARCHAR
     description: 간편결제구분을 위한 SWIPE구분코드를 포함하는 상위개념의 앱결제 구분코드
     synonyms:
     - 앱구분
+    - 앱
   - name: 가맹점명
     data_type: VARCHAR
     description: 해당 전표를 사용한 가맹점명 정보를 나타낸다. VAN사에서 보낸 전문 데이터를 가공없이 적재한다.
@@ -4883,28 +5149,30 @@ tables:
     synonyms:
     - 가맹점수수료율구분
     - 가맹점수수료율
+    - 수수료율구분
+    - 수수료율
     - 가맹점수수료율 구분
+    - 수수료율 구분
   measures:
   - name: 매출금액
     data_type: DECIMAL
-    description: 회원이 사용하여 발생된 매출에 대한 금액 정보를 관리함
+    description: 회원이 사용하여 발생된 매출에 대한 금액 정보를 관리함. 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     synonyms:
     - 매출
     - 매출액
-    - 이용금액
     - 매출 금액
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
   - name: 봉사료
     data_type: DECIMAL
-    description: 매출전표상의 봉사료
+    description: 매출전표상의 봉사료. 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
   - name: 매출미화금액
     data_type: DECIMAL
-    description: 접수기관 또는 가맹점에서 매입요청한 매출전표의 미화금액
+    description: 접수기관 또는 가맹점에서 매입요청한 매출전표의 미화금액. 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
@@ -4912,7 +5180,7 @@ tables:
     - 매출미화 금액
   - name: 미화봉사료
     data_type: DECIMAL
-    description: 접수기관 또는 가맹점에서 매입요청한 매출전표의 미화 봉사료(TIP)
+    description: 접수기관 또는 가맹점에서 매입요청한 매출전표의 미화 봉사료(TIP). 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
@@ -4968,7 +5236,7 @@ tables:
     aggregation: recompute_or_weighted_avg
   - name: 가맹점수수료
     data_type: DECIMAL
-    description: "매출전표 매입시 매출금액을 기준으로 가맹점수수료율을 반영하여 산출한 가맹점이 카드사에게 지급하는 수수료 / 카드사는 매출금액에서 가맹점수수료를 차감한 금액을 대금지급처리"
+    description: "매출전표 매입시 매출금액을 기준으로 가맹점수수료율을 반영하여 산출한 가맹점이 카드사에게 지급하는 수수료 / 카드사는 매출금액에서 가맹점… 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다."
     required: true
     unit: KRW
     aggregation: sum_at_transaction_grain
@@ -5026,14 +5294,16 @@ tables:
     aggregation: sum_at_transaction_grain
   - name: 부가가치세
     data_type: DECIMAL
-    description: 세법에 근거하여 재화의 10%에 해당하는 세액이다 (BF151전문에서 수신받은 세금)
+    description: 세법에 근거하여 재화의 10%에 해당하는 세액이다 (BF151전문에서 수신받은 세금). 취소·정정 전표가 섞여 있어 그대로 SUM하지 않고 매출전표종류구분코드로 부호를 정해 순액으로 집계한다.
     unit: KRW
     aggregation: sum_at_transaction_grain
   time_dimensions:
   - name: 기준년월
     data_type: VARCHAR
     description: KB카드전표입력의 매입년월일 기준으로 생성 되는 기준년월
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -5106,7 +5376,12 @@ tables:
     aggregate_across_time: true
     default_measure_behavior: sum_at_transaction_grain
     canonical_formulas:
-      카드매출금액: SUM("매출금액")
+      카드매출금액: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "매출금액" ELSE -"매출금액" END)
+      이용금액: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "매출금액" ELSE -"매출금액" END)
+      봉사료: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "봉사료" ELSE -"봉사료" END)
+      부가가치세: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "부가가치세" ELSE -"부가가치세" END)
+      가맹점수수료: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "가맹점수수료" ELSE -"가맹점수수료" END)
+      매출건수: SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN 1 ELSE -1 END)
     business_time_dimension: 전표매출년월일
   accumulation_policy:
     cadence: monthly
@@ -5218,6 +5493,7 @@ tables:
     description: KB카드,KB은행 부점의 관할 세무서명을 관리
     synonyms:
     - 부점관할세무서
+    - 관할세무서
   - name: 회계발생구분코드
     data_type: VARCHAR
     description: "취급점B/S관리구분코드(회계발생구분코드)(1:회계미발생,2:은행회계대체발생,3:전회계대체발생,4전회계발생)"
@@ -5515,8 +5791,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -5524,7 +5803,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -5557,8 +5839,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -5588,12 +5872,16 @@ tables:
     synonyms:
     - 카드상품사업단위구분
     - 카드상품사업단위
+    - 상품사업단위구분
+    - 상품사업단위
     - 카드상품사업단위 구분
+    - 상품사업단위 구분
   - name: 고객안내상품명
     data_type: VARCHAR
     description: 고객에게 안내되는 카드 상품 명칭이다.
     synonyms:
     - 고객안내상품
+    - 안내상품
   - name: 통장장표인자상품명
     data_type: VARCHAR
     description: 상품의 공식적인 명칭과 별도로 통장 또는 장표에 인자하기 위한 상품명
@@ -5605,29 +5893,37 @@ tables:
     synonyms:
     - 상품상태구분
     - 상품상태
+    - 상태구분
     - 상품상태 구분
     - 상품 상태
+    - 상태 구분
   - name: 상품등록부점코드
     data_type: VARCHAR
     description: 상품을 등록한 부점코드 정보이다.
     synonyms:
     - 상품등록부점
     - 상품등록
+    - 등록부점
     - 상품등록 부점
+    - 등록 부점
   - name: 상품개발부점코드
     data_type: VARCHAR
     description: 상품을 개발한 부점코드 정보이다.
     synonyms:
     - 상품개발부점
     - 상품개발
+    - 개발부점
     - 상품개발 부점
+    - 개발 부점
   - name: 상품관리부점코드
     data_type: VARCHAR
     description: 상품을 관리하는 부점코드 정보이다.
     synonyms:
     - 상품관리부점
     - 상품관리
+    - 관리부점
     - 상품관리 부점
+    - 관리 부점
   - name: BC카드관리구분코드
     data_type: VARCHAR
     description: 동남카드/비씨카드 를 구분하는 코드
@@ -5717,8 +6013,12 @@ tables:
     - 가맹점업종대분류구분
     - 가맹점업종대분류
     - 가맹점업종
+    - 업종대분류구분
+    - 업종대분류
     - 가맹점업종대분류 구분
     - 가맹점업종 대분류
+    - 업종대분류 구분
+    - 업종 대분류
   - name: 가맹점업종중분류구분코드
     data_type: VARCHAR
     description: 가맹점 업종코드의 대분류 하위에 중분류로 구분한 코드로써 의류, 직물/침구류, 휴게음식점등으로 구분
@@ -5726,8 +6026,12 @@ tables:
     - 가맹점업종중분류구분
     - 가맹점업종중분류
     - 가맹점업종
+    - 업종중분류구분
+    - 업종중분류
     - 가맹점업종중분류 구분
     - 가맹점업종 중분류
+    - 업종중분류 구분
+    - 업종 중분류
   - name: 가맹점업종중분류구분일련번호
     data_type: DECIMAL
     description: 동일한 가맹점업종중분류구분코드에 대해 이를 구분하기 위한 일련의 번호
@@ -5770,7 +6074,10 @@ tables:
     synonyms:
     - 기업회원업종구분
     - 기업회원업종
+    - 회원업종구분
+    - 회원업종
     - 기업회원업종 구분
+    - 회원업종 구분
   - name: 표준산업대분류코드
     data_type: VARCHAR
     description: 정부에서 제공하는 산업분류코드의 대분류코드
@@ -5805,8 +6112,10 @@ tables:
     synonyms:
     - 가맹점유형구분
     - 가맹점유형
+    - 유형구분
     - 가맹점유형 구분
     - 가맹점 유형
+    - 유형 구분
   - name: 자동심사방문대상여부
     data_type: VARCHAR
     description: "업종코드에 대하여 자동 심사 방문 대상 사업장 여부(0:자동심방비대상, 1:자동심방대상)"
@@ -6238,7 +6547,9 @@ tables:
     - 가맹점상태
     - 가맹점 상태
     - 가맹점상태구분
+    - 상태구분
     - 가맹점상태 구분
+    - 상태 구분
     codebook_ref: 가맹점상태구분코드
   - name: 법인등록번호
     data_type: VARCHAR
@@ -6286,8 +6597,12 @@ tables:
     - 가맹점해지사유구분
     - 가맹점해지사유
     - 가맹점해지
+    - 해지사유구분
+    - 해지사유
     - 가맹점해지사유 구분
     - 가맹점해지 사유
+    - 해지사유 구분
+    - 해지 사유
   - name: 신규등록부점코드
     data_type: VARCHAR
     description: 신규등록 처리한 부점코드
@@ -6301,14 +6616,19 @@ tables:
     synonyms:
     - 가맹점모집부점
     - 가맹점모집
+    - 모집부점
     - 가맹점모집 부점
+    - 모집 부점
   - name: 가맹점전입모집부점코드
     data_type: VARCHAR
     description: 가맹점이 주소 이전시 해당 가맹점을 유치한 부점코드
     synonyms:
     - 가맹점전입모집부점
     - 가맹점전입모집
+    - 전입모집부점
+    - 전입모집
     - 가맹점전입모집 부점
+    - 전입모집 부점
   - name: 역할유형구분코드
     data_type: VARCHAR
     description: 권유자 역할 유형 코드 (배우자/직원/알바/..)
@@ -6326,14 +6646,19 @@ tables:
     synonyms:
     - 가맹점관리부점
     - 가맹점관리
+    - 관리부점
     - 가맹점관리 부점
+    - 관리 부점
   - name: 가맹점전입관리부점코드
     data_type: VARCHAR
     description: 가맹점이 주소 이전시 전입지의 카드영업소 관리부점코드
     synonyms:
     - 가맹점전입관리부점
     - 가맹점전입관리
+    - 전입관리부점
+    - 전입관리
     - 가맹점전입관리 부점
+    - 전입관리 부점
   - name: 가맹점거래정지여부
     data_type: VARCHAR
     description: 거래정지 범위구분 중 가맹점 제재여부를 관리
@@ -6346,6 +6671,7 @@ tables:
     description: 가맹점에대한 거래정지코드 (승인요청시 가맹점 거래정지로 인해 거절되는 경우 거절내역에 사유파악을 위해 저장)
     synonyms:
     - 가맹점거래정지
+    - 거래정지
   - name: 가맹점거래정지상태구분코드
     data_type: VARCHAR
     description: 가맹점의 상태를 거래정지기준으로 해제,미해제로 구분한 코드
@@ -6353,23 +6679,33 @@ tables:
     - 가맹점거래정지상태구분
     - 가맹점거래정지상태
     - 가맹점거래정지
+    - 거래정지상태구분
+    - 거래정지상태
+    - 거래정지
     - 가맹점거래정지상태 구분
     - 가맹점거래정지 상태
+    - 거래정지상태 구분
+    - 거래정지 상태
   - name: 가맹점유형구분코드
     data_type: VARCHAR
     description: 가맹점의 유형(일반,통판등)구분
     synonyms:
     - 가맹점유형구분
     - 가맹점유형
+    - 유형구분
     - 가맹점유형 구분
     - 가맹점 유형
+    - 유형 구분
   - name: 가맹점세분화구분코드
     data_type: VARCHAR
     description: 가맹점을 상세하게 분류하기위한 구분코드
     synonyms:
     - 가맹점세분화구분
     - 가맹점세분화
+    - 세분화구분
+    - 세분화
     - 가맹점세분화 구분
+    - 세분화 구분
   - name: 사업자과세유형구분코드
     data_type: VARCHAR
     description: 해당 가맹점의 사업자 과세유형을 구분하는 코드(일반과세,간이과세 등)
@@ -6385,39 +6721,56 @@ tables:
     synonyms:
     - 가맹점서비스구분
     - 가맹점서비스
+    - 서비스구분
+    - 서비스
     - 가맹점서비스 구분
+    - 서비스 구분
   - name: 가맹점사업주체구분코드
     data_type: VARCHAR
     description: 가맹점의 사업주체가 개인사업자인지 법인사업자(법인포함)인지를 구분하는코드
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 가맹점대표구분코드
     data_type: VARCHAR
     description: 가맹점대표의 유형을 구분하는코드(일반,공동,외국인 등)
     synonyms:
     - 가맹점대표구분
     - 가맹점대표
+    - 대표구분
     - 가맹점대표 구분
+    - 대표 구분
   - name: 가맹점최종매입부점코드
     data_type: VARCHAR
     description: 가맹점에서 최종으로 전표를 매입한 부점코드
     synonyms:
     - 가맹점최종매입부점
     - 가맹점최종매입
+    - 최종매입부점
+    - 최종매입
     - 가맹점최종매입 부점
+    - 최종매입 부점
   - name: 카드VAN사구분코드
     data_type: VARCHAR
     description: 카드결제시 가맹점과 카드사를 중계해주는 VAN사를 구분하는코드
     synonyms:
     - 카드VAN사구분
     - 카드VAN사
+    - VAN사구분
+    - VAN사
     - 카드 VAN 사구분코드
     - 카드 VAN 사구분
     - 카드VAN사 구분
     - 카드 VAN 사 구분
     - 카드 VAN 사
+    - VAN 사구분
+    - VAN사 구분
+    - VAN 사 구분
+    - VAN 사
   - name: 공동망가맹점대상여부
     data_type: VARCHAR
     description: 공동망가맹점 대상인지의 여부
@@ -6495,7 +6848,10 @@ tables:
     synonyms:
     - 가맹점대금지급통화구분
     - 가맹점대금지급통화
+    - 대금지급통화구분
+    - 대금지급통화
     - 가맹점대금지급통화 구분
+    - 대금지급통화 구분
   - name: 우체국특약여부
     data_type: VARCHAR
     description: 가맹점의 우체국 특약등록 여부
@@ -6536,7 +6892,10 @@ tables:
     synonyms:
     - 가맹점수수료구분
     - 가맹점수수료
+    - 수수료구분
+    - 수수료
     - 가맹점수수료 구분
+    - 수수료 구분
   - name: 선취후취구분코드
     data_type: VARCHAR
     description: 가맹점 수수료 청구방법을 구분하는코드(선취,후취 등)
@@ -6557,7 +6916,10 @@ tables:
     synonyms:
     - 카드대금지급주기구분
     - 카드대금지급주기
+    - 대금지급주기구분
+    - 대금지급주기
     - 카드대금지급주기 구분
+    - 대금지급주기 구분
   - name: 현금카드결제기관구분코드
     data_type: VARCHAR
     description: 현금카드 CD기 출금시 카드와 연계되어 있는 결제금융기관(예) 산업은행, 기업은행, 국민은행, 외환은행 등)을 구분하는 코드
@@ -6582,7 +6944,10 @@ tables:
     synonyms:
     - 카드환율적용구분
     - 카드환율적용
+    - 환율적용구분
+    - 환율적용
     - 카드환율적용 구분
+    - 환율적용 구분
   - name: 대표가맹점번호
     data_type: VARCHAR
     description: 복수 가맹점의 경우 복수 가맹점에 대한 대표가맹점번호(종속가맹점번호)
@@ -6989,7 +7354,9 @@ tables:
     - 가맹점상태
     - 가맹점 상태
     - 가맹점상태구분
+    - 상태구분
     - 가맹점상태 구분
+    - 상태 구분
     value_semantics:
       '1': 정상
       '2': 거래정지
@@ -7005,7 +7372,10 @@ tables:
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 사업자과세유형구분코드
     data_type: VARCHAR
     description: 해당 가맹점의 사업자 과세유형을 구분하는 코드(일반과세,간이과세 등)를 나타낸다.
@@ -7021,7 +7391,10 @@ tables:
     synonyms:
     - 가맹점관리대상구분
     - 가맹점관리대상
+    - 관리대상구분
+    - 관리대상
     - 가맹점관리대상 구분
+    - 관리대상 구분
   - name: 적격비용차감가맹점여부
     data_type: VARCHAR
     description: "원가항목을 기준으로 계산된 적격비용을 차감하는 가맹점인지를 여부로 관리한다. / 가맹점관리대상구분코드 146 일 경우, '1'로 셋팅한다."
@@ -7080,7 +7453,10 @@ tables:
     synonyms:
     - 카드대금지급주기구분
     - 카드대금지급주기
+    - 대금지급주기구분
+    - 대금지급주기
     - 카드대금지급주기 구분
+    - 대금지급주기 구분
   - name: 현금카드결제기관구분코드
     data_type: VARCHAR
     description: 해당 가맹점의 대금지급 결제기관구분코드를 나타낸다. (원화 기준)
@@ -7584,8 +7960,13 @@ tables:
     - 카드거래정지사유구분
     - 카드거래정지사유
     - 카드거래정지
+    - 거래정지사유구분
+    - 거래정지사유
+    - 거래정지
     - 카드거래정지사유 구분
     - 카드거래정지 사유
+    - 거래정지사유 구분
+    - 거래정지 사유
   - name: 회원일련번호
     data_type: VARCHAR
     description: 당사(KB국민카드)와 계약한 회원을 관리하는 식별번호
@@ -7610,7 +7991,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: 회원거래정지 실적을 집계하기 위해 적용하는 일자정보(기준년월)로 해당 시점의 회원거래정지에 대한 상태를 집계하는 기준이 된다.
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -7717,7 +8100,10 @@ tables:
     synonyms:
     - 카드론평가상품구분
     - 카드론평가상품
+    - 론평가상품구분
+    - 론평가상품
     - 카드론평가상품 구분
+    - 론평가상품 구분
   - name: 연체채권종류구분코드
     data_type: VARCHAR
     description: 연채권에 대한 종류(카드특채, 여신특채, 사고채권 등)을 구분하는 코드 체계
@@ -7964,7 +8350,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: 해당 데이터의 기준년월로 결정 및 판단의 기준이 되는 년월
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -8029,7 +8417,10 @@ tables:
     synonyms:
     - 카드소유자구분
     - 카드소유자
+    - 소유자구분
+    - 소유자
     - 카드소유자 구분
+    - 소유자 구분
   - name: 본인카드구분키번호
     data_type: VARCHAR
     description: 가족 또는 사업자/사업장카드일 경우 본인 또는 대표에 해당하는 카드구분키번호이다.
@@ -8060,8 +8451,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -8069,7 +8463,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -8102,8 +8499,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -8134,7 +8533,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
   - name: KB카드BC카드구분코드
     data_type: VARCHAR
     description: KB카드와 BC카드를 구분하는코드
@@ -8153,7 +8555,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -8203,8 +8607,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -8303,8 +8710,12 @@ tables:
     - 카드이용한도구분
     - 카드이용한도
     - 카드이용
+    - 이용한도구분
+    - 이용한도
     - 카드이용한도 구분
     - 카드이용 한도
+    - 이용한도 구분
+    - 이용 한도
   - name: 카드당한도사용여부
     data_type: VARCHAR
     description: 카드에 해당하는 한도를 카드당 한도를 사용할지에 대한 여부
@@ -8447,8 +8858,12 @@ tables:
     - 카드거래매체구분
     - 카드거래매체
     - 카드거래
+    - 거래매체구분
+    - 거래매체
     - 카드거래매체 구분
     - 카드거래 매체
+    - 거래매체 구분
+    - 거래 매체
   - name: 교부유형구분코드
     data_type: VARCHAR
     description: 카드 교부방법 종류 (인편/우편/지점방문/등등)
@@ -8507,14 +8922,20 @@ tables:
     synonyms:
     - 카드교부희망부점
     - 카드교부희망
+    - 교부희망부점
+    - 교부희망
     - 카드교부희망 부점
+    - 교부희망 부점
   - name: 카드실물보유부점코드
     data_type: VARCHAR
     description: 카드를 실물 부유하고 있는 영업점부점코드이다.
     synonyms:
     - 카드실물보유부점
     - 카드실물보유
+    - 실물보유부점
+    - 실물보유
     - 카드실물보유 부점
+    - 실물보유 부점
   - name: 실물보유구분코드
     data_type: VARCHAR
     description: 실물 카드 보유/미보유 구분
@@ -8550,14 +8971,20 @@ tables:
     synonyms:
     - 카드신용체크이원화구분
     - 카드신용체크이원화
+    - 신용체크이원화구분
+    - 신용체크이원화
     - 카드신용체크이원화 구분
+    - 신용체크이원화 구분
   - name: 카드일반특정이원화구분코드
     data_type: VARCHAR
     description: 카드의 결제단위가 일반카드/특정카드이원화 인지 통합인지 구분하는 코드 이다.
     synonyms:
     - 카드일반특정이원화구분
     - 카드일반특정이원화
+    - 일반특정이원화구분
+    - 일반특정이원화
     - 카드일반특정이원화 구분
+    - 일반특정이원화 구분
   - name: 결제다원화카드여부
     data_type: VARCHAR
     description: 결제계좌 다원화를 이용하는 회원에 대한 카드 여부를 나타낸다.
@@ -8569,7 +8996,10 @@ tables:
     synonyms:
     - 고객선택자재구분
     - 고객선택자재
+    - 선택자재구분
+    - 선택자재
     - 고객선택자재 구분
+    - 선택자재 구분
   - name: 비계좌선불카드여부
     data_type: VARCHAR
     description: 비계좌 선불카드 여부 인지를 나타낸다. ※ 선불전자지급수단을 충전계정(결제계좌)으로 하는 선불카드 (은행의 리브포켓, 당사의 머니 등)
@@ -8746,7 +9176,10 @@ tables:
     synonyms:
     - 카드소유자구분
     - 카드소유자
+    - 소유자구분
+    - 소유자
     - 카드소유자 구분
+    - 소유자 구분
   - name: 카드식별자
     data_type: VARCHAR
     description: KB카드에서 발급하는 카드의 카드번호를 대체하여 식별하기 위한 중복되지 않는 값
@@ -8770,7 +9203,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
   - name: 카드등급구분코드
     data_type: VARCHAR
     description: 카드의 등급을 구분하는 코드로 일반/실버/골드/플래티늄등으로 카드를 구분하는 코드
@@ -8778,7 +9214,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -8807,8 +9245,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -8816,7 +9257,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -8849,8 +9293,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -8960,8 +9406,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -9097,7 +9546,10 @@ tables:
     synonyms:
     - 카드청구지주소표시구분
     - 카드청구지주소표시
+    - 청구지주소표시구분
+    - 청구지주소표시
     - 카드청구지주소표시 구분
+    - 청구지주소표시 구분
   measures:
   - name: 고객한도신청평점
     data_type: BIGINT
@@ -9235,7 +9687,10 @@ tables:
     synonyms:
     - 카드소유자구분
     - 카드소유자
+    - 소유자구분
+    - 소유자
     - 카드소유자 구분
+    - 소유자 구분
   - name: 카드식별자
     data_type: VARCHAR
     description: 카드상품에 해당하는 카드 중 재발급, 갱신시 최종카드를 나타내는 식별자이다.
@@ -9259,7 +9714,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
   - name: 카드등급구분코드
     data_type: VARCHAR
     description: 카드의 등급을 구분하는 코드로 일반/실버/골드/플래티늄등으로 카드를 구분하는 코드
@@ -9267,7 +9725,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -9296,8 +9756,11 @@ tables:
     synonyms:
     - 상품대분류구분
     - 상품대분류
+    - 대분류구분
+    - 대분류
     - 상품대분류 구분
     - 상품 대분류
+    - 대분류 구분
   - name: 상품중분류구분코드
     data_type: VARCHAR
     description: KB카드 전사차원에서 상품의 대분류 하위 중분류를 구분하여 정의한 코드를 관리한다.
@@ -9305,7 +9768,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -9338,8 +9804,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -9481,7 +9949,10 @@ tables:
     synonyms:
     - 카드청구지주소표시구분
     - 카드청구지주소표시
+    - 청구지주소표시구분
+    - 청구지주소표시
     - 카드청구지주소표시 구분
+    - 청구지주소표시 구분
   measures: []
   time_dimensions:
   - name: 기준년월일
@@ -9624,7 +10095,9 @@ tables:
     - 회원 자산관리 부점
     - 자산관리부점
     - 회원자산관리
+    - 자산관리
     - 회원자산관리 부점
+    - 자산관리 부점
   - name: 연체관리부점코드
     data_type: VARCHAR
     description: 고객의 연체 정보를 관리하는 부점코드
@@ -9645,8 +10118,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -9745,7 +10221,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -9763,7 +10241,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
     value_semantics:
       '1': 로칼(국민)
       '2': 마스터
@@ -10120,15 +10601,20 @@ tables:
     synonyms:
     - 고객상태구분
     - 고객상태
+    - 상태구분
     - 고객상태 구분
     - 고객 상태
+    - 상태 구분
   - name: 고객고유번호구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의00(해당무)가 있으면 안됨. 99(기타)를 사용해야 함
     synonyms:
     - 고객고유번호구분
     - 고객고유번호
+    - 고유번호구분
+    - 고유번호
     - 고객고유번호 구분
+    - 고유번호 구분
   - name: 고객고유번호
     data_type: VARCHAR
     description: 고객을 식별할 수 있는 고유번호 (주민등록번호,운전면허번호,외국인등록번호,사업자등록번호 등)
@@ -10155,7 +10641,10 @@ tables:
     synonyms:
     - 고객등록거래구분
     - 고객등록거래
+    - 등록거래구분
+    - 등록거래
     - 고객등록거래 구분
+    - 등록거래 구분
   - name: 고객유형분류구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의고객의 유형을 분류하는 구분코드
@@ -10163,9 +10652,13 @@ tables:
     - 고객유형분류구분
     - 고객유형분류
     - 고객유형
+    - 유형분류구분
+    - 유형분류
     - 고객유형분류 구분
     - 고객유형 분류
     - 고객 유형
+    - 유형분류 구분
+    - 유형 분류
   - name: 세부고객유형분류구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의고객의 형태를 세부적으로 분류한 구분코드(개인,개인사업자,법인등)
@@ -10232,7 +10725,10 @@ tables:
     synonyms:
     - 카드고객서비스구분
     - 카드고객서비스
+    - 고객서비스구분
+    - 고객서비스
     - 카드고객서비스 구분
+    - 고객서비스 구분
   - name: 최고고객구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의가족포함된 최고 우대서비스가 가능한 고객의 등급(MVP,로얄,우대,프리미엄,잠재,일반등)을 구분하는 구분코드
@@ -10444,7 +10940,9 @@ tables:
     - 기업규모코드
     - 대기업구분
     - 기업규모구분
+    - 규모구분
     - 기업규모 구분
+    - 규모 구분
     codebook_ref: enterprise_size
   - name: 자택도로명우편보조번호
     data_type: VARCHAR
@@ -10465,7 +10963,9 @@ tables:
     synonyms:
     - 기업형태구분
     - 기업형태
+    - 형태구분
     - 기업형태 구분
+    - 형태 구분
   - name: 자택도로명지하구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의자택 위치의 지하구분코드 (지상, 지하, 공중인지 구분)
@@ -10523,7 +11023,10 @@ tables:
     synonyms:
     - 고객대표주소표시구분
     - 고객대표주소표시
+    - 대표주소표시구분
+    - 대표주소표시
     - 고객대표주소표시 구분
+    - 대표주소표시 구분
   - name: 고객대표주소사용가능여부
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의고객의 대표주소(자택 또는 직장주소)가 정상적으로 사용 가능한지 여부를 관리
@@ -10563,7 +11066,10 @@ tables:
     synonyms:
     - 고객대표도로명지하구분
     - 고객대표도로명지하
+    - 대표도로명지하구분
+    - 대표도로명지하
     - 고객대표도로명지하 구분
+    - 대표도로명지하 구분
   - name: 이용권유전화동의구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의카드사에서 제공하는 서비스나 제휴혜택등을 전화로 받는데 동의하는지에 대한 여부를 구분코드로 정의한다.
@@ -10602,7 +11108,10 @@ tables:
     synonyms:
     - 카드이용권유동의구분
     - 카드이용권유동의
+    - 이용권유동의구분
+    - 이용권유동의
     - 카드이용권유동의 구분
+    - 이용권유동의 구분
   - name: 마케팅활용동의구분코드
     data_type: VARCHAR
     description: MFX월고객정보기본시점정보의고객의 정보를 마케팅 활동에 동의했는지를 구분코드로 관리
@@ -10652,7 +11161,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: "MFX월고객정보기본시점정보의고객정보기본 테이블의 월 스냅샷을 생성하기 위해 사용하는 일자 정보로 해당 기준년월의 말일자 시점의 데이터를 보관한다."
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -10728,7 +11239,7 @@ tables:
   description: "카드의 월별 통합 실적을 집계하는 대형 팩트 테이블. 한 행은 특정 기준년월에 발생한 하나의 카드 실적을 의미한다. 이용금액·이용건수·연체원금·한도·평점(ASS/BSS) 등 카드 단위의 월별 성과·리스크 지표를 광범위하게 담아, 카드별 월 이용·연체·한도 분석에 사용한다."
   grain: 기준년월 × 회원일련번호 × 카드구분키번호 1건 (카드 월 통합 실적)
   primary_key: [기준년월, 회원일련번호, 카드구분키번호]
-  synonyms: [카드실적, 카드월별실적, 카드월, 카드이용실적]
+  synonyms: [카드실적, 카드월별실적, 카드월, 카드이용실적, 해외이용금액, 해외이용액, 해외사용액]
   dimensions:
   - name: 회원일련번호
     data_type: VARCHAR
@@ -10760,7 +11271,10 @@ tables:
     synonyms:
     - 카드소유자구분
     - 카드소유자
+    - 소유자구분
+    - 소유자
     - 카드소유자 구분
+    - 소유자 구분
   - name: 개인기업구분코드
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 개인 또는 기업을 구분하는 코드
@@ -10784,7 +11298,10 @@ tables:
     - 카드브랜드
     - 카드 브랜드
     - 카드브랜드구분
+    - 브랜드구분
+    - 브랜드
     - 카드브랜드 구분
+    - 브랜드 구분
     value_semantics:
       '1': 로칼(국민)
       '2': 마스터
@@ -10800,7 +11317,9 @@ tables:
     - 카드등급
     - 카드 등급
     - 카드등급구분
+    - 등급구분
     - 카드등급 구분
+    - 등급 구분
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -10818,7 +11337,10 @@ tables:
     - 상품중분류
     - 상품 중분류
     - 상품중분류구분
+    - 중분류구분
+    - 중분류
     - 상품중분류 구분
+    - 중분류 구분
     value_semantics:
       CP00: 전체카드상품
       CP01: 개인신용카드
@@ -10851,8 +11373,10 @@ tables:
     - 카드등급그룹
     - 카드 등급 그룹
     - 카드등급
+    - 등급그룹
     - 카드등급 그룹
     - 카드 등급
+    - 등급 그룹
     value_semantics:
       '0': 체크(프리패스)
       '3': 실버
@@ -10938,22 +11462,32 @@ tables:
     - 카드거래매체구분
     - 카드거래매체
     - 카드거래
+    - 거래매체구분
+    - 거래매체
     - 카드거래매체 구분
     - 카드거래 매체
+    - 거래매체 구분
+    - 거래 매체
   - name: 카드교부희망부점코드
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드 교부시 고객이 희망(요청)하는 부점코드
     synonyms:
     - 카드교부희망부점
     - 카드교부희망
+    - 교부희망부점
+    - 교부희망
     - 카드교부희망 부점
+    - 교부희망 부점
   - name: 카드실물보유부점코드
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드를 실물 부유하고 있는 영업점부점코드이다.
     synonyms:
     - 카드실물보유부점
     - 카드실물보유
+    - 실물보유부점
+    - 실물보유
     - 카드실물보유 부점
+    - 실물보유 부점
   - name: 자동갱신비대상사유구분코드
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 카드 자동갱신 대상에서 제외된 사유를 구분하는 코드
@@ -11112,8 +11646,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -11235,7 +11772,10 @@ tables:
     synonyms:
     - 카드신용체크이원화구분
     - 카드신용체크이원화
+    - 신용체크이원화구분
+    - 신용체크이원화
     - 카드신용체크이원화 구분
+    - 신용체크이원화 구분
   - name: 자택도로명우편번호
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 고객의 자택 주소의 도로명 우편번호를 정의한다.
@@ -11286,7 +11826,10 @@ tables:
     synonyms:
     - 카드고객서비스구분
     - 카드고객서비스
+    - 고객서비스구분
+    - 고객서비스
     - 카드고객서비스 구분
+    - 고객서비스 구분
   - name: 알파원카드여부
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 알파원카드로 등록된 카드인지에 대한 여부
@@ -11298,7 +11841,10 @@ tables:
     synonyms:
     - 카드일반특정이원화구분
     - 카드일반특정이원화
+    - 일반특정이원화구분
+    - 일반특정이원화
     - 카드일반특정이원화 구분
+    - 일반특정이원화 구분
   - name: 결제다원화카드여부
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 결제계좌 다원화를 이용하는 회원에 대한 카드 여부를 나타낸다.
@@ -11310,7 +11856,10 @@ tables:
     synonyms:
     - 고객선택자재구분
     - 고객선택자재
+    - 선택자재구분
+    - 선택자재
     - 고객선택자재 구분
+    - 선택자재 구분
   - name: 비계좌선불카드여부
     data_type: VARCHAR
     description: "MFX월카드통합실적집계의 비계좌 선불카드 여부 인지를 나타낸다.※ 선불전자지급수단을 충전계정(결제계좌)으로 하는 선불카드 (은행의 리브포켓, 당사의 머니 등)"
@@ -11448,7 +11997,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 청구건수
     - 금월청구 건수
+    - 청구 건수
   - name: 금월청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 회원에게 청구된 매출 금액
@@ -11456,7 +12007,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 청구금액
     - 금월청구 금액
+    - 청구 금액
   - name: 금월일시불청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월기준 회원의 일시불 상품 이용에 대한 청구 건수
@@ -11464,7 +12017,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 일시불청구건수
     - 금월일시불청구 건수
+    - 일시불청구 건수
   - name: 금월일시불청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 회원의 일시불 상품 이용에 대한 청구 금액
@@ -11472,7 +12027,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 일시불청구금액
     - 금월일시불청구 금액
+    - 일시불청구 금액
   - name: 금월CA청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월 단기카드대출(현금서비스) 매출에 대한 회원에게 청구한 청구건수
@@ -11480,9 +12037,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA청구건수
     - 금월 CA 청구건수
     - 금월CA청구 건수
     - 금월 CA 청구 건수
+    - CA 청구건수
+    - CA청구 건수
+    - CA 청구 건수
   - name: 금월CA청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 단기카드대출(현금서비스) 매출에 대한 회원에게 청구한 청구금액
@@ -11490,9 +12051,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA청구금액
     - 금월 CA 청구금액
     - 금월CA청구 금액
     - 금월 CA 청구 금액
+    - CA 청구금액
+    - CA청구 금액
+    - CA 청구 금액
   - name: 금월할부청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월 할부 매출에 대한 회원에게 청구한 청구건수
@@ -11500,7 +12065,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 할부청구건수
     - 금월할부청구 건수
+    - 할부청구 건수
   - name: 금월할부청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 할부 매출에 대한 회원에게 청구한 청구금액
@@ -11508,7 +12075,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 할부청구금액
     - 금월할부청구 금액
+    - 할부청구 금액
   - name: 금월해외일시불청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월 해외일시불 매출에 대한 회원에게 청구한 청구건수
@@ -11516,7 +12085,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외일시불청구건수
     - 금월해외일시불청구 건수
+    - 해외일시불청구 건수
   - name: 금월해외일시불청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 해외일시불 매출에 대한 회원에게 청구한 청구금액
@@ -11524,7 +12095,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외일시불청구금액
     - 금월해외일시불청구 금액
+    - 해외일시불청구 금액
   - name: 금월해외CA청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월 해외 단기카드대출(현금서비스) 매출에 대한 회원에게 청구한 청구건수
@@ -11532,9 +12105,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외CA청구건수
     - 금월해외 CA 청구건수
     - 금월해외CA청구 건수
     - 금월해외 CA 청구 건수
+    - 해외 CA 청구건수
+    - 해외CA청구 건수
+    - 해외 CA 청구 건수
   - name: 금월해외CA청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 해외 단기카드대출(현금서비스) 매출에 대한 회원에게 청구한 청구건수
@@ -11542,9 +12119,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외CA청구금액
     - 금월해외 CA 청구금액
     - 금월해외CA청구 금액
     - 금월해외 CA 청구 금액
+    - 해외 CA 청구금액
+    - 해외CA청구 금액
+    - 해외 CA 청구 금액
   - name: 금월리볼빙일시불청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월 리볼빙일시불 매출에 대한 회원에게 청구한 청구건수
@@ -11552,7 +12133,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙일시불청구건수
     - 금월리볼빙일시불청구 건수
+    - 리볼빙일시불청구 건수
   - name: 금월리볼빙일시불청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 리볼빙일시불 매출에 대한 회원에게 청구한 청구금액
@@ -11560,7 +12143,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙일시불청구금액
     - 금월리볼빙일시불청구 금액
+    - 리볼빙일시불청구 금액
   - name: 금월CA할부청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월 단기카드대출(현금서비스)할부 매출에 대한 회원에게 청구한 청구건수
@@ -11568,9 +12153,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA할부청구건수
     - 금월 CA 할부청구건수
     - 금월CA할부청구 건수
     - 금월 CA 할부청구 건수
+    - CA 할부청구건수
+    - CA할부청구 건수
+    - CA 할부청구 건수
   - name: 금월CA할부청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 단기카드대출(현금서비스)할부 매출에 대한 회원에게 청구한 청구금액
@@ -11578,9 +12167,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA할부청구금액
     - 금월 CA 할부청구금액
     - 금월CA할부청구 금액
     - 금월 CA 할부청구 금액
+    - CA 할부청구금액
+    - CA할부청구 금액
+    - CA 할부청구 금액
   - name: 금월리볼빙CA청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 리볼빙 약정한 고객이 사용한 단기카드대출(현금서비스) 매출에 대한 청구건수
@@ -11588,9 +12181,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙CA청구건수
     - 금월리볼빙 CA 청구건수
     - 금월리볼빙CA청구 건수
     - 금월리볼빙 CA 청구 건수
+    - 리볼빙 CA 청구건수
+    - 리볼빙CA청구 건수
+    - 리볼빙 CA 청구 건수
   - name: 금월리볼빙CA청구금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 리볼빙 약정한 고객이 사용한 단기카드대출(현금서비스) 매출에 대한 청구금액
@@ -11598,9 +12195,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙CA청구금액
     - 금월리볼빙 CA 청구금액
     - 금월리볼빙CA청구 금액
     - 금월리볼빙 CA 청구 금액
+    - 리볼빙 CA 청구금액
+    - 리볼빙CA청구 금액
+    - 리볼빙 CA 청구 금액
   - name: 최근1년청구건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 최근 1년(금월포함)간 회원에게 청구한 청구건수
@@ -11688,7 +12289,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 이용합계건수
     - 금월이용합계 건수
+    - 이용합계 건수
   - name: 금월이용합계금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 회원이 사용한 카드 이용 합계 금액
@@ -11696,7 +12299,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 이용합계금액
     - 금월이용합계 금액
+    - 이용합계 금액
   - name: 금월취소이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월기준 회원의 취소처리된 이용 매출 건수
@@ -11704,7 +12309,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 취소이용건수
     - 금월취소이용 건수
+    - 취소이용 건수
   - name: 금월취소이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 회원의 취소처리된 이용 매출 금액
@@ -11712,7 +12319,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 취소이용금액
     - 금월취소이용 금액
+    - 취소이용 금액
   - name: 금월일시불이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월기준 발생한 회원의 일시불 이용 매출 건수
@@ -11720,7 +12329,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 일시불이용건수
     - 금월일시불이용 건수
+    - 일시불이용 건수
   - name: 금월일시불이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 발생한 회원의 일시불 이용 매출 금액
@@ -11728,7 +12339,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 일시불이용금액
     - 금월일시불이용 금액
+    - 일시불이용 금액
   - name: 금월CA이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 단기카드대출(현금서비스)로 매출이 발생한 이용건수
@@ -11736,9 +12349,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA이용건수
     - 금월 CA 이용건수
     - 금월CA이용 건수
     - 금월 CA 이용 건수
+    - CA 이용건수
+    - CA이용 건수
+    - CA 이용 건수
   - name: 금월CA이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 단기카드대출(현금서비스)로 매출이 발생한 이용금액
@@ -11746,9 +12363,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA이용금액
     - 금월 CA 이용금액
     - 금월CA이용 금액
     - 금월 CA 이용 금액
+    - CA 이용금액
+    - CA이용 금액
+    - CA 이용 금액
   - name: 금월할부이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 할부로 매출이 발생한 이용건수
@@ -11756,7 +12377,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 할부이용건수
     - 금월할부이용 건수
+    - 할부이용 건수
   - name: 금월할부이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 할부로 매출이 발생한 이용금액
@@ -11764,7 +12387,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 할부이용금액
     - 금월할부이용 금액
+    - 할부이용 금액
   - name: 금월해외일시불이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 해외일시불로 매출이 발생한 이용건수
@@ -11772,7 +12397,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외일시불이용건수
     - 금월해외일시불이용 건수
+    - 해외일시불이용 건수
   - name: 금월해외일시불이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 해외일시불로 매출이 발생한 이용금액
@@ -11780,7 +12407,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외일시불이용금액
     - 금월해외일시불이용 금액
+    - 해외일시불이용 금액
   - name: 금월해외CA이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 해외 단기카드대출(현금서비스) 매출이 발생한 이용건수
@@ -11788,9 +12417,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외CA이용건수
     - 금월해외 CA 이용건수
     - 금월해외CA이용 건수
     - 금월해외 CA 이용 건수
+    - 해외 CA 이용건수
+    - 해외CA이용 건수
+    - 해외 CA 이용 건수
   - name: 금월해외CA이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 해외 단기카드대출(현금서비스) 매출이 발생한 이용금액
@@ -11798,9 +12431,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 해외CA이용금액
     - 금월해외 CA 이용금액
     - 금월해외CA이용 금액
     - 금월해외 CA 이용 금액
+    - 해외 CA 이용금액
+    - 해외CA이용 금액
+    - 해외 CA 이용 금액
   - name: 금월리볼빙일시불이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 리볼빙일시불 매출로 발생한 이용건수
@@ -11808,7 +12445,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙일시불이용건수
     - 금월리볼빙일시불이용 건수
+    - 리볼빙일시불이용 건수
   - name: 금월리볼빙일시불이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 리볼빙일시불 매출로 발생한 이용금액
@@ -11816,7 +12455,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙일시불이용금액
     - 금월리볼빙일시불이용 금액
+    - 리볼빙일시불이용 금액
   - name: 금월CA할부이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 단기카드대출(현금서비스)할부로 매출이 발행한 이용건수
@@ -11824,9 +12465,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA할부이용건수
     - 금월 CA 할부이용건수
     - 금월CA할부이용 건수
     - 금월 CA 할부이용 건수
+    - CA 할부이용건수
+    - CA할부이용 건수
+    - CA 할부이용 건수
   - name: 금월CA할부이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 단기카드대출(현금서비스)할부로 매출이 발행한 이용금액
@@ -11834,9 +12479,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - CA할부이용금액
     - 금월 CA 할부이용금액
     - 금월CA할부이용 금액
     - 금월 CA 할부이용 금액
+    - CA 할부이용금액
+    - CA할부이용 금액
+    - CA 할부이용 금액
   - name: 금월리볼빙CA이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 리볼빙 약정한 고객이 사용한 단기카드대출(현금서비스) 이용건수
@@ -11844,9 +12493,13 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙CA이용건수
     - 금월리볼빙 CA 이용건수
     - 금월리볼빙CA이용 건수
     - 금월리볼빙 CA 이용 건수
+    - 리볼빙 CA 이용건수
+    - 리볼빙CA이용 건수
+    - 리볼빙 CA 이용 건수
   - name: 금월리볼빙CA이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 리볼빙 약정한 고객이 사용한 단기카드대출(현금서비스) 이용금액
@@ -11854,9 +12507,13 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 리볼빙CA이용금액
     - 금월리볼빙 CA 이용금액
     - 금월리볼빙CA이용 금액
     - 금월리볼빙 CA 이용 금액
+    - 리볼빙 CA 이용금액
+    - 리볼빙CA이용 금액
+    - 리볼빙 CA 이용 금액
   - name: 최근1년카드이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 최근1년간 카드(신용카드+체크카드) 이용건수(신판+CA의 1년간 총이용건수)
@@ -11944,7 +12601,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 무이자할부이용금액
     - 금월무이자할부이용 금액
+    - 무이자할부이용 금액
   - name: 금월유이자할부이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 유이자할부서비스로 할부 매출이 발생한 이용금액
@@ -11952,7 +12611,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 유이자할부이용금액
     - 금월유이자할부이용 금액
+    - 유이자할부이용 금액
   - name: 금월부분무이자할부이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 부분무이자할부서비스로 할부 매출이 발생한 이용금액
@@ -11960,7 +12621,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 부분무이자할부이용금액
     - 금월부분무이자할부이용 금액
+    - 부분무이자할부이용 금액
   - name: 금월직불카드이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월에 직불카드로 매출이 발생한 이용건수
@@ -11968,7 +12631,9 @@ tables:
     unit: count
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 직불카드이용건수
     - 금월직불카드이용 건수
+    - 직불카드이용 건수
   - name: 금월직불카드이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 카드종류 중 직불카드로 매출이 발생한 이용금액
@@ -11976,7 +12641,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 직불카드이용금액
     - 금월직불카드이용 금액
+    - 직불카드이용 금액
   - name: 금월프리패스카드이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 프리패스카드로 매출이 발생한 이용금액
@@ -11984,7 +12651,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 프리패스카드이용금액
     - 금월프리패스카드이용 금액
+    - 프리패스카드이용 금액
   - name: 금월체크카드이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 발생한 회원의 체크카드 이용 매출 금액
@@ -11992,7 +12661,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 체크카드이용금액
     - 금월체크카드이용 금액
+    - 체크카드이용 금액
   - name: 금월플러스카드이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 플러스카드로 매출이 발생한 이용금액
@@ -12000,7 +12671,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 플러스카드이용금액
     - 금월플러스카드이용 금액
+    - 플러스카드이용 금액
   - name: 금월체크카드소액신용이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 소액신용결제 서비스가 등록된 체크카드로 매출이 발생한 이용금액
@@ -12008,7 +12681,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 체크카드소액신용이용금액
     - 금월체크카드소액신용이용 금액
+    - 체크카드소액신용이용 금액
   - name: 금월체크카드소액신용채권잔액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 소액신용결제 서비스가 등록된 체크카드의 채권잔액(연체원금+미청구원금)
@@ -12024,7 +12699,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 듀얼페이먼트이용금액
     - 금월듀얼페이먼트이용 금액
+    - 듀얼페이먼트이용 금액
   - name: 금월바우처정부지원금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월기준 회원의 바우처서비스에 대한 바우처정부지원 이용금액
@@ -12032,7 +12709,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 바우처정부지원금액
     - 금월바우처정부지원 금액
+    - 바우처정부지원 금액
   - name: 금월바우처신용정부지원금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 바우처 전표중 신용카드로 발생한 매출금액 중 정부가 지원하는 금액
@@ -12040,7 +12719,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 바우처신용정부지원금액
     - 금월바우처신용정부지원 금액
+    - 바우처신용정부지원 금액
   - name: 금월바우처체크정부지원금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 바우처 전표중 체크카드로 발생한 매출금액 중 정부가 지원하는 금액
@@ -12048,13 +12729,17 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 바우처체크정부지원금액
     - 금월바우처체크정부지원 금액
+    - 바우처체크정부지원 금액
   - name: 금월할부수수료
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 할부 매출에서 발생된 수수료금액
     required: true
     unit: KRW
     aggregation: sum_at_declared_month_grain
+    synonyms:
+    - 할부수수료
   - name: 금월CA수수료
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 단기카드대출(현금서비스) 매출에서 발생된 수수료금액
@@ -12125,7 +12810,9 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 선택결제서비스이용금액
     - 금월선택결제서비스이용 금액
+    - 선택결제서비스이용 금액
   - name: 금월대외실적미포함금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월 대외실적 미포함 금액에 대한 합계를 나타낸다. - 은행 리브NEXT 카드 사용분
@@ -12133,19 +12820,25 @@ tables:
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 대외실적미포함금액
     - 금월대외실적미포함 금액
+    - 대외실적미포함 금액
   - name: 금월복합상환할부이용금액
     data_type: DECIMAL
     description: MFX월카드통합실적집계의 금월에 복합상환방식 할부서비스로 할부 매출이 발생한 이용금액
     unit: KRW
     aggregation: sum_at_declared_month_grain
     synonyms:
+    - 복합상환할부이용금액
     - 금월복합상환할부이용 금액
+    - 복합상환할부이용 금액
   time_dimensions:
   - name: 기준년월
     data_type: VARCHAR
     description: "MFX월카드통합실적집계의 카드의 통합 실적을 집계하는 기준이 되는 기준년월 정보로 집계된 카드의 통합 실적은 해당 년월(기준년월)에 발생한 데이터를 집계한다."
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -12285,7 +12978,9 @@ tables:
     - 가맹점상태
     - 가맹점 상태
     - 가맹점상태구분
+    - 상태구분
     - 가맹점상태 구분
+    - 상태 구분
     value_semantics:
       '1': 정상
       '2': 거래정지
@@ -12338,8 +13033,12 @@ tables:
     - 가맹점해지사유구분
     - 가맹점해지사유
     - 가맹점해지
+    - 해지사유구분
+    - 해지사유
     - 가맹점해지사유 구분
     - 가맹점해지 사유
+    - 해지사유 구분
+    - 해지 사유
   - name: 신규등록부점코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의신규등록 처리한 부점코드
@@ -12353,14 +13052,19 @@ tables:
     synonyms:
     - 가맹점모집부점
     - 가맹점모집
+    - 모집부점
     - 가맹점모집 부점
+    - 모집 부점
   - name: 가맹점전입모집부점코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점이 주소 이전시 해당 가맹점을 유치한 부점코드
     synonyms:
     - 가맹점전입모집부점
     - 가맹점전입모집
+    - 전입모집부점
+    - 전입모집
     - 가맹점전입모집 부점
+    - 전입모집 부점
   - name: 역할유형구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의권유자 역할 유형 코드(배우자/직원/알바/..)
@@ -12378,14 +13082,19 @@ tables:
     synonyms:
     - 가맹점관리부점
     - 가맹점관리
+    - 관리부점
     - 가맹점관리 부점
+    - 관리 부점
   - name: 가맹점전입관리부점코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점이 주소 이전시 전입지의 카드영업소 관리부점코드
     synonyms:
     - 가맹점전입관리부점
     - 가맹점전입관리
+    - 전입관리부점
+    - 전입관리
     - 가맹점전입관리 부점
+    - 전입관리 부점
   - name: 가맹점거래정지여부
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의거래정지 범위구분 중 가맹점 제재여부를 관리
@@ -12398,6 +13107,7 @@ tables:
     description: MFX월가맹점정보기본시점정보의가맹점에대한 거래정지코드(승인요청시 가맹점 거래정지로 인해 거절되는 경우 거절내역에 사유파악을 위해 저장)
     synonyms:
     - 가맹점거래정지
+    - 거래정지
   - name: 가맹점거래정지상태구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점의 상태를 거래정지기준으로 해제,미해제로 구분한 코드
@@ -12405,23 +13115,33 @@ tables:
     - 가맹점거래정지상태구분
     - 가맹점거래정지상태
     - 가맹점거래정지
+    - 거래정지상태구분
+    - 거래정지상태
+    - 거래정지
     - 가맹점거래정지상태 구분
     - 가맹점거래정지 상태
+    - 거래정지상태 구분
+    - 거래정지 상태
   - name: 가맹점유형구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점의 유형(일반,통판등)구분
     synonyms:
     - 가맹점유형구분
     - 가맹점유형
+    - 유형구분
     - 가맹점유형 구분
     - 가맹점 유형
+    - 유형 구분
   - name: 가맹점세분화구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점을 상세하게 분류하기위한 구분코드
     synonyms:
     - 가맹점세분화구분
     - 가맹점세분화
+    - 세분화구분
+    - 세분화
     - 가맹점세분화 구분
+    - 세분화 구분
   - name: 사업자과세유형구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의해당 가맹점의 사업자 과세유형을 구분하는 코드(일반과세,간이과세 등)
@@ -12437,39 +13157,56 @@ tables:
     synonyms:
     - 가맹점서비스구분
     - 가맹점서비스
+    - 서비스구분
+    - 서비스
     - 가맹점서비스 구분
+    - 서비스 구분
   - name: 가맹점사업주체구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점의 사업주체가 개인사업자인지 법인사업자(법인포함)인지를 구분하는코드
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 가맹점대표구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점대표의 유형을 구분하는코드(일반,공동,외국인 등)
     synonyms:
     - 가맹점대표구분
     - 가맹점대표
+    - 대표구분
     - 가맹점대표 구분
+    - 대표 구분
   - name: 가맹점최종매입부점코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점에서 최종으로 전표를 매입한 부점코드
     synonyms:
     - 가맹점최종매입부점
     - 가맹점최종매입
+    - 최종매입부점
+    - 최종매입
     - 가맹점최종매입 부점
+    - 최종매입 부점
   - name: 카드VAN사구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의카드결제시 가맹점과 카드사를 중계해주는 VAN사를 구분하는코드
     synonyms:
     - 카드VAN사구분
     - 카드VAN사
+    - VAN사구분
+    - VAN사
     - 카드 VAN 사구분코드
     - 카드 VAN 사구분
     - 카드VAN사 구분
     - 카드 VAN 사 구분
     - 카드 VAN 사
+    - VAN 사구분
+    - VAN사 구분
+    - VAN 사 구분
+    - VAN 사
   - name: 공동망가맹점대상여부
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의공동망가맹점 대상인지의 여부
@@ -12547,7 +13284,10 @@ tables:
     synonyms:
     - 가맹점대금지급통화구분
     - 가맹점대금지급통화
+    - 대금지급통화구분
+    - 대금지급통화
     - 가맹점대금지급통화 구분
+    - 대금지급통화 구분
   - name: 우체국특약여부
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점의 우체국 특약등록 여부
@@ -12588,7 +13328,10 @@ tables:
     synonyms:
     - 가맹점수수료구분
     - 가맹점수수료
+    - 수수료구분
+    - 수수료
     - 가맹점수수료 구분
+    - 수수료 구분
   - name: 선취후취구분코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점 수수료 청구방법을 구분하는코드(선취,후취 등)
@@ -12609,7 +13352,10 @@ tables:
     synonyms:
     - 카드대금지급주기구분
     - 카드대금지급주기
+    - 대금지급주기구분
+    - 대금지급주기
     - 카드대금지급주기 구분
+    - 대금지급주기 구분
   - name: 현금카드결제기관구분코드
     data_type: VARCHAR
     description: "MFX월가맹점정보기본시점정보의현금카드 CD기 출금시 카드와 연계되어 있는 결제금융기관(예) 산업은행, 기업은행, 국민은행, 외환은행 등)을 구분하는 코드"
@@ -12634,7 +13380,10 @@ tables:
     synonyms:
     - 카드환율적용구분
     - 카드환율적용
+    - 환율적용구분
+    - 환율적용
     - 카드환율적용 구분
+    - 환율적용 구분
   - name: 대표가맹점번호
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의복수 가맹점의 경우 복수 가맹점에 대한 대표가맹점번호(종속가맹점번호)
@@ -12869,7 +13618,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: "MFX월가맹점정보기본시점정보의가맹점정보기본 테이블의 데이터를 월별로 스냅샷을 생성하기 위해 사용하는 일자정보로 해당 년월 시점의 가맹점정보기본 데이터를 적재한다."
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -13018,7 +13769,10 @@ tables:
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 기업고객식별자
     data_type: VARCHAR
     description: MFX월가맹점실적집계의KB카드의 고객에게 부여하는 10자리 식별번호중 기업고객에 대한 식별번호
@@ -13061,30 +13815,42 @@ tables:
     - 가맹점거래정지상태구분
     - 가맹점거래정지상태
     - 가맹점거래정지
+    - 거래정지상태구분
+    - 거래정지상태
+    - 거래정지
     - 가맹점거래정지상태 구분
     - 가맹점거래정지 상태
+    - 거래정지상태 구분
+    - 거래정지 상태
   - name: 가맹점관리부점코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점 대금지급 대상건의 가맹점을 관리하는 지점의 부점코드
     synonyms:
     - 가맹점관리부점
     - 가맹점관리
+    - 관리부점
     - 가맹점관리 부점
+    - 관리 부점
   - name: 가맹점유형구분코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점의 유형(일반,통판등)구분
     synonyms:
     - 가맹점유형구분
     - 가맹점유형
+    - 유형구분
     - 가맹점유형 구분
     - 가맹점 유형
+    - 유형 구분
   - name: 가맹점대금지급통화구분코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점 대금지급시 미화 또는 원화등 통용되고 있는 화폐를 구분하는 코드
     synonyms:
     - 가맹점대금지급통화구분
     - 가맹점대금지급통화
+    - 대금지급통화구분
+    - 대금지급통화
     - 가맹점대금지급통화 구분
+    - 대금지급통화 구분
   - name: 모집부점코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의신용카드, 가맹점, 자동납부 신청을 모집한 부점코드
@@ -13121,14 +13887,19 @@ tables:
     synonyms:
     - 카드지역구분
     - 카드지역
+    - 지역구분
     - 카드지역 구분
+    - 지역 구분
   - name: 가맹점수수료구분코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점수수료 적용 관리 코드이다.
     synonyms:
     - 가맹점수수료구분
     - 가맹점수수료
+    - 수수료구분
+    - 수수료
     - 가맹점수수료 구분
+    - 수수료 구분
   - name: 수수료적용구분코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의수수료의 업종별,SLIDING별등 적용 대상을 관리하는 코드
@@ -13142,7 +13913,10 @@ tables:
     synonyms:
     - 카드대금지급주기구분
     - 카드대금지급주기
+    - 대금지급주기구분
+    - 대금지급주기
     - 카드대금지급주기 구분
+    - 대금지급주기 구분
   - name: 현금카드결제기관구분코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의현금카드 CD기 출금시 카드와 연계되어 있는 결제금융기관(예) 산업은행,기업은행,국민은행,외환은행 등)을 구분하는 코드
@@ -13209,26 +13983,39 @@ tables:
     - 가맹점해지사유구분
     - 가맹점해지사유
     - 가맹점해지
+    - 해지사유구분
+    - 해지사유
     - 가맹점해지사유 구분
     - 가맹점해지 사유
+    - 해지사유 구분
+    - 해지 사유
   - name: 가맹점최종매입부점코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점에서 최종으로 전표를 매입한 부점코드
     synonyms:
     - 가맹점최종매입부점
     - 가맹점최종매입
+    - 최종매입부점
+    - 최종매입
     - 가맹점최종매입 부점
+    - 최종매입 부점
   - name: 카드VAN사구분코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의VAN Company의 코드
     synonyms:
     - 카드VAN사구분
     - 카드VAN사
+    - VAN사구분
+    - VAN사
     - 카드 VAN 사구분코드
     - 카드 VAN 사구분
     - 카드VAN사 구분
     - 카드 VAN 사 구분
     - 카드 VAN 사
+    - VAN 사구분
+    - VAN사 구분
+    - VAN 사 구분
+    - VAN 사
   - name: 할부가능여부
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점의 할부 가능여부
@@ -13273,7 +14060,10 @@ tables:
     synonyms:
     - 카드환율적용구분
     - 카드환율적용
+    - 환율적용구분
+    - 환율적용
     - 카드환율적용 구분
+    - 환율적용 구분
   - name: ONUS가맹점여부
     data_type: VARCHAR
     description: MFX월가맹점실적집계의ONUS 가맹점인지에 대한 여부.
@@ -13368,7 +14158,9 @@ tables:
     - 가맹점상태
     - 가맹점 상태
     - 가맹점상태구분
+    - 상태구분
     - 가맹점상태 구분
+    - 상태 구분
     value_semantics:
       '1': 정상
       '2': 거래정지
@@ -13926,7 +14718,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: "MFX월가맹점실적집계의월별로 발생한 가맹점의 실적을 집계하기 위한 기준이 되는 일자 정보로 실적이 집계된 기준이 되는 기준년월에 대한 정보를 관리한다."
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -14019,6 +14813,10 @@ tables:
     cadence: monthly
     query_time_dimension: 기준년월
     format: YYYYMM
+    live_source:
+      table: tbdaadt01
+      query_time_dimension: 실적기준년월일
+      format: YYYYMMDD
 - name: tmdaaaa12
   physical_table: tmdaaaa12
   korean_name: 기타고객관계
@@ -14098,7 +14896,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: 기타고객관계의 시점 기준이 되는 년월
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -14175,7 +14975,9 @@ tables:
     - 가맹점상태
     - 가맹점 상태
     - 가맹점상태구분
+    - 상태구분
     - 가맹점상태 구분
+    - 상태 구분
     value_semantics:
       '1': 정상
       '2': 거래정지
@@ -14191,7 +14993,10 @@ tables:
     synonyms:
     - 가맹점사업주체구분
     - 가맹점사업주체
+    - 사업주체구분
+    - 사업주체
     - 가맹점사업주체 구분
+    - 사업주체 구분
   - name: 사업자과세유형구분코드
     data_type: VARCHAR
     description: 해당 가맹점의 사업자 과세유형을 구분하는 코드(일반과세,간이과세 등)를 나타낸다.
@@ -14207,7 +15012,10 @@ tables:
     synonyms:
     - 가맹점관리대상구분
     - 가맹점관리대상
+    - 관리대상구분
+    - 관리대상
     - 가맹점관리대상 구분
+    - 관리대상 구분
   - name: 적격비용차감가맹점여부
     data_type: VARCHAR
     description: "원가항목을 기준으로 계산된 적격비용을 차감하는 가맹점인지를 여부로 관리한다. / 가맹점관리대상구분코드 146 일 경우, '1'로 셋팅한다."
@@ -14266,7 +15074,10 @@ tables:
     synonyms:
     - 카드대금지급주기구분
     - 카드대금지급주기
+    - 대금지급주기구분
+    - 대금지급주기
     - 카드대금지급주기 구분
+    - 대금지급주기 구분
   - name: 현금카드결제기관구분코드
     data_type: VARCHAR
     description: 해당 가맹점의 대금지급 결제기관구분코드를 나타낸다. (원화 기준)
@@ -14703,7 +15514,9 @@ tables:
   - name: 기준년월
     data_type: VARCHAR
     description: 월말 시점정보의 기준이되는 기준년월을 관리한다.
-    synonyms: [년월, 월, 기준월]
+    synonyms:
+    - 년월
+    - 기준월
     required: true
     format: YYYYMM
     role: snapshot_month
@@ -14778,14 +15591,19 @@ tables:
     - 회원 자산관리 부점
     - 자산관리부점
     - 회원자산관리
+    - 자산관리
     - 회원자산관리 부점
+    - 자산관리 부점
   - name: 회원자산관리부점명
     data_type: VARCHAR
     description: 회원의 자산을 담당하는 부점코드의 해당하는 부점한글명
     synonyms:
     - 회원자산관리부점
     - 회원자산관리
+    - 자산관리부점
+    - 자산관리
     - 회원자산관리 부점
+    - 자산관리 부점
   - name: 고객전담직원번호1
     data_type: VARCHAR
     description: 고객의 전담자로 지정된 직원의 번호
@@ -14823,8 +15641,13 @@ tables:
     - 기업카드발송방법구분
     - 기업카드발송방법
     - 기업카드발송
+    - 카드발송방법구분
+    - 카드발송방법
+    - 카드발송
     - 기업카드발송방법 구분
     - 기업카드발송 방법
+    - 카드발송방법 구분
+    - 카드발송 방법
   - name: 기업카드발송매체구분코드
     data_type: VARCHAR
     description: 회원에게 각종 문서를 발송하기 윈한 매체를 구분하기 위한코드
@@ -14832,8 +15655,13 @@ tables:
     - 기업카드발송매체구분
     - 기업카드발송매체
     - 기업카드발송
+    - 카드발송매체구분
+    - 카드발송매체
+    - 카드발송
     - 기업카드발송매체 구분
     - 기업카드발송 매체
+    - 카드발송매체 구분
+    - 카드발송 매체
   - name: 구매회원제휴코드
     data_type: VARCHAR
     description: 구매카드 소지일 경우 제휴코드 제일큰값
@@ -14845,7 +15673,10 @@ tables:
     synonyms:
     - 카드고객서비스구분
     - 카드고객서비스
+    - 고객서비스구분
+    - 고객서비스
     - 카드고객서비스 구분
+    - 고객서비스 구분
   - name: 카드결제기관구분코드
     data_type: VARCHAR
     description: 카드결제계좌의 기관구분 (산업은행, 기업은행, 국민은행, 외환은행 등)
@@ -14855,8 +15686,11 @@ tables:
     - 결제기관
     - 카드결제기관구분
     - 카드결제
+    - 결제기관구분
     - 카드결제기관 구분
     - 카드결제 기관
+    - 결제기관 구분
+    - 결제 기관
     value_semantics:
       '002': 산업은행
       '003': 기업은행
@@ -15012,6 +15846,7 @@ tables:
     description: 기업회원 사업자번호(고객식별자) 기준으로 사업자에 대한 대표 직장명을 적재 한다.(사업자의 부서별 직장명 별도 적재)
     synonyms:
     - 기업회원대표직장
+    - 회원대표직장
   measures:
   - name: 부서사업장이용한도금액
     data_type: DECIMAL
@@ -15398,8 +16233,8 @@ sql_generation_contract:
   grain_and_aggregation_rules:
   - 일·월 snapshot은 table aggregation_policy의 최신행 축소를 먼저 적용한다. 월 최신행은 서브쿼리에서 ROW_NUMBER() OVER (PARTITION BY 키 ORDER BY 기준년월일 DESC) AS rn 을 만든 뒤 WHERE rn = 1 로 거른다.
   - 1:N JOIN 뒤 상위 grain 개체 수는 COUNT(DISTINCT key)로 계산하고 fact 금액 중복을 점검한다.
-  - 고객·기업·업체·법인 수는 고객식별자(전표·가맹점 테이블은 기업고객식별자, 부서사업장은 법인고객식별자)를, 회원 수는 회원일련번호를 COUNT DISTINCT한다. 한 고객식별자에 부서·사업장 회원일련번호가 여러 개 달리므로 둘을 바꿔 쓰면 수가 달라진다.
-  - measure aggregation이 recompute_or_weighted_avg 또는 semi_additive_latest_snapshot이면 무조건 SUM하지 않는다.
+  - 고객·기업·업체·회사·법인 수는 고객식별자(전표·가맹점 테이블은 기업고객식별자, 부서사업장은 법인고객식별자)를, 회원 수는 회원일련번호를 COUNT DISTINCT한다. 한 고객식별자에 부서·사업장 회원일련번호가 여러 개 달리므로 둘을 바꿔 쓰면 수가 달라진다. 목록·순위의 단위도 같은 키를 따른다. '상위 N개 업체·회사·기업·법인'은 고객식별자로 GROUP BY 해 1행씩 내고 고객식별자를 SELECT에 남기며, 회원일련번호·카드구분키번호로 쪼개지 않는다.
+  - measure aggregation이 recompute_or_weighted_avg 또는 semi_additive_latest_snapshot이면 무조건 SUM하지 않는다. 매출전표(tbdaabt30 국내·tbdaabt08 해외) 한 행은 정당·정정·취소 중 한 종류의 전표여서 금액·건수를 그대로 SUM·COUNT하면 취소·환급까지 더해진다. 매출금액·매출미화금액·봉사료·미화봉사료·부가가치세·가맹점수수료는 SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN "매출금액" ELSE -"매출금액" END), 건수는 SUM(CASE WHEN "매출전표종류구분코드" IN ('1','4') THEN 1 ELSE -1 END) 로 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 빼서 순액으로 집계한다. 취소 여부는 이 코드로 가리며 전표취소구분코드는 취소 사유(가맹점번호 상이·원인전표검증생략·분할취소·자동상계비대상) 코드라 취소 필터로 쓰지 않는다.
   - 기업카드 신용+체크 축과 개별+공용 축, 총이용액과 세부 이용액처럼 overlap_group이 다른 값을 함께 더하지 않는다.
   - 기업 총한도와 잔여한도는 현재 조회이면 tbdaa1d12의 KST 전일 고객별 1행을 쓰고, 명시한 과거 월 조회이면 tmdaa1d12를 고객×월 최신 기준년월일 1건으로 축소한다. snapshot 행을 기간 합계로 더하지 않는다.
   - 기업별 한도소진율은 1 - 잔여한도/총한도, 포트폴리오 한도소진율은 1 - SUM(잔여한도)/NULLIF(SUM(총한도), 0)으로 재계산하며 기업별 비율을 AVG하지 않는다.
@@ -15450,9 +16285,9 @@ canonical_domains:
   default_filters: []
 - name: card_usage
   business_scope: "법인카드의 국내·해외 이용금액, 거래건수와 월별 사용 추이 분석"
-  keywords: [카드이용, 카드사용, 이용금액, 사용액, 국내이용, 해외이용, 전표, 카드매출, 월별, 전월대비, 증감률, 대기업, 중소기업, 영세기업, 공공기업, 기업규모]
+  keywords: [카드이용, 카드사용, 이용금액, 사용액, 국내이용, 해외이용, 전표, 카드매출, 월별, 전월대비, 증감률, 대기업, 중소기업, 영세기업, 공공기업, 기업규모, 청구금액, 청구]
   primary_entities: [domestic_sales, overseas_sales, card_monthly_performance, member_card, customer_monthly_snapshot]
-  preferred_metrics: [카드매출금액, 매출건수, 해외매출금액, 카드별월이용금액, 법인카드월이용금액, 법인카드월전월대비증감률]
+  preferred_metrics: [카드매출금액, 매출건수, 해외매출금액, 카드별월이용금액, 법인카드월이용금액, 법인카드월전월대비증감률, 카드월해외이용금액, 카드월청구금액, 이용기업수]
   default_fact_table: tbdaabt30
   default_time_dimension: 기준년월
   default_filters: []
@@ -15468,7 +16303,7 @@ canonical_domains:
   business_scope: "기업고객·회원·보유카드의 규모, 상태, 상품과 신규 발급 현황 분석"
   keywords: [기업고객, 법인고객, 회원, 보유카드, 유효카드, 카드수, 발급, 신규회원, 카드상품, 대기업, 중소기업, 영세기업, 공공기업, 기업규모]
   primary_entities: [customer, member, member_card, product, customer_monthly_snapshot]
-  preferred_metrics: [회원수, 유효신용카드수, 기업고객수]
+  preferred_metrics: [회원수, 유효신용카드수, 기업고객수, 카드월청구금액]
   default_fact_table: tbdaaat03
   default_time_dimension: ""
   default_filters: []
@@ -15802,6 +16637,51 @@ semantic_attributes:
   semantic_cautions:
   - 도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소이고 도로명·지번 표기 여부는 주소표시구분코드로 판별한다.
   - 도로명 주소를 물으면 가맹점상세주소를 주소표시구분코드·우편번호와 함께 내보내고, 도로명 번호 컬럼만으로 주소를 조립하지 않는다.
+- name: merchant_credit_sales
+  korean_name: 가맹점 신용판매 매출금액
+  domains:
+  - merchant_sales
+  - corporate_sales_targeting
+  business_definition: 가맹점의 신용판매 매출금액(금년·전년 누적). 이번 달은 일 적재 가맹점기본, 지난 달 이전은 가맹점월실적에서 읽는다
+  aliases:
+  - 가맹점 신용판매 매출금액
+  - 가맹점신용판매매출금액
+  - 신용판매 매출금액
+  - 신용판매매출금액
+  - 신용판매 매출
+  - 신용판매매출
+  - 가맹점 신용판매 실적
+  - 신용판매 실적
+  source_mappings:
+  - entity: merchant
+    table: tbdaadt01
+    columns:
+    - 금년가맹점신용판매매출금액
+    - 전년가맹점신용판매매출금액
+    role: current_merchant_credit_sales
+  - entity: merchant_monthly_performance
+    table: tmdaa5e11
+    columns:
+    - 금년가맹점신용판매매출금액
+    - 전년가맹점신용판매매출금액
+    role: monthly_merchant_credit_sales
+  source_selection:
+    default_role_prefix: current_
+    period_role_prefix: monthly_
+    current_terms:
+    - 이번 달
+    - 이번달
+    - 당월
+    - 현재
+    - 최신
+    - 지금
+    - 오늘
+    open_month_uses_current: true
+  semantic_cautions:
+  - 월 실적은 달이 닫힌 뒤 적재된다. 이번 달 신용판매 매출금액은 tbdaadt01의 실적기준년월일 최신행에서 읽는다.
+  - 지난 달 이전은 tmdaa5e11의 기준년월 행을 쓰고 마스터로 대체하지 않는다.
+  - 가맹점월스냅샷(tmdaa5d01)에도 같은 컬럼이 있지만 실적 축의 과거 원천은 tmdaa5e11이다.
+  - 금년·전년가맹점신용판매매출금액은 기준 시점까지의 연 누적이다. 한 달치 매출은 tmdaa5e11의 가맹점일시불매출금액+가맹점할부매출금액을 쓴다.
 - name: enterprise_size
   korean_name: 기업규모
   domains: [card_usage, customer_card_portfolio]
@@ -16167,16 +17047,30 @@ semantic_attributes:
       filter_expression: COALESCE("유효기업신용카드수", 0) + COALESCE("유효기업체크카드수", 0) > 0
   filter_expression: COALESCE("유효기업신용카드수", 0) + COALESCE("유효기업체크카드수", 0) > 0
   source_mappings:
-  - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수]}
-  - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수]}
-  - {entity: corporate_customer_daily, table: tbdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수]}
-  - {entity: corporate_customer_no_usage_snapshot, table: tmdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수]}
+  - {entity: corporate_customer_daily, table: tbdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수], role: current_corporate_card_holding}
+  - {entity: corporate_customer_no_usage_snapshot, table: tmdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수], role: monthly_corporate_card_holding}
+  - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수], role: current_merchant_card_holding}
+  - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수], role: monthly_merchant_card_holding}
   semantic_cautions:
   - 기업 신용카드를 명시하면 신용카드 수만, 기업 체크카드를 명시하면 체크카드 수만 사용한다.
   - 포괄적인 기업카드·법인카드는 신용카드 수와 체크카드 수의 합을 사용한다.
   - 구체적인 카드 종류 표현이 포괄적인 기업카드 표현보다 우선한다.
   - 신용+체크는 카드 종류 축이다.
   - 개별+공용은 소유 형태 축이므로 신용+체크와 함께 네 컬럼을 합산하지 않는다.
+  - 현재·최신 보유는 tbdaa1d12 KST 전일 기준년월일, 명시한 과거 월은 tmdaa1d12 기준년월에서 읽는다.
+  source_selection:
+    default_role_prefix: current_
+    period_role_prefix: monthly_
+    current_terms:
+    - 현재
+    - 현재기준
+    - 현재 시점
+    - 오늘
+    - 전일
+    - 어제
+    - 최신
+    - 지금
+    open_month_uses_current: true
 - name: merchant_payment_institution
   korean_name: 가맹점 결제금융기관
   domains: [merchant_sales]
@@ -16242,11 +17136,118 @@ semantic_attributes:
   - 상세 목록은 요청 개수가 없으면 LIMIT 1000000을 적용한다.
 
 canonical_metrics:
-- {name: 카드매출금액, domain: card_usage, expression: 'SUM(tbdaabt30."매출금액")', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [카드매출, 국내이용금액, 카드이용금액, 총매출], unit: 원, aggregation_behavior: additive_at_declared_grain}
-- {name: 매출건수, domain: card_usage, expression: 'COUNT(tbdaabt30."매출전표번호")', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [거래건수, 이용건수, 전표건수], unit: 건, aggregation_behavior: additive_at_declared_grain}
-- {name: 해외매출금액, domain: card_usage, expression: 'SUM(tbdaabt08."매출금액")', source_table: tbdaabt08, source_entity: overseas_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [해외이용금액, 해외사용액], unit: 원, aggregation_behavior: additive_at_declared_grain}
+- {name: 카드매출금액, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN tbdaabt30."매출금액" ELSE -tbdaabt30."매출금액" END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [카드매출, 국내이용금액, 카드이용금액, 총매출], unit: 원, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [매출금액을 그대로 SUM하면 취소·환급 전표까지 더해져 이용금액이 부풀려진다., '매출전표종류구분코드로 부호를 정한다: 정당(1)·취소정정(4)은 +, 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 -.']}
+- {name: 매출건수, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN 1 ELSE -1 END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [거래건수, 이용건수, 전표건수], unit: 건, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [전표 건수도 순액이다. COUNT로 세면 취소전표가 건수를 늘린다., '매출전표종류구분코드가 정당(1)·취소정정(4)이면 +1, 정정(2)·취소(3)·청구보류(5)·체크환급(6)이면 -1로 더한다.']}
+- name: 이용기업수
+  domain: card_usage
+  business_definition: 해당 기간에 카드 이용이 실제로 발생한 고유 기업 수
+  expression: COUNT(DISTINCT tbdaabt30."기업고객식별자")
+  source_table: tbdaabt30
+  source_entity: domestic_sales
+  default_time_dimension: 기준년월
+  result_grain: 기준년월 (질문이 요청한 분류축 조합별 1행)
+  required_filters:
+  - tbdaabt30."개인기업구분코드" = '2'
+  semantic_cautions:
+  - 이용 기업수는 전표에 기업고객식별자가 찍힌 기업만 센다. 고객 마스터(tbdaaat01)의 기업고객수는 카드를 쓰지 않은 기업까지 센다.
+  - 회원일련번호·카드구분키번호로 세면 한 기업의 부서·카드가 여러 건으로 갈라진다.
+  - 가맹점업종·MCC·결제처·카드브랜드처럼 전표가 들고 있는 축은 이 지표로 함께 쪼갠다.
+  - 카드 상품·등급처럼 전표에 없는 카드 속성으로 쪼개는 질문은 tmdaa3e16의 고객식별자를 DISTINCT 집계한다.
+  synonyms:
+  - 카드이용기업수
+  - 이용한 기업수
+  - 카드를 이용한 기업수
+  unit: 개
+  aggregation_behavior: distinct_count
+- {name: 해외매출금액, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt08."매출전표종류구분코드" IN (''1'',''4'') THEN tbdaabt08."매출금액" ELSE -tbdaabt08."매출금액" END)', source_table: tbdaabt08, source_entity: overseas_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [], unit: 원, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [매출금액을 그대로 SUM하면 취소·환급 전표까지 더해져 이용금액이 부풀려진다., '매출전표종류구분코드로 부호를 정한다: 정당(1)·취소정정(4)은 +, 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 -.', 해외 이용금액을 물으면 tmdaa3e16의 카드월해외이용금액을 쓴다. 이 지표는 가맹점이 카드로 받은 해외 매출이다.]}
 - {name: 카드별월이용금액, domain: card_usage, expression: 'SUM(tmdaa3e16."금월이용합계금액")', source_table: tmdaa3e16, source_entity: card_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [월이용금액, 카드사용액], unit: 원, aggregation_behavior: additive_at_declared_grain}
-- {name: 가맹점월매출금액, domain: merchant_sales, expression: 'SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) + COALESCE(tmdaa5e11."가맹점할부매출금액", 0))', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점매출, 가맹점매출액, 점포매출, 월매출액], unit: 원, aggregation_behavior: additive_at_declared_grain}
+- name: 카드월CA이용금액
+  domain: card_usage
+  business_definition: 카드 월실적에서 금월 단기카드대출(현금서비스)로 발생한 이용금액
+  expression: SUM(COALESCE(tmdaa3e16."금월CA이용금액", 0))
+  source_table: tmdaa3e16
+  source_entity: card_monthly_performance
+  default_time_dimension: 기준년월
+  result_grain: 기준년월 (질문이 요청한 분류축 조합별 1행)
+  required_filters:
+  - tmdaa3e16."개인기업구분코드" = '2'
+  semantic_cautions:
+  - CA는 단기카드대출(현금서비스)이다. CA 이용금액 컬럼을 가진 테이블은 카드 월실적(tmdaa3e16) 하나다.
+  - 해외CA·리볼빙CA·CA할부 이용금액은 이 금액의 세부 축이므로 합계와 함께 더하지 않는다.
+  - 회원·기업 속성이 필요 없으면 tmdaa3e16 단독으로 기준년월만 제한한다. 회원 마스터(tbdaaat03)는 금액 컬럼이 없고 조인하면 모집단이 오늘 기준으로 좁아진다.
+  synonyms:
+  - CA이용금액
+  - CA 이용금액
+  - 현금서비스이용금액
+  - 단기카드대출이용금액
+  unit: 원
+  aggregation_behavior: additive_at_declared_month_grain
+- name: 카드월할부이용금액
+  domain: card_usage
+  business_definition: 카드 월실적에서 금월 할부(신용판매 할부)로 발생한 이용금액
+  expression: SUM(COALESCE(tmdaa3e16."금월할부이용금액", 0))
+  source_table: tmdaa3e16
+  source_entity: card_monthly_performance
+  default_time_dimension: 기준년월
+  result_grain: 기준년월 (질문이 요청한 분류축 조합별 1행)
+  required_filters:
+  - tmdaa3e16."개인기업구분코드" = '2'
+  semantic_cautions:
+  - 할부 이용금액 컬럼을 가진 테이블은 카드 월실적(tmdaa3e16) 하나다. 기업 월 스냅샷(tmdaa1d12)에는 신용·체크 이용금액만 있고 할부 축이 없다.
+  - 무이자·유이자·부분무이자·복합상환 할부 이용금액은 이 금액의 세부 축이므로 합계와 함께 더하지 않는다.
+  - CA할부이용금액은 단기카드대출(현금서비스) 할부라 신용판매 할부와 다른 지표다.
+  - 회원·기업 속성이 필요 없으면 tmdaa3e16 단독으로 기준년월만 제한한다. 회원 마스터(tbdaaat03)는 금액 컬럼이 없고 조인하면 모집단이 오늘 기준으로 좁아진다.
+  synonyms:
+  - 할부이용금액
+  - 할부 이용금액
+  - 할부이용액
+  - 카드할부이용금액
+  unit: 원
+  aggregation_behavior: additive_at_declared_month_grain
+- name: 카드월청구금액
+  domain: card_usage
+  business_definition: 카드 월실적에서 금월기준 회원에게 청구된 매출 금액
+  expression: SUM(COALESCE(tmdaa3e16."금월청구금액", 0))
+  source_table: tmdaa3e16
+  source_entity: card_monthly_performance
+  default_time_dimension: 기준년월
+  result_grain: 기준년월 (질문이 요청한 분류축 조합별 1행)
+  required_filters:
+  - tmdaa3e16."개인기업구분코드" = '2'
+  semantic_cautions:
+  - 청구금액과 이용금액은 다른 컬럼이다. 청구금액은 금월청구금액, 이용금액은 금월이용합계금액을 쓰고 서로 대체하지 않는다.
+  - 일시불·CA·할부·해외·리볼빙 청구금액은 금월청구금액의 세부 축이므로 합계와 같이 더하지 않는다.
+  - 미청구금액은 아직 청구되지 않은 잔액이라 청구금액이 아니다.
+  synonyms:
+  - 청구금액
+  - 청구액
+  - 월청구금액
+  - 카드청구금액
+  unit: 원
+  aggregation_behavior: additive_at_declared_month_grain
+- name: 카드월해외이용금액
+  domain: card_usage
+  business_definition: 카드 월실적의 해외 이용금액(해외 일시불 + 해외 단기카드대출)
+  expression: SUM(COALESCE(tmdaa3e16."금월해외일시불이용금액", 0) + COALESCE(tmdaa3e16."금월해외CA이용금액", 0))
+  source_table: tmdaa3e16
+  source_entity: card_monthly_performance
+  default_time_dimension: 기준년월
+  result_grain: 기준년월 (질문이 요청한 분류축 조합별 1행)
+  required_filters:
+  - tmdaa3e16."개인기업구분코드" = '2'
+  semantic_cautions:
+  - 해외 이용금액은 회원·카드가 해외에서 쓴 돈이다. tbdaabt08의 매출금액은 가맹점이 카드로 받은 해외 매출이라 다른 지표다.
+  - 카드 월실적의 해외 축은 일시불과 CA 두 컬럼뿐이므로 둘을 더해 해외 이용금액을 만든다.
+  - 기업·법인 단위 해외 이용금액은 tmdaa1d12의 금월해외이용금액을 쓴다.
+  - 국가·MCC업종·가맹점처럼 카드 월실적에 없는 해외 전표 축으로 쪼개는 질문만 tbdaabt08의 해외 매출전표를 사용한다.
+  synonyms:
+  - 해외이용금액
+  - 해외사용액
+  - 해외이용액
+  - 해외카드이용금액
+  unit: 원
+  aggregation_behavior: additive_at_declared_month_grain
+- {name: 가맹점월매출금액, domain: merchant_sales, expression: 'SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) + COALESCE(tmdaa5e11."가맹점할부매출금액", 0))', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점매출, 가맹점매출액, 점포매출, 월매출액, 가맹점매출금액, 가맹점 매출 금액, 월가맹점매출금액], unit: 원, aggregation_behavior: additive_at_declared_grain}
 - {name: 가맹점수, domain: merchant_sales, expression: 'COUNT(DISTINCT tbdaadt01."가맹점번호")', source_table: tbdaadt01, source_entity: merchant, default_time_dimension: '', required_filters: [], synonyms: [점포수, 매장수, 가맹점개수], unit: 개, aggregation_behavior: distinct_count}
 - name: 결제금융기관별가맹점수
   domain: merchant_sales
@@ -16374,7 +17375,7 @@ canonical_metrics:
   required_filters:
   - tmdaa3e16."개인기업구분코드" = '2'
   - 질문의 조회 시작월과 종료월로 기준년월 제한
-  synonyms: [월별 법인카드 이용금액, 법인카드 이용금액 합계, 기업카드 월 사용액, 법인카드 월 이용액]
+  synonyms: [월별 법인카드 이용금액, 법인카드 이용금액 합계, 기업카드 월 사용액, 법인카드 월 이용액, 법인카드 이용금액, 기업카드 이용금액, 법인카드 사용액, 기업카드 사용액]
   unit: 원
   aggregation_behavior: additive_at_declared_month_grain
   time_policy:
@@ -17284,7 +18285,7 @@ semantic_query_contracts:
   filters:
   - tbdaabt30.개인기업구분코드 = '2'
   calculation:
-    usage_amount: SUM(tbdaabt30.매출금액)
+    usage_amount: SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN ('1','4') THEN tbdaabt30."매출금액" ELSE -tbdaabt30."매출금액" END)
   result_fields: [업종대분류코드명, 가맹점업종명, 총매출금액]
   ambiguity_policy:
   - 업종은 결제처 업종(tbdaabt30.가맹점업종코드)이며, 기업 자체 업종은 명시된 경우 별도 처리
@@ -18461,7 +19462,16 @@ glossary:
   - 카드매출
   - 카드이용금액
   - 결제금액
-  sql_hint: '이용금액을 물으면 이용금액 컬럼을 쓴다: 기업·법인 월은 tmdaa1d12의 금월신용카드이용금액+금월체크카드이용금액, 카드 월은 tmdaa3e16의 금월이용합계금액. 매출금액을 물으면 매출금액 컬럼을 쓴다: 전표·업종·일자는 tbdaabt30(해외는 tbdaabt08)의 매출금액, 가맹점 월은 tmdaa5e11의 가맹점일시불매출금액+가맹점할부매출금액이며 기업 단위 매출은 tmdaa5e11의 기업고객식별자로 묶는다.'
+  sql_hint: '이용금액을 물으면 이용금액 컬럼을 쓴다: 기업·법인 월은 tmdaa1d12의 금월신용카드이용금액+금월체크카드이용금액, 카드 월은 tmdaa3e16의 금월이용합계금액. 매출금액을 물으면 매출금액 컬럼을 쓴다: 전표·업종·일자는 tbdaabt30(해외는 tbdaabt08)의 매출금액, 가맹점 월은 tmdaa5e11의 가맹점일시불매출금액+가맹점할부매출금액이며 기업 단위 매출은 tmdaa5e11의 기업고객식별자로 묶는다. 해외 이용금액은 카드 월은 tmdaa3e16의 금월해외일시불이용금액+금월해외CA이용금액, 기업·법인 월은 tmdaa1d12의 금월해외이용금액이며 tbdaabt08의 매출금액은 가맹점이 받은 해외 매출이다. 국가·MCC업종처럼 카드 월실적에 없는 해외 전표 축이 필요할 때만 tbdaabt08을 쓴다. 청구금액은 이용금액이 아니라 tmdaa3e16의 금월청구금액이다.'
+- term: 청구금액
+  canonical: tmdaa3e16.금월청구금액 (금월기준 회원에게 청구된 매출 금액)
+  description: 회원에게 청구한 금액이다. 회원이 카드로 쓴 이용금액과 다른 컬럼이며, 청구금액 컬럼을 가진 테이블은 카드 월실적(tmdaa3e16) 하나다. 아직 청구되지 않은 미청구금액과도 구분한다.
+  aliases:
+  - 청구액
+  - 월청구금액
+  - 카드청구금액
+  - 청구된 금액
+  sql_hint: 청구금액을 물으면 tmdaa3e16의 금월청구금액을 쓰고, 세부는 금월일시불청구금액·금월CA청구금액·금월할부청구금액·금월해외일시불청구금액·금월해외CA청구금액·금월리볼빙일시불청구금액을 쓴다. 이용금액 컬럼(금월이용합계금액)으로 대체하지 않고, 미청구금액(일시불미청구금액 등)은 청구되지 않은 잔액이라 다른 지표다.
 - term: "가맹점월매출"
   canonical: "tmdaa5e11.가맹점일시불매출금액 + tmdaa5e11.가맹점할부매출금액"
   description: "실제 월 매출 지표. tmdaaus01.가맹점총지급금액은 지급·정산 대리값이므로 동일 지표로 합치지 않는다."
@@ -18515,6 +19525,15 @@ glossary:
   - 기업고객식별자
   - 법인고객식별자
   sql_hint: 기업·업체·법인·고객 수는 COUNT(DISTINCT "고객식별자")로 세고 개인기업구분코드 = '2' 를 함께 적용한다. 회원일련번호로 세지 않는다.
+- term: 이용 기업수
+  canonical: COUNT(DISTINCT tbdaabt30."기업고객식별자") (전표에 이용이 찍힌 기업)
+  description: 카드를 실제로 쓴 기업의 수다. 등록된 기업을 세는 기업고객수와 다르고, 부서·사업장 단위인 회원 수와도 다르다. 전표(tbdaabt30)는 기업고객식별자를, 카드 월실적(tmdaa3e16)은 고객식별자를 같은 뜻으로 들고 있다.
+  aliases:
+  - 이용기업수
+  - 카드이용기업수
+  - 이용한 기업수
+  - 이용 업체수
+  sql_hint: 이용 기업수는 COUNT(DISTINCT "기업고객식별자")로 세고 개인기업구분코드 = '2' 를 함께 적용한다. 업종·결제처·카드브랜드 축은 tbdaabt30, 카드 상품·등급 축은 tmdaa3e16의 고객식별자를 쓴다. 회원일련번호로 세지 않는다.
 - term: 카드회원
   canonical: tbdaaat03.회원일련번호
   description: 기업고객이 맺은 카드 계약 1건. 부서·사업장 단위로 채번되며 보유 카드·이용·연체·충당금이 이 키로 연결된다.
@@ -18565,7 +19584,7 @@ query_references:
   join_rule: "매출전표(tbdaabt30)의 기준년월+가맹점번호를 가맹점월스냅샷(tmdaa5d01)과 조인하고, 업종명이 필요하면 매출전표의 가맹점업종코드로 tbdaadb17을 조인한다."
   recommended_columns:
     기간필터: "\"기준년월\" = 'YYYYMM' 또는 BETWEEN 으로 기간 지정"
-    매출금액: "SUM(\"매출금액\")"
+    매출금액: "SUM(CASE WHEN \"매출전표종류구분코드\" IN ('1','4') THEN \"매출금액\" ELSE -\"매출금액\" END)"
     그룹핑: "\"기준년월\" 기준 GROUP BY"
   rules:
   - "월별 추이는 \"기준년월\"로 GROUP BY 하고 ORDER BY \"기준년월\"."
@@ -18597,7 +19616,7 @@ query_references:
   join_rule: "매출전표(tbdaabt30)의 가맹점업종코드를 가맹점업종코드 마스터(tbdaadb17)에 직접 조인해 결제처 업종명을 가져온다."
   recommended_columns:
     업종명: "tbdaadb17.\"가맹점업종명\""
-    매출: "SUM(tbdaabt30.\"매출금액\")"
+    매출: "SUM(CASE WHEN tbdaabt30.\"매출전표종류구분코드\" IN ('1','4') THEN tbdaabt30.\"매출금액\" ELSE -tbdaabt30.\"매출금액\" END)"
   rules:
   - "업종명은 tbdaadb17.\"가맹점업종명\"을 사용한다."
   verified_query: sales_by_industry
@@ -18828,11 +19847,11 @@ query_references:
   recommended_columns:
     이용월: "SUBSTR(tbdaabt30.\"전표매출년월일\",1,6)"
     업종: "tbdaadb17.\"가맹점업종명\""
-    이용금액: "SUM(tbdaabt30.\"매출금액\")"
+    이용금액: "SUM(CASE WHEN tbdaabt30.\"매출전표종류구분코드\" IN ('1','4') THEN tbdaabt30.\"매출금액\" ELSE -tbdaabt30.\"매출금액\" END)"
   rules:
   - "고객 snapshot의 금월이용금액으로 업종을 추정하지 말고 실제 전표 fact를 사용한다."
   - "대상군 간 중복이 필요하면 다중 소속으로 명시하고, 단일 소속이 필요하면 우선순위 업무규칙을 요청한다."
-  - "취소·환입 순액 규칙은 문서에 없으므로 임의 코드 필터를 만들지 않는다."
+  - "취소·환입은 매출전표종류구분코드로 부호를 정해 순액으로 집계한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다. 전표취소구분코드는 취소 사유 코드라 취소 여부를 가려 주지 않는다."
 
   verified_query: corporate_target_industry_usage
   source_lineage:
@@ -19052,6 +20071,24 @@ query_references:
     file: athena_text2sql_reference.xlsx
     sheet: 추가 질의
     row: 5
+- intent: 해외이용금액_조회
+  domain: card_usage
+  when_user_says:
+  - 해외 이용금액
+  - 해외 사용액
+  - 해외 이용액
+  - 카드별 해외 이용금액
+  primary_table: tmdaa3e16
+  join_tables: []
+  join_rule: 카드 월실적 한 테이블로 끝난다. 회원·카드 속성이 필요하면 회원일련번호+카드구분키번호로 tbdaaat05를 조인한다.
+  recommended_columns:
+    기간필터: "\"기준년월\" = 'YYYYMM' 또는 BETWEEN 으로 기간 지정"
+    해외이용금액: SUM(COALESCE("금월해외일시불이용금액", 0) + COALESCE("금월해외CA이용금액", 0))
+    기업영업스코프: "\"개인기업구분코드\" = '2'"
+  rules:
+  - 해외 이용금액은 카드 월실적의 해외 일시불 이용금액과 해외 CA 이용금액을 더한 값이다.
+  - tbdaabt08의 매출금액은 가맹점이 받은 해외 매출이라 이용금액 대신 쓰지 않는다. 국가·MCC업종처럼 카드 월실적에 없는 축이 필요할 때만 해외 매출전표를 쓴다.
+  - 기업·법인 단위 해외 이용금액은 tmdaa1d12의 금월해외이용금액을 쓴다.
 column_codebooks:
 - column: 가맹점상태구분코드
   domain: 가맹점상태구분코드

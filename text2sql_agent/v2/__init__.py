@@ -39,7 +39,7 @@ from .sql_dialect_guard import (
     rewrite_postgres_casts,
 )
 from .verified_query_audit import unregistered_tables, unresolved_identifiers
-from .vq_output_guard import named_columns, vq_output_gap
+from .vq_output_guard import absolute_period_requested, named_columns, vq_output_gap
 
 __all__ = [
     "ATHENA_RULES_V2",
@@ -47,6 +47,7 @@ __all__ = [
     "OUTPUT_CONTRACT_V2",
     "PROMPT_LIST_RENDER_LIMIT",
     "AMBIGUITY_RULES_V2",
+    "absolute_period_requested",
     "audit_sql",
     "compact",
     "derive_column_synonyms",

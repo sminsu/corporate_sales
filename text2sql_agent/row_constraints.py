@@ -144,11 +144,11 @@ def outer_limit(sql: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def is_scalar_aggregate_query(sql: str) -> bool:
-    """Return whether the outer SELECT is a single aggregate result."""
+def outer_select_list(sql: str) -> str:
+    """Return the outermost SELECT projection, ignoring CTE and subquery lists."""
     statements = sqlparse.parse(str(sql or ""))
     if len(statements) != 1:
-        return False
+        return ""
     select_parts: list[str] = []
     in_select = False
     for token in statements[0].tokens:
@@ -160,7 +160,15 @@ def is_scalar_aggregate_query(sql: str) -> bool:
             break
         if in_select:
             select_parts.append(token.value)
-    select_text = "".join(select_parts).strip()
+    return "".join(select_parts).strip()
+
+
+def is_scalar_aggregate_query(sql: str) -> bool:
+    """Return whether the outer SELECT is a single aggregate result."""
+    statements = sqlparse.parse(str(sql or ""))
+    if len(statements) != 1:
+        return False
+    select_text = outer_select_list(sql)
     depth = 0
     quote = ""
     compact: list[str] = []

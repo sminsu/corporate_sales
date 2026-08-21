@@ -11881,61 +11881,68 @@ GROUP BY i.""업종대분류코드명"", i.""가맹점업종명""
 ORDER BY ""총매출금액"" DESC
 LIMIT 30",card_system.tbdaabt30|card_system.tbdaadb17,카드매출금액,,2026-08-10
 cs-golden-0453,card_usage,해외 법인카드 이용금액,easy,2026년 1월부터 7월까지 월별 해외 카드 이용금액과 건수를 보여줘,"SELECT
-  o.""기준년월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""해외매출금액"",
-  COUNT(o.""해외매출전표번호"") AS ""해외매출건수""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202601' AND '202607'
-GROUP BY o.""기준년월""
-ORDER BY o.""기준년월""",card_system.tbdaabt08,해외매출금액,,2026-08-10
+  f.""기준년월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""해외이용금액"",
+  SUM(COALESCE(f.""금월해외일시불이용건수"", 0) + COALESCE(f.""금월해외CA이용건수"", 0)) AS ""해외이용건수""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202601' AND '202607'
+GROUP BY f.""기준년월""
+ORDER BY f.""기준년월""",card_system.tmdaa3e16,카드월해외이용금액,,2026-08-10
 cs-golden-0454,card_usage,해외 법인카드 이용금액,easy,2025년 월별 해외 카드 이용금액과 건수를 보여줘,"SELECT
-  o.""기준년월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""해외매출금액"",
-  COUNT(o.""해외매출전표번호"") AS ""해외매출건수""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202501' AND '202512'
-GROUP BY o.""기준년월""
-ORDER BY o.""기준년월""",card_system.tbdaabt08,해외매출금액,,2026-08-10
+  f.""기준년월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""해외이용금액"",
+  SUM(COALESCE(f.""금월해외일시불이용건수"", 0) + COALESCE(f.""금월해외CA이용건수"", 0)) AS ""해외이용건수""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202501' AND '202512'
+GROUP BY f.""기준년월""
+ORDER BY f.""기준년월""",card_system.tmdaa3e16,카드월해외이용금액,,2026-08-10
 cs-golden-0455,card_usage,해외 법인카드 이용금액,easy,2026년 상반기 월별 해외 카드 이용금액과 건수를 보여줘,"SELECT
-  o.""기준년월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""해외매출금액"",
-  COUNT(o.""해외매출전표번호"") AS ""해외매출건수""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202601' AND '202606'
-GROUP BY o.""기준년월""
-ORDER BY o.""기준년월""",card_system.tbdaabt08,해외매출금액,,2026-08-10
+  f.""기준년월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""해외이용금액"",
+  SUM(COALESCE(f.""금월해외일시불이용건수"", 0) + COALESCE(f.""금월해외CA이용건수"", 0)) AS ""해외이용건수""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202601' AND '202606'
+GROUP BY f.""기준년월""
+ORDER BY f.""기준년월""",card_system.tmdaa3e16,카드월해외이용금액,,2026-08-10
 cs-golden-0456,card_usage,해외 법인카드 이용금액,easy,2025년 하반기 월별 해외 카드 이용금액과 건수를 보여줘,"SELECT
-  o.""기준년월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""해외매출금액"",
-  COUNT(o.""해외매출전표번호"") AS ""해외매출건수""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202507' AND '202512'
-GROUP BY o.""기준년월""
-ORDER BY o.""기준년월""",card_system.tbdaabt08,해외매출금액,,2026-08-10
+  f.""기준년월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""해외이용금액"",
+  SUM(COALESCE(f.""금월해외일시불이용건수"", 0) + COALESCE(f.""금월해외CA이용건수"", 0)) AS ""해외이용건수""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202507' AND '202512'
+GROUP BY f.""기준년월""
+ORDER BY f.""기준년월""",card_system.tmdaa3e16,카드월해외이용금액,,2026-08-10
 cs-golden-0457,card_usage,해외 최다 이용 월,medium,2026년 1월부터 7월까지 해외 업종에서 가장 많이 사용한 달과 이용금액을 알려줘,"SELECT
-  o.""기준년월"" AS ""최다이용월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""이용금액""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202601' AND '202607'
-GROUP BY o.""기준년월""
+  f.""기준년월"" AS ""최다이용월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""이용금액""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202601' AND '202607'
+GROUP BY f.""기준년월""
 ORDER BY ""이용금액"" DESC, ""최다이용월""
-LIMIT 1",card_system.tbdaabt08,해외매출금액,overseas_peak_month_usage,2026-08-10
+LIMIT 1",card_system.tmdaa3e16,카드월해외이용금액,overseas_peak_month_usage,2026-08-10
 cs-golden-0458,card_usage,해외 최다 이용 월,medium,2025년 해외 업종에서 가장 많이 사용한 달과 이용금액을 알려줘,"SELECT
-  o.""기준년월"" AS ""최다이용월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""이용금액""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202501' AND '202512'
-GROUP BY o.""기준년월""
+  f.""기준년월"" AS ""최다이용월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""이용금액""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202501' AND '202512'
+GROUP BY f.""기준년월""
 ORDER BY ""이용금액"" DESC, ""최다이용월""
-LIMIT 1",card_system.tbdaabt08,해외매출금액,overseas_peak_month_usage,2026-08-10
+LIMIT 1",card_system.tmdaa3e16,카드월해외이용금액,overseas_peak_month_usage,2026-08-10
 cs-golden-0459,card_usage,해외 최다 이용 월,medium,2026년 상반기 해외 업종에서 가장 많이 사용한 달과 이용금액을 알려줘,"SELECT
-  o.""기준년월"" AS ""최다이용월"",
-  SUM(COALESCE(o.""매출금액"", 0)) AS ""이용금액""
-FROM card_system.tbdaabt08 o
-WHERE o.""기준년월"" BETWEEN '202601' AND '202606'
-GROUP BY o.""기준년월""
+  f.""기준년월"" AS ""최다이용월"",
+  SUM(COALESCE(f.""금월해외일시불이용금액"", 0) + COALESCE(f.""금월해외CA이용금액"", 0)) AS ""이용금액""
+FROM card_system.tmdaa3e16 f
+WHERE f.""개인기업구분코드"" = '2'
+  AND f.""기준년월"" BETWEEN '202601' AND '202606'
+GROUP BY f.""기준년월""
 ORDER BY ""이용금액"" DESC, ""최다이용월""
-LIMIT 1",card_system.tbdaabt08,해외매출금액,overseas_peak_month_usage,2026-08-10
+LIMIT 1",card_system.tmdaa3e16,카드월해외이용금액,overseas_peak_month_usage,2026-08-10
 cs-golden-0460,card_usage,해외 국가별 이용금액,medium,2026년 1월부터 7월까지 해외 카드 이용금액을 국가별 상위 10개로 보여줘,"SELECT
   o.""국가코드"",
   SUM(COALESCE(o.""매출금액"", 0)) AS ""해외매출금액"",
