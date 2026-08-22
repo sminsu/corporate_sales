@@ -110,6 +110,10 @@ from .v2.vq_output_guard import (
 # v2: 2048 토큰에서는 CTE 여러 개를 쓰는 질의가 문장 중간에서 끊겼다.
 SQL_GENERATION_MAX_TOKENS = 4096
 
+# SQL 생성 재시도 한도. validate_sql/run_query 의 실패가 이 횟수에 닿으면 더 고칠
+# 기회가 없으므로 handle_error 로 끝낸다.
+SQL_RETRY_LIMIT = 3
+
 # ---------------------------------------------------------------------------
 # 9. 그래프 노드
 # ---------------------------------------------------------------------------
@@ -6827,6 +6831,12 @@ def validate_sql(state: Text2SQLState) -> dict:
     if state.get("question_type") == "direct_sql":
         return valid_result("VALID (사용자 입력 SQL 정적 검증 통과)")
 
+    # 재시도가 남지 않은 마지막 검증에서는 LLM 의미 검증을 하지 않는다. 여기서
+    # 실패로 돌려도 고칠 기회가 없어 사용자에게는 SQL 오류만 남고, 정적으로 안전한
+    # SQL 을 실행조차 못 한 채 버리게 된다. 정적 검증은 위에서 이미 끝났다.
+    if state.get("retry_count", 0) >= SQL_RETRY_LIMIT - 1:
+        return valid_result("VALID (정적 검증 통과, 마지막 시도라 LLM 의미 검증 생략)")
+
     validation_prompt = f"""SQL 검증 전문가로서, 아래 SQL이 사용자 질문에 정확히 답하는지 검증하세요.
 
 사용자 질문: {question}
@@ -7275,14 +7285,14 @@ def after_validate(state: Text2SQLState) -> Literal["run_query", "generate_sql",
         return "run_query"
     if state.get("question_type") == "direct_sql":
         return "handle_error"
-    return "handle_error" if state.get("retry_count", 0) >= 3 else "generate_sql"
+    return "handle_error" if state.get("retry_count", 0) >= SQL_RETRY_LIMIT else "generate_sql"
 
 
 def after_query(state: Text2SQLState) -> Literal["generate_answer", "generate_sql", "handle_error"]:
     if state.get("query_error"):
         if state.get("question_type") == "direct_sql":
             return "handle_error"
-        return "handle_error" if state.get("retry_count", 0) >= 3 else "generate_sql"
+        return "handle_error" if state.get("retry_count", 0) >= SQL_RETRY_LIMIT else "generate_sql"
     return "generate_answer"
 
 
