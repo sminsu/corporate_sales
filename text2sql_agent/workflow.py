@@ -55,6 +55,7 @@ from .schema import (
     _extract_cte_names,
     _extract_schema_tables,
     _entry_matches_domain,
+    _is_restricted_column,
     _sql_table_names,
     _validate_sql_against_schema,
     _weighted_domain_scores,
@@ -81,6 +82,7 @@ from .time_policy import (
     format_accumulation_policy,
     kst_today,
     live_source_for,
+    load_axis_window_ymd,
     previous_day_ymd,
     recent_window_ymd,
 )
@@ -1109,6 +1111,15 @@ def _implicit_time_basis_note(question: str, sql: str) -> str:
     _, _, explicit_day = _extract_period_by_rule(question)
     if cadence == "master" and _TBDAADT01_TABLE in used_tables:
         return _merchant_master_period_note(requested_start, requested_end)
+    # "이번 달"·"최근" 을 마스터로 답했으면 그 기준을 답변에 드러낸다. 이 안내가 없으면
+    # 검증 LLM 이 "질문은 이번 달인데 SQL 에 그 달 조건이 없다" 로 읽어 되돌려보낸다.
+    relative_ym, _ = _relative_month_target(question)
+    if (
+        relative_ym == _current_ym()
+        and _TBDAADT01_TABLE in used_tables
+        and _reads_only_master_tables(sql_text)
+    ):
+        return _merchant_master_period_note(relative_ym, relative_ym)
     if cadence == "monthly" and explicit_day and "tmdaa5d01" in used_tables:
         return (
             f"요청일 {explicit_day}은 tbdaadt01의 최근 10일 보관 범위 밖이므로 "
@@ -1547,6 +1558,64 @@ def _strip_presentation_prefix(question: str) -> str:
         text = stripped
 
 
+# 이름 자리 앞에는 시점·기준 표현이 겹쳐 붙는다("현재 기준 가맹점 신용판매 매출금액").
+# 한 번만 벗기면 "현재" 뒤의 "기준" 이 이름에 남아 LIKE 필터로 들어갔다.
+_NAME_PREFIX_NOISE_RE = re.compile(
+    r"^(?:내가|우리|KB국민|기준|현재|오늘|지금|최신|요즘|당월|금월)(?:으로|로|에)?(?:\s+|$)"
+)
+
+
+def _strip_name_prefix_noise(candidate: str) -> str:
+    """Peel stacked as-of words off the front of a name candidate."""
+    text = str(candidate or "").strip()
+    while True:
+        stripped = _NAME_PREFIX_NOISE_RE.sub("", text).strip()
+        if stripped == text:
+            return text
+        text = stripped
+
+
+@lru_cache(maxsize=1)
+def _declared_metric_surface_forms() -> tuple[str, ...]:
+    """Metric·attribute surface forms the semantic layer declares."""
+    forms: set[str] = set()
+    for metric in SCHEMA.get("canonical_metrics", []):
+        forms.update(
+            str(term)
+            for term in [metric.get("name"), *(metric.get("synonyms") or [])]
+            if term
+        )
+    for attribute in SCHEMA.get("semantic_attributes", []):
+        forms.update(
+            str(term)
+            for term in [attribute.get("korean_name"), *(attribute.get("aliases") or [])]
+            if term
+        )
+    return tuple(
+        form
+        for form in sorted(forms)
+        if len(re.sub(r"[^0-9A-Za-z가-힣_]", "", form)) >= 4
+    )
+
+
+def _is_declared_metric_fragment(candidate: str) -> bool:
+    """이름 자리에 남은 말이 지표 이름의 한 토막인지.
+
+    "오늘 기준 가맹점 신용판매 매출금액" 에서 기간·지표를 걷어내면 '가맹점 신용판매'
+    가 남는다. 그것은 가맹점 이름이 아니라 semantic layer 가 선언한 지표 이름의 앞
+    토막이다. 그 조각이 이름으로 잡히면 가맹점명이 required 인 계약이 authoritative
+    로 잠겨, 이번 달을 들고 있는 tbdaadt01 대신 월 실적(tmdaa5e11)으로 갔다. 실행까지
+    가면 가맹점명 LIKE '%가맹점 신용판매%' 가 붙어 0행이 나온다.
+    """
+    compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", str(candidate or "").lower())
+    if len(compact) < 2:
+        return False
+    return any(
+        compact in re.sub(r"[^0-9A-Za-z가-힣_]", "", form.lower())
+        for form in _declared_metric_surface_forms()
+    )
+
+
 def _extract_merchant_name_by_rule(question: str) -> str:
     """Extract a merchant/brand name from high-confidence question shapes.
 
@@ -1586,8 +1655,8 @@ def _extract_merchant_name_by_rule(question: str) -> str:
         if not match:
             continue
         candidate = re.sub(r"\s+", " ", match.group(1)).strip()
-        candidate = re.sub(r"^(?:내가|현재|우리|KB국민|기준)\s+", "", candidate).strip()
         candidate = re.sub(r"\s+기준$", "", candidate).strip()
+        candidate = _strip_name_prefix_noise(candidate)
         compact = re.sub(r"\s+", "", candidate)
         if (
             candidate
@@ -1595,6 +1664,7 @@ def _extract_merchant_name_by_rule(question: str) -> str:
             and len(candidate) <= 80
             and not invalid_candidate_context.search(compact)
             and not _is_grouping_axis_phrase(candidate)
+            and not _is_declared_metric_fragment(candidate)
         ):
             return candidate
 
@@ -1634,7 +1704,7 @@ def _extract_merchant_name_by_rule(question: str) -> str:
         if not match:
             continue
         candidate = re.sub(r"\s+", " ", match.group("name")).strip()
-        candidate = re.sub(r"^(?:현재|우리|KB국민)\s+", "", candidate).strip()
+        candidate = _strip_name_prefix_noise(candidate)
         candidate = re.sub(r"(?:의|에서)$", "", candidate).strip()
         compact = re.sub(r"\s+", "", candidate)
         if (
@@ -1644,6 +1714,7 @@ def _extract_merchant_name_by_rule(question: str) -> str:
             and not invalid_candidate_context.search(compact)
             and not _is_grouping_axis_phrase(candidate)
             and not presentation_prefix.search(candidate)
+            and not _is_declared_metric_fragment(candidate)
             and not re.search(r"[.!?]$", candidate)
         ):
             return candidate
@@ -1957,6 +2028,12 @@ def _validate_recent_month_semantics(question: str, sql: str) -> list[str]:
     normalized_sql = (sql or "").replace('"', "")
     if target_ym in normalized_sql:
         return []
+    # 마스터는 grain 에 시간 축이 없다(tbdaadt01 은 "가맹점번호 1건"). 이번 달의 상태는
+    # 마스터의 최신 적재분 그 자체여서, 기준년월 조건으로 바꿔 오라고 요구하면 마스터가
+    # 답할 수 있는 유일한 형태를 반려하고 재시도만 돌린다. 과거 달은 적재 정책이 월
+    # 스냅샷으로 돌려 놓으므로 여기까지 마스터로 오지 않는다.
+    if target_ym == _current_ym() and _reads_only_master_tables(sql):
+        return []
     return [
         f'"{label}"은 {_current_date_context()} 기준으로 {target_ym} 월 조건을 사용해야 합니다. '
         f"SQL에 기준년월 = '{target_ym}' 또는 SUBSTRING(기준년월일, 1, 6) = '{target_ym}' 같은 월 조건을 포함하세요. "
@@ -1974,6 +2051,9 @@ def _apply_recent_month_sql_fix(question: str, sql: str) -> str:
     if not target_ym:
         return sql
     if target_ym in (sql or ""):
+        return sql
+    # 마스터에 월 조건을 얹으면 달이 바뀐 직후(최신 적재분이 지난달인 시점) 0행이 된다.
+    if target_ym == _current_ym() and _reads_only_master_tables(sql):
         return sql
 
     fixed = sql or ""
@@ -2204,6 +2284,27 @@ def _master_only_attribute_columns() -> frozenset[str]:
     return frozenset(columns - {"가맹점번호", "기업고객식별자", "대표고객식별자"})
 
 
+# "이번주 실적 기준" · "이번달 실적 기준" 은 적재 축(실적기준년월일)의 일자를 좁혀
+# 달라는 말이다. 주는 월 스냅샷에 없는 단위이고 이번 달은 아직 월 스냅샷에 적재되지
+# 않았으므로, 둘 다 마스터에서 일자로 자른다(사용자 제공).
+_THIS_WEEK_RE = re.compile(r"이번\s*주|금주")
+# 금월이용합계금액 같은 컬럼 이름에 걸리지 않도록 "금월" 은 넣지 않는다.
+_THIS_MONTH_RE = re.compile(r"이번\s*(?:달|월)|당월")
+_LOAD_AXIS_RE = re.compile(r"실적\s*기준|실적기준년월일")
+
+
+def _merchant_load_axis_scope(question: str) -> str:
+    """Whether the question asks to bound the merchant master by its load axis."""
+    text = question or ""
+    if _THIS_WEEK_RE.search(text):
+        return "week"
+    # 이번 달은 "그 달의 상태" 를 묻는 말로도 쓰인다(가맹점 신용판매 매출금액).
+    # 적재 축을 함께 말했을 때만 일자로 자른다.
+    if _LOAD_AXIS_RE.search(text) and _THIS_MONTH_RE.search(text):
+        return "month"
+    return ""
+
+
 def _recent_merchant_time_route(question: str) -> tuple[str, str, str]:
     """Return ``(daily|monthly|master, start, end)`` for a recent merchant source."""
     start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
@@ -2213,6 +2314,10 @@ def _recent_merchant_time_route(question: str) -> tuple[str, str, str]:
             return "daily", explicit_day, explicit_day
         bounded = "master" if _merchant_master_attribute_question(question) else "monthly"
         return bounded, explicit_day[:6], explicit_day[:6]
+
+    load_axis_scope = _merchant_load_axis_scope(question)
+    if load_axis_scope:
+        return ("daily", *load_axis_window_ymd(load_axis_scope, today=kst_today()))
 
     explicit_month = bool(
         _has_historical_period_expression(question)
@@ -2291,6 +2396,34 @@ def _rewrite_tbdaadt01_time_predicates(
             )
             replacements += count
     return rewritten, replacements
+
+
+def _shallowest_table_aliases(sql: str, table_name: str) -> list[tuple[str, bool]]:
+    """Aliases the table binds in the outermost scope that reads it.
+
+    같은 테이블이 서브쿼리에도 묶여 있으면(``= (SELECT MAX("실적기준년월일") FROM t x)``)
+    그 별칭까지 바깥 WHERE 에 주입돼, 그 스코프에 없는 ``x."실적기준년월일" = '...'`` 를
+    참조하는 SQL 이 나왔다. 주입 지점은 어차피 바깥 스코프 하나다.
+    """
+    bindings = [
+        binding
+        for binding in _sql_table_bindings(sql)
+        if binding["table"] == str(table_name or "").rsplit(".", 1)[-1].lower()
+    ]
+    depths = [
+        (lambda prefix: prefix.count("(") - prefix.count(")"))(
+            re.sub(r"'[^']*'", "", (sql or "")[: binding["table_span"][0]])
+        )
+        for binding in bindings
+    ]
+    if not bindings:
+        return []
+    shallowest = min(depths)
+    return [
+        (str(binding["alias"]), bool(binding["explicit_alias"]))
+        for binding, depth in zip(bindings, depths)
+        if depth == shallowest
+    ]
 
 
 def _inject_routed_time_predicate(
@@ -2394,6 +2527,69 @@ def _restore_master_from_archive(sql: str, archive_table: str) -> str:
     return restored
 
 
+def _master_attribute_alternate_sources(question: str) -> list[str]:
+    """이 질문에 걸린 속성이 마스터 대신 가리킬 수 있는 같은 엔티티의 스냅샷.
+
+    "한신포차 가맹점주 가맹점 도로명 주소" 는 주소가 마스터에만 있어 마스터 질문으로
+    판정되는데, 함께 걸린 '가맹점 주대표자' 속성이 tbdaaus01·tmdaaus01·tmdaa5d01 을
+    같은 대표고객식별자의 원천으로 선언해 둔다. 그 목록이 프롬프트에 그대로 들어가서
+    SQL 생성이 마스터 대신 일별요약을 베껴 왔고, 주소 컬럼이 없는 테이블로 답이 나갔다.
+    """
+    candidates = semantic_attribute_candidates(SCHEMA, question, max_count=6)
+    if not any(_master_only_attribute(attribute) for attribute in candidates):
+        return []
+    alternates: set[str] = set()
+    for attribute in candidates:
+        tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+            for mapping in attribute.get("source_mappings", [])
+            if mapping.get("table")
+        }
+        if _TBDAADT01_TABLE in tables:
+            alternates.update(tables - {_TBDAADT01_TABLE})
+    return sorted(alternates)
+
+
+def _master_restore_missing_columns(sql: str, snapshot_table: str) -> list[str]:
+    """마스터에 없는데 이 SQL 이 읽는 스냅샷 전용 컬럼."""
+    _, schema_columns = _schema_table_index(SCHEMA)
+    snapshot_only = schema_columns.get(snapshot_table, set()) - schema_columns.get(
+        _TBDAADT01_TABLE, set()
+    )
+    # 시간 축은 _restore_master_from_archive 가 마스터의 축으로 바꿔 준다.
+    snapshot_only -= {"기준년월", "기준년월일"}
+    return sorted(
+        column
+        for column in snapshot_only
+        if re.search(rf'"{re.escape(column)}"', sql or "", re.IGNORECASE)
+    )
+
+
+def _restore_master_attribute_sources(question: str, sql: str) -> str:
+    """마스터에만 있는 속성을 물었는데 스냅샷으로 생성된 SQL 을 마스터로 되돌린다."""
+    if _TBDAADT01_TABLE in _extract_schema_tables(sql):
+        return sql
+    if not _merchant_master_attribute_question(question):
+        return sql
+    # 마스터로 되돌리면 스냅샷의 시간 축은 실적기준년월일이 된다. 그 값을 마스터의
+    # 적재일로 다시 쓰는 것은 시간 라우팅이 하는 일이라, 라우팅이 없는데 축에 값이
+    # 박혀 있으면 되돌린 뒤 "실적기준년월일 = '202601'" 같은 조건이 남는다.
+    cadence, _, _ = _recent_merchant_time_route(question)
+    restored = sql
+    for snapshot in _master_attribute_alternate_sources(question):
+        if snapshot not in _extract_schema_tables(restored):
+            continue
+        axis = str((accumulation_policy_for(snapshot) or {}).get("query_time_dimension") or "")
+        if not cadence and axis and _table_axis_literal_values(restored, snapshot, axis):
+            continue
+        # 스냅샷에만 있는 컬럼을 읽고 있으면 되돌릴 곳이 없다. 그대로 두고 검증이
+        # 잡게 한다 — 없는 컬럼으로 바꾸면 빈 결과가 컬럼 오류로 바뀐다.
+        if _master_restore_missing_columns(restored, snapshot):
+            continue
+        restored = _restore_master_from_archive(restored, snapshot)
+    return restored
+
+
 def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
     """Route bounded merchant-master periods to their declared physical source."""
     cadence, start, end = _tbdaadt01_time_route(question)
@@ -2436,7 +2632,7 @@ def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
         return routed
     # A generated composition may put the merchant source after JOIN and omit
     # its own period. Inject the archive predicate in the same SELECT scope.
-    for alias, explicit_alias in source_aliases:
+    for alias, explicit_alias in _shallowest_table_aliases(routed, table_name):
         qualifier = f'{alias}.' if explicit_alias else ""
         predicate = _routed_time_predicate(
             f'{qualifier}"{time_column}"', cadence, start, end
@@ -2777,7 +2973,8 @@ def _apply_accumulation_historical_sources(question: str, sql: str) -> str:
     monthly_sources = {
         table for table in _extract_schema_tables(sql) if live_source_for(table)
     }
-    routed = _apply_tbdaadt01_historical_source(question, sql)
+    routed = _restore_master_attribute_sources(question, sql)
+    routed = _apply_tbdaadt01_historical_source(question, routed)
     routed = _apply_previous_day_historical_sources(question, routed)
     return _apply_current_month_live_sources(routed, monthly_sources)
 
@@ -3704,9 +3901,20 @@ def _verified_query_matches_intent(
     # v2: 참고 SQL은 컬럼이 고정된 완제품이라 매칭되면 그대로 실행된다. 질문이
     # 이름을 댄 기간·축·지표를 못 내놓는 VQ는 어휘가 아무리 겹쳐도 답이 아니다.
     # 여기서 거부하면 LLM 생성 경로로 내려간다.
+    #
+    # 실행되는 것은 적재 정책이 다시 쓴 SQL 이다. 가맹점 마스터 템플릿은 기간 필터를
+    # 들고 있지 않지만("날짜를 말할 때만" 규칙), 과거 월 질문이면 라우팅이 월
+    # 스냅샷과 기준년월 조건을 붙여 준다. 템플릿만 보면 그 답을 거부하게 된다.
     output_gap = _v2_vq_output_gap(
         contract_question or question_text,
-        matched,
+        {
+            **matched,
+            "sql": _route_verified_query_accumulation(
+                contract_question or question_text,
+                str(matched.get("name") or ""),
+                str(matched.get("sql") or ""),
+            ),
+        },
         column_names=_schema_column_names(),
     )
     if output_gap:
@@ -4614,23 +4822,32 @@ _COVERAGE_WEIGHT = 40
 # 조인 상대다.
 _SOLE_MEASURE_OWNER_WEIGHT = 40
 
+# 원천을 한 곳만 선언한 semantic attribute 가 1순위로 걸렸을 때 그 원천에 얹는 가점.
+# 컬럼명을 그대로 부른 증거(+40)와 같은 급으로 둔다.
+_SINGLE_SOURCE_ATTRIBUTE_WEIGHT = 40
+
+# 표면형이 정확히 맞지 않고 낱말 겹침만으로 걸린 query_reference 의 1순위 테이블 가점.
+# 컬럼 두 개 겹침(min(hits,4)*3)과 같은 급이다. goldenset v3 500건에서 12 → 6 으로
+# 내리면 1순위 적중이 328 → 334 로 오르고 후보 적중은 그대로다.
+_FUZZY_REFERENCE_WEIGHT = 6
+
 
 def _is_semantic_table_visible(table: dict) -> bool:
     return str(table.get("semantic_visibility") or "default").lower() != "restricted"
 
 
-_DEFAULT_RESTRICTED_COLUMN_RE = re.compile(
-    r"(?:주민등록번호|고객고유번호|계좌번호|카드번호|이메일|전자주소|전화번호|상세주소)"
-)
-
-
 def _visible_table_columns(table: dict, section: str) -> list[dict]:
-    restricted = {str(name) for name in table.get("restricted_columns", [])}
+    """프롬프트에 실을 수 있는 컬럼.
+
+    민감 컬럼 판정은 schema._is_restricted_column 한 곳에서만 한다. 여기에 같은
+    패턴을 복사해 두었더니 사업장 주소 예외(가맹점상세주소 등)가 schema 쪽에만
+    들어가, "가맹점 도로명 주소" 질문의 프롬프트에서 주소 본문 컬럼이 통째로
+    빠졌다. 답할 컬럼이 없으니 모델은 도로명 번호 조각만 보고 답을 못 냈다.
+    """
     return [
         column
         for column in table.get(section, [])
-        if str(column.get("name") or "") not in restricted
-        and not _DEFAULT_RESTRICTED_COLUMN_RE.search(str(column.get("name") or ""))
+        if not _is_restricted_column(table, column.get("name"))
     ]
 
 
@@ -4651,6 +4868,104 @@ def _requested_period_is_open_month(question: str) -> bool:
     return bool(start_ym) and start_ym == end_ym == current_ym
 
 
+def _mask_attribute_column_names(question: str, attribute: dict) -> str:
+    """Blank out the attribute's own column names before reading a period out of them.
+
+    ``전년가맹점신용판매매출금액`` 은 가맹점기본이 들고 있는 컬럼 이름이다. 질문이
+    그 이름을 그대로 부르면 '전년' 은 기간 조건이 아니라 이름의 한 토막인데,
+    기간으로 읽혀서 "전년 가맹점 신용판매 매출금액" 질문이 이번 달을 들고 있는
+    tbdaadt01 대신 월 실적(tmdaa5e11)의 지난 달 행으로 갔다.
+    """
+    text = question or ""
+    for mapping in attribute.get("source_mappings", []):
+        names = list(mapping.get("columns") or [])
+        if mapping.get("column"):
+            names.append(mapping["column"])
+        for name in names:
+            characters = [char for char in str(name) if not char.isspace()]
+            if len(characters) < 4:
+                continue
+            text = re.sub(
+                r"\s*".join(re.escape(char) for char in characters), " ", text
+            )
+    return text
+
+
+@lru_cache(maxsize=512)
+def _question_named_columns_of(
+    question: str, table_name: str, section: str
+) -> frozenset[str]:
+    """질문이 이름이나 동의어로 부른 그 테이블의 컬럼."""
+    table = next(
+        (
+            item
+            for item in SCHEMA.get("tables", [])
+            if str(item.get("name") or "").rsplit(".", 1)[-1] == table_name
+        ),
+        None,
+    )
+    if table is None:
+        return frozenset()
+    return frozenset(
+        str(column.get("name") or "")
+        for column in _visible_table_columns(table, section)
+        if any(
+            str(term or "") not in _GENERIC_TABLE_TERMS
+            and _phrase_in_question(question, term)
+            for term in [column.get("name"), *(column.get("synonyms") or [])]
+        )
+    )
+
+
+def _question_names_measure_outside(question: str, tables: frozenset[str]) -> bool:
+    """질문이 부른 지표 컬럼을 이 테이블들이 못 갖고 있는지.
+
+    행을 세는 질의(좌수)는 지표 컬럼이 필요 없다. 반대로 질문이 어딘가의 지표 컬럼을
+    이름으로 불렀다면 그 컬럼을 든 테이블이 답할 곳이다 — "기업카드 체크카드 이용금액을
+    발급유형별로" 는 두 컬럼을 함께 든 카드 월실적(tmdaa3e16)의 질문이고, 발급유형구분코드가
+    회원카드기본에도 있다는 사실은 근거가 못 된다.
+    """
+    owned = {name for table in tables for name in _question_named_columns_of(question, table, "measures")}
+    for table in SCHEMA.get("tables", []):
+        if not _is_semantic_table_visible(table):
+            continue
+        name = str(table.get("name") or "").rsplit(".", 1)[-1]
+        if name in tables:
+            continue
+        if _question_named_columns_of(question, name, "measures") - owned:
+            return True
+    return False
+
+
+def _axis_lives_only_in(question: str, axis: list[dict], others: list[dict]) -> bool:
+    """질문의 분류축을 집계 원천은 못 갖고 있고 낟알 원천만 갖고 있는지.
+
+    기업고객 스냅샷의 유효기업신용카드수는 기업고객당 이미 더해 놓은 수다. 카드
+    등급그룹·브랜드·발급유형처럼 카드 한 장의 속성으로 쪼개는 질문은 그 축이 스냅샷에
+    아예 없어서, 조인해도 좌수가 부풀려지고 답이 나오지 않는다. 그런 축을 카드 단위
+    원천만 갖고 있으면 그 원천 하나로 답할 질문이다.
+    """
+
+    def tables(mappings: list[dict]) -> frozenset[str]:
+        return frozenset(
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in mappings
+            if mapping.get("table")
+        )
+
+    def named(names: frozenset[str]) -> set[str]:
+        return {
+            column
+            for table in names
+            for column in _question_named_columns_of(question, table, "dimensions")
+        }
+
+    axis_tables = tables(axis)
+    if not (named(axis_tables) - named(tables(others))):
+        return False
+    return not _question_names_measure_outside(question, axis_tables)
+
+
 def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
     """Choose current or historical mappings from a declarative attribute policy."""
     mappings = list(attribute.get("source_mappings", []))
@@ -4658,9 +4973,23 @@ def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
     if not isinstance(policy, dict):
         return mappings
 
+    # 시간축(현재/과거 월)과 나란한 세 번째 갈림길. 질문이 부른 축을 집계 원천이
+    # 갖고 있지 않으면 그 원천은 조인 상대도 못 된다.
+    axis_prefix = str(policy.get("axis_role_prefix") or "")
+    if axis_prefix:
+        axis = [
+            mapping
+            for mapping in mappings
+            if str(mapping.get("role") or "").startswith(axis_prefix)
+        ]
+        others = [mapping for mapping in mappings if mapping not in axis]
+        if axis and _axis_lives_only_in(question, axis, others):
+            return axis
+
     q_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
-    start_ym, end_ym, explicit_day = _extract_period_by_rule(question)
-    historical_shape = _has_historical_period_expression(question)
+    dated = _mask_attribute_column_names(question, attribute)
+    start_ym, end_ym, explicit_day = _extract_period_by_rule(dated)
+    historical_shape = _has_historical_period_expression(dated)
     has_period = bool(start_ym or end_ym or explicit_day or historical_shape)
     current_terms = [
         re.sub(r"[^0-9A-Za-z가-힣_]", "", str(term or "").lower())
@@ -4725,8 +5054,13 @@ def _attribute_source_mappings(question: str, attribute: dict) -> list[dict]:
 
 def _attribute_snapshot_exclusions(question: str) -> set[str]:
     """Return alternate snapshot tables forbidden by a matched attribute policy."""
+    # 이름이 required 인 계약은 이름 없는 질문의 근거가 못 된다. 규칙 랭킹과 VQ 선택은
+    # 이미 그 가드를 갖고 있는데 여기만 빠져 있어서, 이름 없는 "오늘 기준 가맹점 신용판매
+    # 매출금액" 이 계약 하나로 이 배제를 통째로 껐다. 그러면 이번 달을 아직 담지 못한
+    # 월 실적(tmdaa5e11)이 후보에 그대로 남는다.
     if any(
         str(contract.get("table_selection_mode") or "").lower() == "authoritative"
+        and _contract_entity_bindings_available(question, contract)
         for contract in semantic_query_contract_candidates(SCHEMA, question, max_count=2)
     ):
         return set()
@@ -4734,12 +5068,20 @@ def _attribute_snapshot_exclusions(question: str) -> set[str]:
     preferred_tables: set[str] = set()
     alternate_tables: set[str] = set()
     for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
-        if not isinstance(attribute.get("source_selection"), dict):
+        policy = attribute.get("source_selection")
+        if not isinstance(policy, dict):
             continue
+        # 축 원천은 스냅샷의 대안이 아니라 다른 낟알이다. 일/월 스냅샷처럼 서로를
+        # 배제하는 짝이 아니므로, 축 규칙이 걸리지 않았다고 해서 후보에서 빼지 않는다.
+        # 빼면 "기업카드 좌수" 처럼 축 없는 질문에서 카드 마스터가 사라진다.
+        axis_prefix = str(policy.get("axis_role_prefix") or "")
         all_tables = {
             str(mapping.get("table") or "").rsplit(".", 1)[-1]
             for mapping in attribute.get("source_mappings", [])
             if mapping.get("table")
+            and not (
+                axis_prefix and str(mapping.get("role") or "").startswith(axis_prefix)
+            )
         }
         selected_tables = {
             str(mapping.get("table") or "").rsplit(".", 1)[-1]
@@ -4951,7 +5293,17 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         semantic_attribute_candidates(SCHEMA, question, max_count=6)
     ):
         attribute_score = 36 if position == 0 else max(3, 18 - position * 3)
-        for mapping in _attribute_source_mappings(question, attribute):
+        mappings = _attribute_source_mappings(question, attribute)
+        # 원천을 한 곳만 선언한 속성은 "이 값은 거기서만 읽는다" 는 선언이다. 다른
+        # 테이블이 같은 값을 제 이름으로 복사해 두고 있으면(전표의 가맹점우편번호),
+        # 질문이 컬럼명을 그대로 불렀다는 가점(+40)이 사본 쪽에 붙어 선언을 이긴다.
+        if position == 0 and len({
+            str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            for mapping in mappings
+            if mapping.get("table")
+        }) == 1:
+            attribute_score += _SINGLE_SOURCE_ATTRIBUTE_WEIGHT
+        for mapping in mappings:
             add(mapping.get("table"), attribute_score)
 
     for contract in matched_contracts:
@@ -5024,13 +5376,21 @@ def _rule_rank_tables(question: str, max_tables: int = 4) -> list[str]:
         # The workbook reference questions are curated, high-confidence intent
         # anchors.  When one of their normalized phrases is present, keep its
         # required tables ahead of broad metric/table-name hits such as "회원".
-        primary_weight = 120 + best_score if exact_matches else 12 + best_score
+        #
+        # 표면형이 하나도 정확히 맞지 않은 참조는 "매출"·"조회"처럼 어디에나 있는 낱말
+        # 두 개로도 문턱(2점)을 넘는다. 그 12점이 질문의 컬럼을 실제로 가진 테이블
+        # (겹침 3점)을 눌러서, "해외가맹점매출건수" 가 그 컬럼을 가진 tmdaa5e11 옆에
+        # 전표·가맹점 월스냅샷을 끌고 왔다. 정확히 맞은 표면형이 없는 참조는 컬럼 두 개
+        # 겹침(6점)과 같은 급까지만 올린다 — 이기지 못하고 같이 남는다.
+        primary_weight = 120 + best_score if exact_matches else _FUZZY_REFERENCE_WEIGHT + best_score
         join_weight = 100 + min(best_score, 12) if exact_matches else 4 + min(best_score, 4)
-        add(best_ref.get("primary_table"), primary_weight)
-        for table_name in best_ref.get("join_tables", []):
-            add(table_name, join_weight)
-        for table_name in reference_routed_sources:
-            add(table_name, join_weight)
+        weighted_tables = [
+            (best_ref.get("primary_table"), primary_weight),
+            *((name, join_weight) for name in best_ref.get("join_tables", [])),
+            *((name, join_weight) for name in reference_routed_sources),
+        ]
+        for table_name, weight in weighted_tables:
+            add(table_name, weight)
 
     matched_columns: dict[str, set[str]] = {}
     measure_specificity: dict[str, int] = {}
@@ -5272,6 +5632,24 @@ def _column_evidence(question: str, table_names: list[str]) -> str:
     return " ".join(str(item or "") for item in evidence)
 
 
+def _matched_attribute_columns(
+    question: str, table_names: list[str]
+) -> dict[str, frozenset[str]]:
+    """질문에 걸린 semantic attribute 가 원천으로 선언한 테이블별 컬럼."""
+    wanted = {str(name or "").rsplit(".", 1)[-1] for name in table_names}
+    columns: dict[str, set[str]] = {}
+    for attribute in semantic_attribute_candidates(SCHEMA, question, max_count=6):
+        for mapping in _attribute_source_mappings(question, attribute):
+            table = str(mapping.get("table") or "").rsplit(".", 1)[-1]
+            if table not in wanted:
+                continue
+            names = list(mapping.get("columns") or [])
+            if mapping.get("column"):
+                names.append(mapping["column"])
+            columns.setdefault(table, set()).update(str(value) for value in names)
+    return {table: frozenset(values) for table, values in columns.items()}
+
+
 def _table_details(
     table_names: list[str],
     question: str = "",
@@ -5295,6 +5673,7 @@ def _table_details(
     selected_names = [str(table.get("name") or "") for table in selected_tables]
     evidence = _column_evidence(question, selected_names)
     evidence_lower = evidence.lower()
+    attribute_columns = _matched_attribute_columns(question, selected_names)
     question_compact = re.sub(r"[^0-9A-Za-z가-힣_]", "", (question or "").lower())
     q_tokens = {
         token.lower()
@@ -5374,6 +5753,13 @@ def _table_details(
                     score += 35 if _has_time_expression(question) else 18
                 terms = [name, *column.get("synonyms", [])]
                 if any(_phrase_in_question(question, term) for term in terms):
+                    score += 70
+                # 속성이 "이 값은 이 컬럼에서 읽는다" 고 선언한 컬럼. 질문이 이름을 댄
+                # 것과 같은 급의 증거다. 이름이 근거 문장에 스치는 것(+45)으로는
+                # 예산을 못 넘겼다 — "가맹점 수수료가 가장 높은 가맹점" 에서
+                # tmdaa5e11 의 가맹점수입수수료가 12칸 밖으로 밀려, 모델이 쓸 수 있는
+                # 컬럼 중에 정답이 없었다.
+                if name in attribute_columns.get(str(table.get("name") or ""), ()):
                     score += 70
                 if name and name.lower() in evidence_lower:
                     score += 45
@@ -5691,6 +6077,29 @@ def _multiturn_sql_context(state: Text2SQLState | dict) -> str:
     )
 
 
+def _prompt_source_tables(selected_tables: list[str]) -> list[str]:
+    """고른 테이블과 그 적재 짝. SQL 생성 근거를 이 범위로 좁힐 때 쓴다.
+
+    프롬프트의 지표·reference 는 질문의 낱말로 검색된다. "가맹점주" 하나에
+    브랜드가맹점주수(tbdaaus01)와 폐업 가맹점 reference 가 딸려 오고, 과거 월이면
+    시간 라우팅이 그것을 tmdaaus01 로 바꿔 완제품 SQL 로 만들어 준다. 정작 답은
+    가맹점기본의 가맹점상세주소 한 컬럼이면 끝나는 질문인데도 그랬다.
+
+    짝을 함께 넣는 이유는 프롬프트 문구가 이미 그 짝으로 치환되기 때문이다
+    (_route_merchant_time_context). 마스터를 골랐으면 월 스냅샷 근거도 같은 답을 가리킨다.
+    """
+    allowed = {
+        str(name).rsplit(".", 1)[-1].lower() for name in selected_tables or [] if name
+    }
+    for name in list(allowed):
+        policy = accumulation_policy_for(name) or {}
+        for key in ("historical_source", "live_source"):
+            pair = policy.get(key)
+            if isinstance(pair, dict) and pair.get("table"):
+                allowed.add(str(pair["table"]).rsplit(".", 1)[-1].lower())
+    return sorted(allowed)
+
+
 def generate_sql(state: Text2SQLState) -> dict:
     question = state["question"]
     retrieval_question = _retrieval_question(state)
@@ -5699,13 +6108,24 @@ def generate_sql(state: Text2SQLState) -> dict:
     validation_result = state.get("validation_result", "")
     selected_domain = state.get("selected_domain", "")
     selected_tables = state.get("selected_tables", [])
+    prompt_sources = _prompt_source_tables(selected_tables)
     relevant_queries = _route_merchant_time_context(
         retrieval_question,
-        find_relevant_queries(SCHEMA, retrieval_question, domain_name=selected_domain),
+        find_relevant_queries(
+            SCHEMA,
+            retrieval_question,
+            domain_name=selected_domain,
+            table_names=prompt_sources,
+        ),
     )
     relevant_references = _route_merchant_time_context(
         retrieval_question,
-        find_relevant_references(SCHEMA, retrieval_question, domain_name=selected_domain),
+        find_relevant_references(
+            SCHEMA,
+            retrieval_question,
+            domain_name=selected_domain,
+            table_names=prompt_sources,
+        ),
     )
     relevant_semantic_contracts = _route_merchant_time_context(
         retrieval_question,
@@ -5717,7 +6137,9 @@ def generate_sql(state: Text2SQLState) -> dict:
     )
     relevant_metrics = _route_merchant_time_context(
         retrieval_question,
-        build_metrics_summary(SCHEMA, retrieval_question, selected_domain),
+        build_metrics_summary(
+            SCHEMA, retrieval_question, selected_domain, table_names=prompt_sources
+        ),
     )
     domain_context = state.get("domain_context") or build_domain_context(SCHEMA, selected_domain)
     domain_trace = state.get("domain_routing_trace", "")
@@ -5765,7 +6187,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 {relevant_metrics}
 
 ## 재사용 가능한 Semantic Attribute
-{build_semantic_attributes_summary(SCHEMA, retrieval_question, selected_domain)}
+{build_semantic_attributes_summary(SCHEMA, retrieval_question, selected_domain, table_names=selected_tables)}
 
 ## 재사용 가능한 Semantic Query Contract
 {relevant_semantic_contracts}
@@ -6150,6 +6572,12 @@ def _is_master_table(table_name: str) -> bool:
         if str(table.get("name") or "").lower() == str(table_name or "").lower():
             return str(table.get("table_kind") or "") in _MASTER_TABLE_KINDS
     return False
+
+
+def _reads_only_master_tables(sql: str) -> bool:
+    """Whether every schema table the SQL reads is a time-axis-free master."""
+    used_tables = _extract_schema_tables(sql)
+    return bool(used_tables) and all(_is_master_table(table) for table in used_tables)
 
 
 def _availability_policy_issues(

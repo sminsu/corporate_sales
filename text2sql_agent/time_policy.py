@@ -97,6 +97,9 @@ TABLE_ACCUMULATION_POLICIES: dict[str, dict[str, object]] = {
         "cadence": "daily",
         "query_time_dimension": "실적기준년월일",
         "format": "YYYYMMDD",
+        # 마스터는 가맹점번호 1건이 grain 이다. 질문이 날짜를 말하지 않으면 실적기준
+        # 년월일을 조건으로 걸지 않는다. 걸면 사용자가 묻지 않은 범위가 답에 섞인다.
+        "filter_when_dated_only": True,
         "historical_source": {
             "table": "tmdaa5d01",
             "query_time_dimension": "기준년월",
@@ -213,6 +216,22 @@ def recent_window_ymd(days: int = 10, today: date | None = None) -> tuple[str, s
     )
 
 
+def load_axis_window_ymd(scope: str, today: date | None = None) -> tuple[str, str]:
+    """Return inclusive YYYYMMDD bounds for "이번 주"/"이번 달" on a load axis.
+
+    적재 축(실적기준년월일)을 주·달로 좁혀 달라는 질문은 월 스냅샷으로 돌릴 수 없다.
+    주는 월 스냅샷에 없는 단위이고, 이번 달은 달이 닫혀야 적재되기 때문이다.
+    """
+    business_date = today or kst_today()
+    if scope == "week":
+        start = business_date - timedelta(days=business_date.weekday())
+    elif scope == "month":
+        start = business_date.replace(day=1)
+    else:
+        raise ValueError(f"알 수 없는 적재 축 범위: {scope}")
+    return start.strftime("%Y%m%d"), business_date.strftime("%Y%m%d")
+
+
 def format_accumulation_policy(policy: Mapping[str, object] | None) -> str:
     """Render a compact Korean summary for catalogs and SQL prompts."""
     if not policy:
@@ -228,6 +247,8 @@ def format_accumulation_policy(policy: Mapping[str, object] | None) -> str:
     parts = [cycle, f"기간 컬럼 {column}({period_format})"]
     if policy.get("available_days"):
         parts.append(f"최근 {policy['available_days']}일만 조회 가능")
+    if policy.get("filter_when_dated_only"):
+        parts.append(f"질문이 날짜를 말할 때만 {column} 조건")
     historical_source = policy.get("historical_source")
     if isinstance(historical_source, Mapping):
         parts.append(

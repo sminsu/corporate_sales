@@ -294,7 +294,13 @@ def test_generic_measure_synonym_does_not_win_the_sole_owner_bonus() -> None:
 
     표면형 구체성으로 가리지 않으면 tbdaabt30·tbdaabt08·tmdaa3e16 세 곳이 묶여
     가점이 아무에게도 안 가고, 속성 원천이 그대로 1순위를 지킨다.
+
+    전표는 이제 후보에서 아예 빠지기도 한다(10-6에서 tbdaabt30 의 테이블 동의어
+    "이용금액" 을 카드 월실적 컬럼으로 옮겼다). 할부 컬럼이 없는 테이블이므로
+    빠지는 쪽이 더 맞다. 앞서기만 하면 되는 조건으로 적는다.
     """
     ranked = workflow._rule_rank_tables("기업카드 할부 이용금액은?")
 
-    assert ranked.index("tmdaa3e16") < ranked.index("tbdaabt30")
+    assert ranked[0] == "tmdaa3e16", ranked
+    if "tbdaabt30" in ranked:
+        assert ranked.index("tmdaa3e16") < ranked.index("tbdaabt30")

@@ -15,7 +15,7 @@ from text2sql_agent.v2.sql_dialect_guard import audit_sql
 from text2sql_agent.v2.verified_query_audit import unregistered_tables, unresolved_identifiers
 from scripts.v2_build.build_verified_queries_v2 import (
     HISTORICAL_CORPORATE_MONTH_QUERIES,
-    RECENT_TEN_DAY_MERCHANT_QUERIES,
+    MERCHANT_MASTER_QUERIES,
     apply_fixes,
 )
 
@@ -108,14 +108,18 @@ def test_unregistered_table_references_are_known(v2_queries: list[dict]) -> None
     }, f"미등록 테이블 목록이 바뀌었다: {sorted(referenced)}"
 
 
-def test_current_merchant_queries_keep_the_recent_ten_day_window(v2_queries: list[dict]) -> None:
+def test_merchant_master_queries_do_not_bound_their_load_window(v2_queries: list[dict]) -> None:
+    """마스터는 가맹점번호 1건이 grain 이다. 묻지 않은 기간을 답에 섞지 않는다.
+
+    v2 초기에는 이 넷에 최근 10일 실적기준년월일 창을 얹었다. 질문이 날짜를 말하면
+    실행 직전에 _apply_tbdaadt01_historical_source 가 그 날짜로 조건을 넣는다.
+    """
     by_name = {query["name"]: query for query in v2_queries}
 
-    for name in RECENT_TEN_DAY_MERCHANT_QUERIES:
+    for name in MERCHANT_MASTER_QUERIES:
         sql = by_name[name]["sql"]
-        assert 'm."실적기준년월일" BETWEEN' in sql
-        assert "DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul')" in sql
-        assert "DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')" in sql
+        assert "card_system.tbdaadt01" in sql
+        assert "실적기준년월일" not in sql
 
 
 def test_historical_corporate_queries_use_the_monthly_load_boundary(v2_queries: list[dict]) -> None:
