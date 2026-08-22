@@ -1391,15 +1391,12 @@ verified_queries:
   - Athena
 - name: brand_active_merchant_count
   question: 도미노 브랜드 가맹점 수 몇 개야
-  description: 가맹점 기본(tbdaadt01)의 최근 10일 실적기준일자의 가맹점명에서 브랜드 검색어를 찾아 지정된 정상 가맹점상태코드의 고유 가맹점 수를 계산합니다. 브랜드명 전용 컬럼이 필요한 월 시점 분석은 tmdaaus01을 사용합니다.
+  description: 가맹점 기본(tbdaadt01)의 가맹점명에서 브랜드 검색어를 찾아 지정된 정상 가맹점상태코드의 고유 가맹점 수를 계산합니다. 브랜드명 전용 컬럼이 필요한 월 시점 분석은 tmdaaus01을 사용합니다.
   sql: |
     SELECT
       COUNT(DISTINCT m."가맹점번호") AS "가맹점수"
     FROM card_system.tbdaadt01 m
-    WHERE m."실적기준년월일" BETWEEN
-      DATE_FORMAT(DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
-      AND DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')
-      AND LOWER(COALESCE(m."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
+    WHERE LOWER(COALESCE(m."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
       AND m."가맹점상태구분코드" = '{정상가맹점상태코드}'
   parameters:
     가맹점명:
@@ -1588,7 +1585,7 @@ verified_queries:
   - Athena
 - name: merchant_detail_by_name
   question: 마초스테이크하우스 가맹점 기본 정보를 알려줘
-  description: 가맹점 기본(tbdaadt01)의 최근 10일 실적기준일자에서 가맹점명을 검색해 식별자·사업자 정보·업종·사업주체·결제기관·수수료율·등록일을 반환합니다. 원문의 잘못된 가맹점번호식별자는 문서 컬럼 가맹점번호로 교정했습니다.
+  description: 가맹점 기본(tbdaadt01)에서 가맹점명을 검색해 식별자·사업자 정보·업종·사업주체·결제기관·수수료율·등록일을 반환합니다. 원문의 잘못된 가맹점번호식별자는 문서 컬럼 가맹점번호로 교정했습니다.
   sql: |
     SELECT
       m."가맹점번호",
@@ -1605,10 +1602,7 @@ verified_queries:
       m."체크카드가맹점수수료율",
       m."등록년월일"
     FROM card_system.tbdaadt01 m
-    WHERE m."실적기준년월일" BETWEEN
-      DATE_FORMAT(DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
-      AND DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')
-      AND LOWER(COALESCE(m."가맹점명", ''))
+    WHERE LOWER(COALESCE(m."가맹점명", ''))
       LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
       AND m."가맹점상태구분코드" = '{정상가맹점상태코드}'
     ORDER BY m."가맹점명", m."가맹점번호"
@@ -1689,10 +1683,7 @@ verified_queries:
       m."가맹점명",
       m."현금카드결제기관구분코드" AS "가맹점결제계좌"
     FROM card_system.tbdaadt01 m
-    WHERE m."실적기준년월일" BETWEEN
-      DATE_FORMAT(DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
-      AND DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')
-      AND (
+    WHERE (
       LOWER(COALESCE(m."가맹점명", ''))
         LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
       OR LOWER(COALESCE(m."한글가맹점명", ''))
@@ -1723,10 +1714,7 @@ verified_queries:
       '{결제금융기관코드}' AS "결제금융기관코드",
       COUNT(DISTINCT m."가맹점번호") AS "가맹점수"
     FROM card_system.tbdaadt01 m
-    WHERE m."실적기준년월일" BETWEEN
-      DATE_FORMAT(DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
-      AND DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')
-      AND (
+    WHERE (
       LOWER(COALESCE(m."가맹점명", ''))
         LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
       OR LOWER(COALESCE(m."한글가맹점명", ''))

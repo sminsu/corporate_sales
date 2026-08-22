@@ -4,6 +4,9 @@ xlsx 한 장은 `컬럼명` 하나의 유효값 목록이다. 같은 이름의 �
 같은 코드 도메인을 쓰므로, 여기서는 테이블이 아니라 **컬럼명 기준**으로 코드북을
 만든다. 테이블별 적용은 build_semantic_layer_v2.py 가 담당한다.
 
+xlsx 상세 정의서가 없고 대화로만 전달받은 코드 목록은 CHAT_PROVIDED_CODEBOOKS 에
+적어 두고 같은 산출물에 합친다.
+
 usage:
     python corporate_sales_fable_v2/scripts/build_column_codebooks.py \
         --source ~/Downloads/goldenset_error/0811
@@ -51,6 +54,127 @@ def _represent_code_text(dumper: yaml.Dumper, data: CodeText):
 
 
 yaml.SafeDumper.add_representer(CodeText, _represent_code_text)
+
+
+# 사용자가 대화로 준 코드 목록. xlsx 상세 정의서가 없는 컬럼이라 여기에 적어 두고
+# xlsx 산출물과 같은 모양으로 합친다. 유효기간을 모르므로 valid_from/valid_to 는 비우고
+# status 만 active 로 둔다(유효종료된 코드는 애초에 전달받지 않았다).
+#
+# 코드값 표기는 전달받은 목록의 자릿수를 그대로 쓰되, 같은 목록 안에서 자릿수가 어긋난
+# 값은 맞춘다. 가맹점해지사유구분코드는 01~99 두 자리 체계인데 '4'만 한 자리로 적혀
+# 있었다. VARCHAR 컬럼에서 '4' 와 '04' 는 다른 값이라 조용히 어긋나므로 '04' 로 쓴다.
+CHAT_PROVIDED_CODEBOOKS: list[dict] = [
+    {
+        "column": "카드소유자구분코드",
+        "source_tables": ["tmdaa3e16"],
+        "values": [
+            ("1", "개인본인"),
+            ("2", "개인가족"),
+            ("3", "기업대표"),
+            ("4", "기업개별"),
+            ("5", "기업공용"),
+        ],
+    },
+    {
+        "column": "카드매출유형구분코드",
+        "source_tables": ["tbdaabt30"],
+        "values": [
+            ("1", "일반"),
+            ("2", "할부"),
+            ("3", "현금서비스"),
+            ("4", "리볼빙"),
+            ("5", "예수금"),
+            ("6", "선급급"),
+            ("7", "현금지급(해외)"),
+            ("9", "연회비"),
+            ("A", "계좌매출환출"),
+            ("B", "법적비용"),
+            ("C", "과잉금"),
+        ],
+        "notes": [
+            "전달받은 목록에 '8' 이 없고 'C' 뒤가 끊겨 있다. D 이후 코드가 더 있으면 여기에 추가한다.",
+        ],
+    },
+    {
+        "column": "회원소속회사구분코드",
+        # 가맹점소속회사구분코드는 이름이 달라 코드북을 못 받았다. 설명이
+        # "가맹점의 소속를 관리하는 코드" 로 회원 쪽("회원소지카드의 소속사를 관리하는
+        # 코드")과 같은 소속사 축이고, 사용자가 두 컬럼 모두 '1'(당사)로 거르라고
+        # 지정했다. 같은 코드 도메인으로 선언해 '1' 의 뜻을 붙인다.
+        "applies_to_columns": ["회원소속회사구분코드", "가맹점소속회사구분코드"],
+        "source_tables": ["tbdaabt30", "tbdaabt08"],
+        "values": [
+            ("0", "비대상"),
+            ("1", "당사"),
+            ("2", "제휴사"),
+            ("3", "공동망"),
+            ("4", "해외회원(JCB포함)"),
+        ],
+    },
+    {
+        # 여부 컬럼이라 코드가 두 개뿐이지만, 0 쪽을 적어 두지 않으면 모델이
+        # 'Y'/'N' 이나 '정상' 같은 값을 지어낸다.
+        "column": "가맹점거래정지여부",
+        "source_tables": ["tbdaadt01"],
+        "values": [
+            ("0", "거래정지 아님"),
+            ("1", "거래정지"),
+        ],
+    },
+    {
+        "column": "가맹점해지사유구분코드",
+        "source_tables": ["tmdaa5e11"],
+        "values": [
+            ("01", "장기무실적"),
+            ("02", "가맹점 양도*양수"),
+            ("03", "대표자*사업자번호 변경"),
+            ("04", "기업형태*법인번호 변경"),
+            ("05", "신청서 허위기재"),
+            ("06", "휴업"),
+            ("07", "영업정지"),
+            ("08", "자진폐업"),
+            ("09", "강제폐업"),
+            ("10", "현금융통 발생"),
+            ("11", "현금융통 및 전표 대리청구 발생"),
+            ("20", "가맹점 가입 부적격"),
+            ("21", "카드거래 거절"),
+            ("22", "신청서 허위기재"),
+            ("31", "도난*분실카드 매출 다발"),
+            ("35", "손실추정 가맹점"),
+            ("36", "대표자 가입제한 대상"),
+            ("38", "가맹점 수수료 불만"),
+            ("99", "기타 해지 필요"),
+        ],
+        "notes": [
+            "05 와 22 는 라벨이 같다(신청서 허위기재). 전달받은 목록 그대로다.",
+        ],
+    },
+]
+
+CHAT_SOURCE = "chat/2026-08-21 사용자 제공 코드 목록"
+
+
+def chat_provided_books() -> dict[str, dict]:
+    """CHAT_PROVIDED_CODEBOOKS 를 xlsx 산출물과 같은 구조로 펼친다."""
+    books: dict[str, dict] = {}
+    for entry in CHAT_PROVIDED_CODEBOOKS:
+        column = entry["column"]
+        book = {
+            "column": column,
+            "domain": entry.get("domain", column),
+            "applies_to_columns": list(entry.get("applies_to_columns") or [column]),
+            "source_tables": list(entry.get("source_tables", [])),
+            "source_files": [CHAT_SOURCE],
+            "provenance": "user_provided_business_codebook",
+            "values": [
+                {"code": CodeText(code), "label": label, "status": "active"}
+                for code, label in entry["values"]
+            ],
+        }
+        if entry.get("notes"):
+            book["notes"] = list(entry["notes"])
+        books[column] = book
+    return books
 
 
 def _nfc(value: str) -> str:
@@ -152,16 +276,26 @@ def build(source_dir: Path) -> dict:
             "values": values,
         }
 
+    # xlsx 가 이미 정의한 컬럼을 대화 목록이 다시 정의하면 어느 쪽이 맞는지 알 수 없다.
+    # 조용히 한쪽을 이기게 두지 않고 세운다.
+    chat_books = chat_provided_books()
+    collision = sorted(set(chat_books) & set(codebooks))
+    if collision:
+        raise SystemExit(f"xlsx 코드북과 겹치는 대화 제공 코드북: {collision}")
+    codebooks.update(chat_books)
+
     document = {
         "column_codebooks_metadata": {
-            "generated_from": "goldenset_error/0811/*.xlsx",
+            "generated_from": "goldenset_error/0811/*.xlsx + 대화 제공 코드 목록",
             "source_file_count": len(files),
+            "chat_provided_codebook_count": len(chat_books),
             "codebook_count": len(codebooks),
             "provenance": "user_provided_business_codebook",
             "notes": [
                 "코드북은 컬럼명 기준이다. 같은 이름의 컬럼은 어느 테이블에 있어도 동일 코드 도메인으로 본다.",
                 "status=retired 는 유효종료일이 지난 코드로, 과거 기간 조회 결과 해석에만 쓰고 신규 필터로 제안하지 않는다.",
                 "applies_to_columns 에 여러 컬럼이 있으면 그 컬럼들이 같은 유효값 목록을 공유한다는 뜻이다.",
+                "source_files 가 chat/ 로 시작하면 상세 정의서 xlsx 없이 대화로 받은 목록이다. 유효기간을 모르므로 valid_from/valid_to 가 없다.",
             ],
         },
         "column_codebooks": [codebooks[name] for name in sorted(codebooks)],

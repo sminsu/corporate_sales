@@ -45,7 +45,12 @@ TABLE_FIXES: tuple[tuple[str, str, str], ...] = (
     ("merchant_risk_combined_customer_month", "tbmaisd06", "tmdaaus01"),
 )
 
-RECENT_TEN_DAY_MERCHANT_QUERIES = (
+# 가맹점 마스터(tbdaadt01)를 읽는 질의들. v2 초기에는 이 넷에 최근 10일
+# 실적기준년월일 창을 얹었는데 되돌렸다. 마스터는 가맹점번호 1건이 grain 이라
+# 창이 없어도 행이 불어나지 않고, 질문이 날짜를 말하지 않았는데 조회 범위를 좁히면
+# 묻지 않은 조건이 답에 섞인다(사용자 제공). 날짜를 말한 질문은 실행 직전에
+# _apply_tbdaadt01_historical_source 가 그 날짜로 조건을 넣는다.
+MERCHANT_MASTER_QUERIES = (
     "brand_active_merchant_count",
     "merchant_detail_by_name",
     "merchant_payment_institution_list",
@@ -73,10 +78,6 @@ PREVIOUS_DAY_MERCHANT_QUERIES = (
     "region_top_enterprise_merchants",
     "marketing_industry_card_portfolio",
 )
-
-_RECENT_TEN_DAY_FILTER = """m.\"실적기준년월일\" BETWEEN
-  DATE_FORMAT(DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
-  AND DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')"""
 
 _PREVIOUS_DAY_EXPRESSION = (
     "DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')"
@@ -187,19 +188,6 @@ def _keep_current_corporate_snapshot(query: dict) -> None:
     query["sql"] = sql
 
 
-def _add_recent_merchant_window(query: dict) -> None:
-    sql = str(query.get("sql") or "")
-    if 'm."실적기준년월일" BETWEEN' not in sql:
-        marker = "FROM card_system.tbdaadt01 m\nWHERE "
-        if marker not in sql:
-            raise SystemExit(f"{query.get('name')}: tbdaadt01 WHERE 절을 찾지 못했다")
-        sql = sql.replace(marker, f"FROM card_system.tbdaadt01 m\nWHERE {_RECENT_TEN_DAY_FILTER}\n  AND ", 1)
-    query["sql"] = sql
-    description = str(query.get("description") or "")
-    if "최근 10일" not in description:
-        query["description"] = description.replace("가맹점 기본(tbdaadt01)", "가맹점 기본(tbdaadt01)의 최근 10일 실적기준일자")
-
-
 def _apply_previous_day_merchant_fix(query: dict) -> None:
     name = str(query.get("name") or "")
     sql = str(query.get("sql") or "")
@@ -298,9 +286,10 @@ def apply_fixes(document: dict) -> dict:
             query["sql"] = rewritten
             stats["casts_fixed"].append(str(query.get("name")))
 
-    for name in RECENT_TEN_DAY_MERCHANT_QUERIES:
-        _add_recent_merchant_window(_query(by_name, name))
-        stats["cadence_fixed"].append(f"{name}: tbdaadt01 최근 10일")
+    for name in MERCHANT_MASTER_QUERIES:
+        sql = str(_query(by_name, name).get("sql") or "")
+        if "실적기준년월일" in sql:
+            raise SystemExit(f"{name}: 가맹점 마스터에 적재 창 조건이 다시 들어왔다")
 
     for name in HISTORICAL_CORPORATE_MONTH_QUERIES:
         _route_historical_corporate_query(_query(by_name, name))

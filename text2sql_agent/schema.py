@@ -209,6 +209,7 @@ def build_metrics_summary(
     question: str = "",
     domain_name: str = "",
     max_count: int = 8,
+    table_names: list[str] | None = None,
 ) -> str:
     """Return a bounded, canonical metric context.
 
@@ -254,6 +255,18 @@ def build_metrics_summary(
                 scored.append((exact, overlap, -position, metric))
         scored.sort(reverse=True, key=lambda item: item[:3])
         metrics = [metric for _, _, _, metric in scored]
+
+    # 고른 테이블에서 계산할 수 없는 지표는 SQL 생성 근거가 못 된다. "가맹점주" 라는
+    # 낱말 하나로 브랜드가맹점주수(tbdaaus01)가 올라와, 마스터만 보면 되는 질문에
+    # 스냅샷 레시피를 통째로 쥐여 주고 있었다.
+    if table_names:
+        allowed = {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        metrics = [
+            metric
+            for metric in metrics
+            if not metric.get("source_table")
+            or _normalized_table_name(metric.get("source_table")) in allowed
+        ]
 
     metrics = metrics[: max(0, max_count)]
     if not metrics:
@@ -652,8 +665,15 @@ def build_semantic_attributes_summary(
     question: str = "",
     domain_name: str = "",
     max_count: int = 6,
+    table_names: list[str] | None = None,
 ) -> str:
-    """Render a bounded question-specific semantic attribute context."""
+    """Render a bounded question-specific semantic attribute context.
+
+    ``table_names`` 를 주면 그 테이블에 있는 원천만 적는다. SQL 생성 단계는 이미
+    고른 테이블로만 쓸 수 있는데, 속성이 같은 컬럼을 가진 다른 테이블까지 나열하면
+    (가맹점 주대표자 → tbdaadt01·tbdaaus01·tmdaa5d01·tmdaaus01) 그중 하나를 베껴
+    와서, 가맹점 도로명 주소처럼 마스터에만 있는 답이 엉뚱한 스냅샷에서 나온다.
+    """
     if question:
         attributes = semantic_attribute_candidates(
             schema,
@@ -682,6 +702,11 @@ def build_semantic_attributes_summary(
     if not attributes:
         return "(질문과 직접 관련된 semantic attribute 없음)"
 
+    allowed_tables = (
+        {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        if table_names
+        else None
+    )
     lines = []
     for attribute in attributes:
         name = attribute.get("korean_name") or attribute.get("name") or ""
@@ -710,6 +735,13 @@ def build_semantic_attributes_summary(
                 + json.dumps(attribute.get("source_selection"), ensure_ascii=False)
             )
         mappings = attribute.get("source_mappings", [])
+        if allowed_tables is not None:
+            mappings = [
+                mapping
+                for mapping in mappings
+                if str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+                in allowed_tables
+            ]
         if mappings:
             lines.append("  source_mappings:")
             for mapping in mappings[:8]:
@@ -1011,10 +1043,19 @@ def find_relevant_references(
     question: str,
     max_count: int = 2,
     domain_name: str = "",
+    table_names: list[str] | None = None,
 ) -> str:
     refs = schema.get("query_references", [])
     if not refs:
         return "(관련 reference 없음)"
+    # 레시피가 사는 집(primary_table)이 고른 테이블이 아니면 그 레시피는 쓸 수 없다.
+    # 폐업 가맹점 수 reference(tbdaaus01)가 "가맹점주"·브랜드명만 겹쳐 올라와,
+    # 과거 월 라우팅에 tmdaaus01 로 바뀐 완제품 SQL 이 프롬프트에 실렸다.
+    allowed_tables = (
+        {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        if table_names
+        else None
+    )
     scored = []
     q_compact = _compact_text(question)
     for position, ref in enumerate(refs):
@@ -1024,6 +1065,12 @@ def find_relevant_references(
         }
         ref_tables.discard("")
         if not _entry_matches_domain(schema, ref, domain_name, ref_tables):
+            continue
+        if (
+            allowed_tables is not None
+            and ref.get("primary_table")
+            and _normalized_table_name(ref.get("primary_table")) not in allowed_tables
+        ):
             continue
         exact_length = 0
         for phrase in ref.get("when_user_says", []):
@@ -1066,14 +1113,25 @@ def find_relevant_queries(
     question: str,
     max_count: int = 1,
     domain_name: str = "",
+    table_names: list[str] | None = None,
 ) -> str:
     vqs = schema.get("verified_queries", [])
+    # 아래 주석대로 이 예시는 거의 그대로 복사된다. 고른 테이블을 하나도 읽지 않는
+    # 예시는 복사될수록 답에서 멀어진다("가맹점주" 하나로 올라온 가맹점주수 SQL).
+    allowed_tables = (
+        {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        if table_names
+        else None
+    )
     scored = []
     q_compact = _compact_text(question)
     for position, vq in enumerate(vqs):
         if str(vq.get("runtime_mode") or "executable").lower() == "reference_only":
             continue
-        if not _entry_matches_domain(schema, vq, domain_name, _sql_table_names(vq.get("sql", ""))):
+        vq_tables = _sql_table_names(vq.get("sql", ""))
+        if not _entry_matches_domain(schema, vq, domain_name, vq_tables):
+            continue
+        if allowed_tables is not None and vq_tables and not vq_tables & allowed_tables:
             continue
         vq_compact = _compact_text(vq.get("question"))
         exact_length = len(vq_compact) if len(vq_compact) >= 4 and vq_compact in q_compact else 0

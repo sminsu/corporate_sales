@@ -85,6 +85,13 @@ semantic_layer_metadata:
   - 가맹점월매출금액에 건수 지표와 같은 표면형(가맹점매출금액)을 동의어로 세웠다.
   - 앱구분코드에 질문 표면형 '앱' 을 동의어로 세웠다(한 글자 금지의 유일한 예외).
   - 법인카드 이용금액에 사용자 표면형을 달아 카드 월실적(tmdaa3e16)으로 돌리고, 이용 기업수를 전표(tbdaabt30) 기업고객식별자를 세는 지표·용어로 신설했다.
+  - 가맹점 우편번호를 주소 속성의 별칭으로 세우고, 마스터의 접두사 없는 우편번호에 가맹점우편번호 표면형을 달아 전표 사본 대신 마스터를 보게 했다.
+  - 기업카드 좌수를 카드 속성 축으로 쪼갤 때는 회원카드기본(tbdaaat05) 한 곳에서 세도록 유효 기업카드 보유 속성에 카드 단위 원천과 축 정책을 선언했다.
+  - 해외 가맹점 매출 건수·금액을 가맹점 월실적(tmdaa5e11) 지표로 신설하고, 해외 전표·가맹점 월스냅샷에 그 사실을 주의사항으로 붙였다.
+  - 기업 매출건수의 코드 필터(카드매출유형구분코드 일반·할부·리볼빙, 회원·가맹점 소속회사 당사)를 지표 required_filters 로 못 박았다.
+  - 가맹점 수수료 금액을 tmdaa5e11 가맹점수입수수료 지표로 신설하고, 전표당 수수료와 수수료율은 그대로 두었다.
+  - 최근 3·6개월 실적은 tmdaa5e11 누적 컬럼 한 행에서 읽고 평균은 개월 수로 나누도록 질의 참조와 용어를 추가했다.
+  - 회원 마스터(tbdaaat03)의 테이블 동의어에서 낱말 '회원' 을 걷어냈다. 모집단을 가리키는 말이 테이블을 지목하지 않는다.
   - 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.
 tables:
 - name: tbdaa1d12
@@ -2166,7 +2173,7 @@ tables:
   description: "당사와 계약한 회원(카드 회원)을 관리하는 회원 마스터 테이블. 한 행은 하나의 회원일련번호를 의미한다. 유효 신용/체크카드 소지 여부와 매수, 국제브랜드카드 보유 여부, 회원/카드 거래정지 여부, 최초 신규발급·해지·만료 년월일 등 회원의 카드 보유 및 상태 이력을 집약한다. 회원 단위 카드 보유 현황 분석에 사용한다."
   grain: 회원일련번호 1건 (회원 마스터)
   primary_key: [회원일련번호]
-  synonyms: [회원, 회원마스터, 회원정보]
+  synonyms: [회원마스터, 회원정보]
   dimensions:
   - name: 회원일련번호
     data_type: VARCHAR
@@ -2833,6 +2840,14 @@ tables:
     - 소유자
     - 카드소유자 구분
     - 소유자 구분
+    value_semantics:
+      '1': 개인본인
+      '2': 개인가족
+      '3': 기업대표
+      '4': 기업개별
+      '5': 기업공용
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드소유자구분코드
   - name: 본인카드구분키번호
     data_type: VARCHAR
     description: 가족 또는 사업자/사업장카드일 경우 본인 또는 대표에 해당하는 카드구분키번호이다.
@@ -3884,6 +3899,11 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    value_semantics:
+      '0': 거래정지 아님
+      '1': 거래정지
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점거래정지여부
   - name: 카드거래정지여부
     data_type: VARCHAR
     description: 거래정지 범위구분 중 카드 제재여부를 관리
@@ -4115,6 +4135,14 @@ tables:
     - 소속회사
     - 가맹점소속회사 구분
     - 소속회사 구분
+    value_semantics:
+      '0': 비대상
+      '1': 당사
+      '2': 제휴사
+      '3': 공동망
+      '4': 해외회원(JCB포함)
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 회원소속회사구분코드
   - name: 가맹점번호
     data_type: VARCHAR
     description: KB카드와 가맹점 계약을 체결한 사업장에 부여하는 식별번호
@@ -4222,6 +4250,20 @@ tables:
     - 카드매출 유형
     - 매출유형 구분
     - 매출 유형
+    value_semantics:
+      '1': 일반
+      '2': 할부
+      '3': 현금서비스
+      '4': 리볼빙
+      '5': 예수금
+      '6': 선급급
+      '7': 현금지급(해외)
+      '9': 연회비
+      A: 계좌매출환출
+      B: 법적비용
+      C: 과잉금
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드매출유형구분코드
   - name: 매출전표종류구분코드
     data_type: VARCHAR
     description: '매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.'
@@ -4325,6 +4367,7 @@ tables:
     synonyms:
     - 매출
     - 매출액
+    - 이용금액
     - 매출 금액
     required: true
     unit: KRW
@@ -4416,6 +4459,20 @@ tables:
     - 카드매출 유형
     - 매출유형 구분
     - 매출 유형
+    value_semantics:
+      '1': 일반
+      '2': 할부
+      '3': 현금서비스
+      '4': 리볼빙
+      '5': 예수금
+      '6': 선급급
+      '7': 현금지급(해외)
+      '9': 연회비
+      A: 계좌매출환출
+      B: 법적비용
+      C: 과잉금
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드매출유형구분코드
   - name: 매출전표종류구분코드
     data_type: VARCHAR
     description: '매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.'
@@ -4563,6 +4620,14 @@ tables:
     - 소속회사
     - 회원소속회사 구분
     - 소속회사 구분
+    value_semantics:
+      '0': 비대상
+      '1': 당사
+      '2': 제휴사
+      '3': 공동망
+      '4': 해외회원(JCB포함)
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 회원소속회사구분코드
   - name: 가맹점소속회사구분코드
     data_type: VARCHAR
     description: MFX_KB카드전표입력내역의 가맹점의 소속를 관리하는 코드
@@ -4573,6 +4638,14 @@ tables:
     - 소속회사
     - 가맹점소속회사 구분
     - 소속회사 구분
+    value_semantics:
+      '0': 비대상
+      '1': 당사
+      '2': 제휴사
+      '3': 공동망
+      '4': 해외회원(JCB포함)
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 회원소속회사구분코드
   - name: 전산처리방법구분코드
     data_type: VARCHAR
     description: 매입전표의 전산처리방법을 구분하는 코드이다.
@@ -4905,6 +4978,14 @@ tables:
     - 소유자
     - 카드소유자 구분
     - 소유자 구분
+    value_semantics:
+      '1': 개인본인
+      '2': 개인가족
+      '3': 기업대표
+      '4': 기업개별
+      '5': 기업공용
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드소유자구분코드
   - name: 카드등급구분코드
     data_type: VARCHAR
     description: 신용카드의 등급을 구분하는 코드이다.
@@ -5160,6 +5241,7 @@ tables:
     synonyms:
     - 매출
     - 매출액
+    - 이용금액
     - 매출 금액
     required: true
     unit: KRW
@@ -6603,6 +6685,28 @@ tables:
     - 가맹점해지 사유
     - 해지사유 구분
     - 해지 사유
+    value_semantics:
+      '01': 장기무실적
+      '02': 가맹점 양도*양수
+      '03': 대표자*사업자번호 변경
+      '04': 기업형태*법인번호 변경
+      '05': 신청서 허위기재
+      '06': 휴업
+      '07': 영업정지
+      '08': 자진폐업
+      '09': 강제폐업
+      '10': 현금융통 발생
+      '11': 현금융통 및 전표 대리청구 발생
+      '20': 가맹점 가입 부적격
+      '21': 카드거래 거절
+      '22': 신청서 허위기재
+      '31': 도난*분실카드 매출 다발
+      '35': 손실추정 가맹점
+      '36': 대표자 가입제한 대상
+      '38': 가맹점 수수료 불만
+      '99': 기타 해지 필요
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점해지사유구분코드
   - name: 신규등록부점코드
     data_type: VARCHAR
     description: 신규등록 처리한 부점코드
@@ -6666,6 +6770,11 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    value_semantics:
+      '0': 거래정지 아님
+      '1': 거래정지
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점거래정지여부
   - name: 가맹점거래정지코드
     data_type: VARCHAR
     description: 가맹점에대한 거래정지코드 (승인요청시 가맹점 거래정지로 인해 거절되는 경우 거절내역에 사유파악을 위해 저장)
@@ -7308,6 +7417,7 @@ tables:
     cadence: daily
     query_time_dimension: 실적기준년월일
     format: YYYYMMDD
+    filter_when_dated_only: true
     historical_source:
       table: tmdaa5d01
       query_time_dimension: 기준년월
@@ -7407,6 +7517,11 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    value_semantics:
+      '0': 거래정지 아님
+      '1': 거래정지
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점거래정지여부
   - name: 기업고객식별자
     data_type: VARCHAR
     description: KB카드의 고객에게 부여하는 10자리 식별번호중 기업고객에 대한 식별번호
@@ -8421,6 +8536,14 @@ tables:
     - 소유자
     - 카드소유자 구분
     - 소유자 구분
+    value_semantics:
+      '1': 개인본인
+      '2': 개인가족
+      '3': 기업대표
+      '4': 기업개별
+      '5': 기업공용
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드소유자구분코드
   - name: 본인카드구분키번호
     data_type: VARCHAR
     description: 가족 또는 사업자/사업장카드일 경우 본인 또는 대표에 해당하는 카드구분키번호이다.
@@ -9180,6 +9303,14 @@ tables:
     - 소유자
     - 카드소유자 구분
     - 소유자 구분
+    value_semantics:
+      '1': 개인본인
+      '2': 개인가족
+      '3': 기업대표
+      '4': 기업개별
+      '5': 기업공용
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드소유자구분코드
   - name: 카드식별자
     data_type: VARCHAR
     description: KB카드에서 발급하는 카드의 카드번호를 대체하여 식별하기 위한 중복되지 않는 값
@@ -9691,6 +9822,14 @@ tables:
     - 소유자
     - 카드소유자 구분
     - 소유자 구분
+    value_semantics:
+      '1': 개인본인
+      '2': 개인가족
+      '3': 기업대표
+      '4': 기업개별
+      '5': 기업공용
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드소유자구분코드
   - name: 카드식별자
     data_type: VARCHAR
     description: 카드상품에 해당하는 카드 중 재발급, 갱신시 최종카드를 나타내는 식별자이다.
@@ -11275,6 +11414,14 @@ tables:
     - 소유자
     - 카드소유자 구분
     - 소유자 구분
+    value_semantics:
+      '1': 개인본인
+      '2': 개인가족
+      '3': 기업대표
+      '4': 기업개별
+      '5': 기업공용
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 카드소유자구분코드
   - name: 개인기업구분코드
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 개인 또는 기업을 구분하는 코드
@@ -12302,6 +12449,7 @@ tables:
     - 이용합계금액
     - 금월이용합계 금액
     - 이용합계 금액
+    - 이용금액
   - name: 금월취소이용건수
     data_type: BIGINT
     description: MFX월카드통합실적집계의 금월기준 회원의 취소처리된 이용 매출 건수
@@ -13039,6 +13187,28 @@ tables:
     - 가맹점해지 사유
     - 해지사유 구분
     - 해지 사유
+    value_semantics:
+      '01': 장기무실적
+      '02': 가맹점 양도*양수
+      '03': 대표자*사업자번호 변경
+      '04': 기업형태*법인번호 변경
+      '05': 신청서 허위기재
+      '06': 휴업
+      '07': 영업정지
+      '08': 자진폐업
+      '09': 강제폐업
+      '10': 현금융통 발생
+      '11': 현금융통 및 전표 대리청구 발생
+      '20': 가맹점 가입 부적격
+      '21': 카드거래 거절
+      '22': 신청서 허위기재
+      '31': 도난*분실카드 매출 다발
+      '35': 손실추정 가맹점
+      '36': 대표자 가입제한 대상
+      '38': 가맹점 수수료 불만
+      '99': 기타 해지 필요
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점해지사유구분코드
   - name: 신규등록부점코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의신규등록 처리한 부점코드
@@ -13102,6 +13272,11 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    value_semantics:
+      '0': 거래정지 아님
+      '1': 거래정지
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점거래정지여부
   - name: 가맹점거래정지코드
     data_type: VARCHAR
     description: MFX월가맹점정보기본시점정보의가맹점에대한 거래정지코드(승인요청시 가맹점 거래정지로 인해 거절되는 경우 거절내역에 사유파악을 위해 저장)
@@ -13947,6 +14122,11 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    value_semantics:
+      '0': 거래정지 아님
+      '1': 거래정지
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점거래정지여부
   - name: 공동망가맹점대상여부
     data_type: VARCHAR
     description: MFX월가맹점실적집계의공동망가맹점 대상인지의 여부
@@ -13989,6 +14169,28 @@ tables:
     - 가맹점해지 사유
     - 해지사유 구분
     - 해지 사유
+    value_semantics:
+      '01': 장기무실적
+      '02': 가맹점 양도*양수
+      '03': 대표자*사업자번호 변경
+      '04': 기업형태*법인번호 변경
+      '05': 신청서 허위기재
+      '06': 휴업
+      '07': 영업정지
+      '08': 자진폐업
+      '09': 강제폐업
+      '10': 현금융통 발생
+      '11': 현금융통 및 전표 대리청구 발생
+      '20': 가맹점 가입 부적격
+      '21': 카드거래 거절
+      '22': 신청서 허위기재
+      '31': 도난*분실카드 매출 다발
+      '35': 손실추정 가맹점
+      '36': 대표자 가입제한 대상
+      '38': 가맹점 수수료 불만
+      '99': 기타 해지 필요
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점해지사유구분코드
   - name: 가맹점최종매입부점코드
     data_type: VARCHAR
     description: MFX월가맹점실적집계의가맹점에서 최종으로 전표를 매입한 부점코드
@@ -15028,6 +15230,11 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    value_semantics:
+      '0': 거래정지 아님
+      '1': 거래정지
+    value_semantics_provenance: user_provided_business_codebook
+    codebook_ref: 가맹점거래정지여부
   - name: 기업고객식별자
     data_type: VARCHAR
     description: KB카드의 고객에게 부여하는 10자리 식별번호중 기업고객에 대한 식별번호
@@ -16279,7 +16486,7 @@ canonical_domains:
   business_scope: "가맹점·브랜드·업종별 기본정보, 결제금융기관, 매출, 거래건수, 순위와 수수료 분석"
   keywords: [가맹점, 점포, 매장, 브랜드, 상호, 업종, 매출순위, 가맹점매출, 수수료율, 가맹점계좌, 결제계좌, 결제금융기관, 국민은행]
   primary_entities: [merchant, merchant_daily_enrichment, merchant_monthly_snapshot, merchant_monthly_performance, merchant_industry, domestic_sales]
-  preferred_metrics: [가맹점월매출금액, 가맹점수, 결제금융기관별가맹점수, 최근기간폐업가맹점수, 신용카드가맹점수수료율]
+  preferred_metrics: [가맹점월매출금액, 가맹점수, 결제금융기관별가맹점수, 최근기간폐업가맹점수, 신용카드가맹점수수료율, 해외가맹점월매출건수, 해외가맹점월매출금액, 가맹점월수입수수료]
   default_fact_table: tmdaa5e11
   default_time_dimension: 기준년월
   default_filters: []
@@ -16303,7 +16510,7 @@ canonical_domains:
   business_scope: "기업고객·회원·보유카드의 규모, 상태, 상품과 신규 발급 현황 분석"
   keywords: [기업고객, 법인고객, 회원, 보유카드, 유효카드, 카드수, 발급, 신규회원, 카드상품, 대기업, 중소기업, 영세기업, 공공기업, 기업규모]
   primary_entities: [customer, member, member_card, product, customer_monthly_snapshot]
-  preferred_metrics: [회원수, 유효신용카드수, 기업고객수, 카드월청구금액]
+  preferred_metrics: [회원수, 유효신용카드수, 기업고객수, 카드월청구금액, 기업유효카드좌수]
   default_fact_table: tbdaaat03
   default_time_dimension: ""
   default_filters: []
@@ -16621,6 +16828,11 @@ semantic_attributes:
   - 사업장주소
   - 가맹점 소재지
   - 가맹점소재지
+  - 가맹점 우편번호
+  - 가맹점우편번호
+  - 가맹점 도로명 우편번호
+  - 가맹점도로명우편번호
+  - 사업장 우편번호
   source_mappings:
   - entity: merchant
     table: tbdaadt01
@@ -16637,6 +16849,7 @@ semantic_attributes:
   semantic_cautions:
   - 도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소이고 도로명·지번 표기 여부는 주소표시구분코드로 판별한다.
   - 도로명 주소를 물으면 가맹점상세주소를 주소표시구분코드·우편번호와 함께 내보내고, 도로명 번호 컬럼만으로 주소를 조립하지 않는다.
+  - 전표(tbdaabt30)의 가맹점우편번호는 전표 시점의 사본이다. 가맹점 우편번호는 가맹점 마스터(tbdaadt01)의 우편번호를 쓴다.
 - name: merchant_credit_sales
   korean_name: 가맹점 신용판매 매출금액
   domains:
@@ -17051,6 +17264,13 @@ semantic_attributes:
   - {entity: corporate_customer_no_usage_snapshot, table: tmdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수], role: monthly_corporate_card_holding}
   - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수], role: current_merchant_card_holding}
   - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수], role: monthly_merchant_card_holding}
+  - entity: member_card
+    table: tbdaaat05
+    columns:
+    - 카드소유자구분코드
+    - 유효신용카드여부
+    - 유효체크카드여부
+    role: card_level_corporate_card_holding
   semantic_cautions:
   - 기업 신용카드를 명시하면 신용카드 수만, 기업 체크카드를 명시하면 체크카드 수만 사용한다.
   - 포괄적인 기업카드·법인카드는 신용카드 수와 체크카드 수의 합을 사용한다.
@@ -17058,6 +17278,7 @@ semantic_attributes:
   - 신용+체크는 카드 종류 축이다.
   - 개별+공용은 소유 형태 축이므로 신용+체크와 함께 네 컬럼을 합산하지 않는다.
   - 현재·최신 보유는 tbdaa1d12 KST 전일 기준년월일, 명시한 과거 월은 tmdaa1d12 기준년월에서 읽는다.
+  - 카드등급그룹·상품·브랜드·발급유형·카드거래매체처럼 카드 한 장의 속성으로 쪼개는 질의는 회원카드기본(tbdaaat05) 한 곳에서 센다. 기업고객 스냅샷의 유효기업신용카드수는 기업고객당 합계라 그 축으로 쪼갤 수 없고, 조인해도 좌수가 부풀려진다.
   source_selection:
     default_role_prefix: current_
     period_role_prefix: monthly_
@@ -17071,6 +17292,8 @@ semantic_attributes:
     - 최신
     - 지금
     open_month_uses_current: true
+    axis_role_prefix: card_level_
+    axis_note: 질문의 분류축이 집계 원천에 없고 회원카드기본에만 있으면 tbdaaat05 에서 카드 한 장씩 센다.
 - name: merchant_payment_institution
   korean_name: 가맹점 결제금융기관
   domains: [merchant_sales]
@@ -17135,9 +17358,35 @@ semantic_attributes:
   - 동일 컬럼을 중복 SELECT하지 않는다.
   - 상세 목록은 요청 개수가 없으면 LIMIT 1000000을 적용한다.
 
+- name: merchant_fee_revenue
+  korean_name: 가맹점 수수료 수입
+  domains:
+  - merchant_sales
+  business_definition: 가맹점에서 거둔 수수료 수입 금액. 가맹점 월실적(tmdaa5e11)의 가맹점수입수수료 한 곳에서만 읽는다
+  aliases:
+  - 가맹점 수수료
+  - 가맹점수수료
+  - 가맹점 수수료 금액
+  - 가맹점수수료금액
+  - 가맹점 수입수수료
+  - 가맹점수입수수료
+  - 가맹점 수수료 수입
+  - 수수료 수입
+  source_mappings:
+  - entity: merchant_monthly_performance
+    table: tmdaa5e11
+    columns:
+    - 가맹점수입수수료
+    - 최근3개월가맹점수입수수료
+    - 최근6개월가맹점수입수수료
+    role: monthly_merchant_fee_revenue
+  semantic_cautions:
+  - 전표(tbdaabt30)의 가맹점수수료는 전표 한 장에 붙은 수수료다. 이름이 같아도 월 단위 수수료 수입을 대신하지 못한다.
+  - 수수료율(신용카드가맹점수수료율·체크카드수수료율)은 금액이 아니라 율이다. 실효 수수료율은 가맹점수입수수료를 매출금액으로 나눠 구한다.
+  - 할부수수료·CA수수료·연체수수료는 카드 쪽 수수료로 원천이 다르다.
 canonical_metrics:
 - {name: 카드매출금액, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN tbdaabt30."매출금액" ELSE -tbdaabt30."매출금액" END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [카드매출, 국내이용금액, 카드이용금액, 총매출], unit: 원, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [매출금액을 그대로 SUM하면 취소·환급 전표까지 더해져 이용금액이 부풀려진다., '매출전표종류구분코드로 부호를 정한다: 정당(1)·취소정정(4)은 +, 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 -.']}
-- {name: 매출건수, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN 1 ELSE -1 END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [거래건수, 이용건수, 전표건수], unit: 건, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [전표 건수도 순액이다. COUNT로 세면 취소전표가 건수를 늘린다., '매출전표종류구분코드가 정당(1)·취소정정(4)이면 +1, 정정(2)·취소(3)·청구보류(5)·체크환급(6)이면 -1로 더한다.']}
+- {name: 매출건수, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN 1 ELSE -1 END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: ["tbdaabt30.\"카드매출유형구분코드\" IN ('1','2','4') — 일반·할부·리볼빙", tbdaabt30."회원소속회사구분코드" = '1' AND tbdaabt30."가맹점소속회사구분코드" = '1' — 당사], synonyms: [거래건수, 이용건수, 전표건수], unit: 건, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [전표 건수도 순액이다. COUNT로 세면 취소전표가 건수를 늘린다., '매출전표종류구분코드가 정당(1)·취소정정(4)이면 +1, 정정(2)·취소(3)·청구보류(5)·체크환급(6)이면 -1로 더한다.', 기업 매출건수는 카드매출유형구분코드 일반(1)·할부(2)·리볼빙(4)만 센다. 현금서비스(3)·예수금(5)·선급급(6)·해외현금지급(7)·연회비(9)는 카드 매출이 아니다., 회원소속회사구분코드·가맹점소속회사구분코드를 당사('1')로 제한한다. 제휴사·공동망·해외회원 건은 당사 매출이 아니다., 해외 전표(tbdaabt08)는 회원소속회사구분코드를 갖고 있지 않다. 가맹점소속회사구분코드 = '1' 과 카드매출유형구분코드만 같은 규칙으로 적용한다., 이 필터는 WHERE 절에 걸리므로 같은 쿼리의 매출금액에도 함께 적용된다. 금액과 건수의 모집단을 다르게 두려면 건수만 CASE WHEN 안에서 세야 한다.]}
 - name: 이용기업수
   domain: card_usage
   business_definition: 해당 기간에 카드 이용이 실제로 발생한 고유 기업 수
@@ -17248,6 +17497,29 @@ canonical_metrics:
   unit: 원
   aggregation_behavior: additive_at_declared_month_grain
 - {name: 가맹점월매출금액, domain: merchant_sales, expression: 'SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) + COALESCE(tmdaa5e11."가맹점할부매출금액", 0))', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점매출, 가맹점매출액, 점포매출, 월매출액, 가맹점매출금액, 가맹점 매출 금액, 월가맹점매출금액], unit: 원, aggregation_behavior: additive_at_declared_grain}
+- name: 가맹점월수입수수료
+  domain: merchant_sales
+  business_definition: 가맹점에서 거둔 월 수입수수료 금액
+  expression: SUM(COALESCE(tmdaa5e11."가맹점수입수수료", 0))
+  source_table: tmdaa5e11
+  source_entity: merchant_monthly_performance
+  default_time_dimension: 기준년월
+  required_filters:
+  - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  semantic_cautions:
+  - 가맹점 수수료 금액은 이 지표다. 전표(tbdaabt30)의 가맹점수수료는 전표 한 장의 수수료라 월 수수료 수입을 대신하지 못한다.
+  - 수수료율(신용카드가맹점수수료율·체크카드수수료율 등)은 금액이 아니라 율이므로 이 지표로 바꾸지 않는다. 실효 수수료율은 이 지표를 매출금액으로 나눠 구한다.
+  - 할부수수료·CA수수료·연체수수료는 카드 쪽 수수료로 원천이 다르다.
+  - 최근 3·6·9개월·1년 수입수수료는 같은 행의 누적 컬럼으로 읽는다.
+  synonyms:
+  - 가맹점수입수수료
+  - 가맹점 수입수수료
+  - 가맹점 수수료 수입
+  - 가맹점수수료수입
+  - 가맹점 수수료 금액
+  - 가맹점수수료금액
+  unit: 원
+  aggregation_behavior: additive_at_declared_month_grain
 - {name: 가맹점수, domain: merchant_sales, expression: 'COUNT(DISTINCT tbdaadt01."가맹점번호")', source_table: tbdaadt01, source_entity: merchant, default_time_dimension: '', required_filters: [], synonyms: [점포수, 매장수, 가맹점개수], unit: 개, aggregation_behavior: distinct_count}
 - name: 결제금융기관별가맹점수
   domain: merchant_sales
@@ -17288,6 +17560,32 @@ canonical_metrics:
   aggregation_behavior: distinct_count
 - {name: 회원수, domain: customer_card_portfolio, expression: 'COUNT(DISTINCT tbdaaat03."회원일련번호")', source_table: tbdaaat03, source_entity: member, default_time_dimension: '', required_filters: [], synonyms: [회원인원], unit: 명, aggregation_behavior: distinct_count}
 - {name: 유효신용카드수, domain: customer_card_portfolio, expression: 'SUM(tbdaaat03."유효신용카드수")', source_table: tbdaaat03, source_entity: member, default_time_dimension: '', required_filters: [], synonyms: [유효카드수, 카드보유수], unit: 매, aggregation_behavior: additive_at_declared_grain}
+- name: 기업유효카드좌수
+  domain: customer_card_portfolio
+  business_definition: 기업 명의로 발급된 유효 카드의 좌수. 카드 한 장이 한 좌다.
+  expression: COUNT(DISTINCT CONCAT(tbdaaat05."회원일련번호", '-', tbdaaat05."카드구분키번호"))
+  source_table: tbdaaat05
+  source_entity: member_card
+  default_time_dimension: 실적기준년월일
+  result_grain: 질문이 요청한 카드 속성 축 조합별 1행
+  required_filters:
+  - tbdaaat05."카드소유자구분코드" IN ('3','4','5') — 기업대표·기업개별·기업공용
+  - tbdaaat05."개인기업구분코드" = '2'
+  - (tbdaaat05."유효신용카드여부" = '1' OR tbdaaat05."유효체크카드여부" = '1') — 유효 카드만 셀 때
+  - tbdaaat05."실적기준년월일" = 스냅샷 기준일 (현재 기준은 MAX)
+  semantic_cautions:
+  - 카드등급그룹·상품·브랜드·발급유형·카드거래매체처럼 카드 한 장의 속성으로 쪼개는 질의는 회원카드기본(tbdaaat05) 한 곳에서 센다. 기업고객 스냅샷의 유효기업신용카드수는 기업고객당 합계라 그 축으로 쪼갤 수 없고, 조인해도 좌수가 부풀려진다.
+  - 좌수는 카드 장수다. 기업 수를 물으면 COUNT(DISTINCT "소유자고객식별자"), 회원 수를 물으면 COUNT(DISTINCT "회원일련번호") 로 센다.
+  - 기업고객 스냅샷(tbdaa1d12)의 기업유효카드수와 같은 값을 다른 낟알로 센다. 한 질문에서 두 원천을 함께 쓰지 않는다.
+  synonyms:
+  - 기업카드 좌수
+  - 기업카드좌수
+  - 유효 기업카드 좌수
+  - 유효기업카드좌수
+  - 법인카드 좌수
+  - 법인카드좌수
+  unit: 좌
+  aggregation_behavior: additive_at_declared_grain
 - {name: 기업월카드이용금액, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tmdaa1d12."금월신용카드이용금액", 0) + COALESCE(tmdaa1d12."금월체크카드이용금액", 0))', source_table: tmdaa1d12, source_entity: corporate_customer_no_usage_snapshot, default_time_dimension: 기준년월, required_filters: [고객별 월 최신 기준년월일 1건], synonyms: [기업회원월이용금액, 기업카드월이용금액, 월이용액, 유실적, 무실적], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - name: 기업월평균카드이용금액
   domain: corporate_sales_targeting
@@ -17557,6 +17855,40 @@ canonical_metrics:
   required_filters:
   - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
   synonyms: [가맹점매출건수, 가맹점 매출 건수, 월가맹점매출건수]
+  unit: 건
+  aggregation_behavior: additive_at_declared_month_grain
+- name: 해외가맹점월매출금액
+  domain: merchant_sales
+  business_definition: 월 해외 가맹점 매출 금액
+  expression: SUM(COALESCE(tmdaa5e11."해외가맹점매출금액", 0))
+  source_table: tmdaa5e11
+  source_entity: merchant_monthly_performance
+  default_time_dimension: 기준년월
+  required_filters:
+  - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  semantic_cautions:
+  - 해외매출전표(tbdaabt08)는 전표 한 장 단위라 가맹점 월 실적을 대신하지 못하고, 가맹점 월스냅샷(tmdaa5d01)은 이 컬럼을 갖고 있지 않다.
+  synonyms:
+  - 해외가맹점매출금액
+  - 해외 가맹점 매출금액
+  - 해외 가맹점 매출 금액
+  unit: 원
+  aggregation_behavior: additive_at_declared_month_grain
+- name: 해외가맹점월매출건수
+  domain: merchant_sales
+  business_definition: 월 해외 가맹점 매출 건수
+  expression: SUM(COALESCE(tmdaa5e11."해외가맹점매출건수", 0))
+  source_table: tmdaa5e11
+  source_entity: merchant_monthly_performance
+  default_time_dimension: 기준년월
+  required_filters:
+  - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  semantic_cautions:
+  - 해외매출전표(tbdaabt08)는 전표 한 장 단위라 가맹점 월 실적을 대신하지 못하고, 가맹점 월스냅샷(tmdaa5d01)은 이 컬럼을 갖고 있지 않다.
+  synonyms:
+  - 해외가맹점매출건수
+  - 해외 가맹점 매출건수
+  - 해외 가맹점 매출 건수
   unit: 건
   aggregation_behavior: additive_at_declared_month_grain
 - name: 가맹점월일시불매출금액
@@ -19543,6 +19875,15 @@ glossary:
   - 회원번호
   - 부서사업장회원
   sql_hint: 회원 수는 COUNT(DISTINCT "회원일련번호")로 센다. 고객식별자와는 1:N이므로 같은 결과에서 기업 수를 낼 때는 고객식별자로 다시 DISTINCT한다.
+- term: 최근 N개월 실적
+  canonical: tmdaa5e11."최근N개월가맹점매출금액" (기간 합계)
+  description: 가맹점 월실적은 최근 3·6·9개월과 1년 누적을 컬럼으로 들고 있다. 기준년월 한 행에서 그 기간의 합계를 읽는 값이라, 평균을 물으면 개월 수로 나눈다. 매출금액· 매출건수·수입수수료·해외 매출이 같은 모양으로 있다.
+  aliases:
+  - 최근 3개월 매출
+  - 최근 6개월 매출
+  - 3개월 평균 매출
+  - 6개월 평균 매출
+  sql_hint: 최근 3개월 평균은 "최근3개월가맹점매출금액" / 3, 6개월 평균은 "최근6개월가맹점매출금액" / 6 이다. 월별 행을 모아 AVG 하지 않는다.
 
 # =============================================================================
 # 6. QUERY REFERENCES - 질의별 컬럼/필터/조인 선택 지침
@@ -19606,6 +19947,24 @@ query_references:
   rules:
   - "순위 질의는 ORDER BY 매출 DESC + LIMIT 을 사용한다."
   - "특정 월이면 tmdaa5e11과 tmdaa5d01의 \"기준년월\" 필터를 같게 적용한다."
+- intent: 가맹점_최근기간_평균매출_비교
+  when_user_says:
+  - 최근 3개월 평균 매출
+  - 3개월 평균 매출과 6개월 평균 매출
+  - 3개월 평균 매출과 6개월 평균 매출 비교
+  - 최근 3개월과 6개월 매출 비교
+  - 가맹점 최근 3개월 6개월 매출 비교
+  primary_table: tmdaa5e11
+  join_tables: []
+  join_rule: 조인하지 않는다. 최근 3·6·9개월·1년 실적은 가맹점 월실적(tmdaa5e11) 한 행이 누적 컬럼으로 이미 들고 있다.
+  recommended_columns:
+    최근3개월 평균매출: COALESCE(tmdaa5e11."최근3개월가맹점매출금액", 0) / 3
+    최근6개월 평균매출: COALESCE(tmdaa5e11."최근6개월가맹점매출금액", 0) / 6
+    비교: 두 평균의 차이 또는 비율을 같은 행에서 계산한다
+  rules:
+  - 최근N개월 컬럼은 그 기간의 합계다. 평균을 물으면 개월 수(3·6·9·12)로 나눈다.
+  - 여러 달을 GROUP BY 해서 직접 평균을 내지 않는다. 그러면 조회 월 이전 데이터가 필요해 기준년월 필터와 어긋난다.
+  - 기준년월은 질문이 말한 기준월 한 달로 제한한다. 누적 컬럼이 그 달 기준의 최근 N개월을 이미 담고 있다.
 - intent: 업종별_매출
   when_user_says:
   - "업종별 매출"
@@ -20090,6 +20449,22 @@ query_references:
   - tbdaabt08의 매출금액은 가맹점이 받은 해외 매출이라 이용금액 대신 쓰지 않는다. 국가·MCC업종처럼 카드 월실적에 없는 축이 필요할 때만 해외 매출전표를 쓴다.
   - 기업·법인 단위 해외 이용금액은 tmdaa1d12의 금월해외이용금액을 쓴다.
 column_codebooks:
+- column: 가맹점거래정지여부
+  domain: 가맹점거래정지여부
+  applies_to_columns:
+  - 가맹점거래정지여부
+  source_tables:
+  - tbdaadt01
+  source_files:
+  - chat/2026-08-21 사용자 제공 코드 목록
+  provenance: user_provided_business_codebook
+  values:
+  - code: '0'
+    label: 거래정지 아님
+    status: active
+  - code: '1'
+    label: 거래정지
+    status: active
 - column: 가맹점상태구분코드
   domain: 가맹점상태구분코드
   applies_to_columns:
@@ -20115,6 +20490,75 @@ column_codebooks:
     valid_from: '2011-05-03'
     valid_to: '9999-12-31'
     status: active
+- column: 가맹점해지사유구분코드
+  domain: 가맹점해지사유구분코드
+  applies_to_columns:
+  - 가맹점해지사유구분코드
+  source_tables:
+  - tmdaa5e11
+  source_files:
+  - chat/2026-08-21 사용자 제공 코드 목록
+  provenance: user_provided_business_codebook
+  values:
+  - code: '01'
+    label: 장기무실적
+    status: active
+  - code: '02'
+    label: 가맹점 양도*양수
+    status: active
+  - code: '03'
+    label: 대표자*사업자번호 변경
+    status: active
+  - code: '04'
+    label: 기업형태*법인번호 변경
+    status: active
+  - code: '05'
+    label: 신청서 허위기재
+    status: active
+  - code: '06'
+    label: 휴업
+    status: active
+  - code: '07'
+    label: 영업정지
+    status: active
+  - code: '08'
+    label: 자진폐업
+    status: active
+  - code: '09'
+    label: 강제폐업
+    status: active
+  - code: '10'
+    label: 현금융통 발생
+    status: active
+  - code: '11'
+    label: 현금융통 및 전표 대리청구 발생
+    status: active
+  - code: '20'
+    label: 가맹점 가입 부적격
+    status: active
+  - code: '21'
+    label: 카드거래 거절
+    status: active
+  - code: '22'
+    label: 신청서 허위기재
+    status: active
+  - code: '31'
+    label: 도난*분실카드 매출 다발
+    status: active
+  - code: '35'
+    label: 손실추정 가맹점
+    status: active
+  - code: '36'
+    label: 대표자 가입제한 대상
+    status: active
+  - code: '38'
+    label: 가맹점 수수료 불만
+    status: active
+  - code: '99'
+    label: 기타 해지 필요
+    status: active
+  notes:
+  - 05 와 22 는 라벨이 같다(신청서 허위기재). 전달받은 목록 그대로다.
 - column: 그룹최고고객구분코드
   domain: 고객구분코드
   applies_to_columns:
@@ -20932,4 +21376,101 @@ column_codebooks:
     label: 슈퍼프리미엄
     valid_from: '2018-06-08'
     valid_to: '9999-12-31'
+    status: active
+- column: 카드매출유형구분코드
+  domain: 카드매출유형구분코드
+  applies_to_columns:
+  - 카드매출유형구분코드
+  source_tables:
+  - tbdaabt30
+  source_files:
+  - chat/2026-08-21 사용자 제공 코드 목록
+  provenance: user_provided_business_codebook
+  values:
+  - code: '1'
+    label: 일반
+    status: active
+  - code: '2'
+    label: 할부
+    status: active
+  - code: '3'
+    label: 현금서비스
+    status: active
+  - code: '4'
+    label: 리볼빙
+    status: active
+  - code: '5'
+    label: 예수금
+    status: active
+  - code: '6'
+    label: 선급급
+    status: active
+  - code: '7'
+    label: 현금지급(해외)
+    status: active
+  - code: '9'
+    label: 연회비
+    status: active
+  - code: 'A'
+    label: 계좌매출환출
+    status: active
+  - code: 'B'
+    label: 법적비용
+    status: active
+  - code: 'C'
+    label: 과잉금
+    status: active
+  notes:
+  - 전달받은 목록에 '8' 이 없고 'C' 뒤가 끊겨 있다. D 이후 코드가 더 있으면 여기에 추가한다.
+- column: 카드소유자구분코드
+  domain: 카드소유자구분코드
+  applies_to_columns:
+  - 카드소유자구분코드
+  source_tables:
+  - tmdaa3e16
+  source_files:
+  - chat/2026-08-21 사용자 제공 코드 목록
+  provenance: user_provided_business_codebook
+  values:
+  - code: '1'
+    label: 개인본인
+    status: active
+  - code: '2'
+    label: 개인가족
+    status: active
+  - code: '3'
+    label: 기업대표
+    status: active
+  - code: '4'
+    label: 기업개별
+    status: active
+  - code: '5'
+    label: 기업공용
+    status: active
+- column: 회원소속회사구분코드
+  domain: 회원소속회사구분코드
+  applies_to_columns:
+  - 회원소속회사구분코드
+  - 가맹점소속회사구분코드
+  source_tables:
+  - tbdaabt30
+  - tbdaabt08
+  source_files:
+  - chat/2026-08-21 사용자 제공 코드 목록
+  provenance: user_provided_business_codebook
+  values:
+  - code: '0'
+    label: 비대상
+    status: active
+  - code: '1'
+    label: 당사
+    status: active
+  - code: '2'
+    label: 제휴사
+    status: active
+  - code: '3'
+    label: 공동망
+    status: active
+  - code: '4'
+    label: 해외회원(JCB포함)
     status: active
