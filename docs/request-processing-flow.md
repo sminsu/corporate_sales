@@ -50,17 +50,17 @@ flowchart TB
 
 | 엔드포인트 | 함수 | 역할 |
 |---|---|---|
-| `POST /api/query/stream` | `query_stream` ([web_service.py:2960](../web_service.py)) | 기본 질의, SSE |
+| `POST /api/query/stream` | `query_stream` ([web_service.py:3004](../web_service.py)) | 기본 질의, SSE |
 | `POST /api/query` | `query` | 같은 처리, 단발 JSON (`_run_query`) |
-| `POST /api/followup/stream` | `_stream_followup` ([:2654](../web_service.py)) | 이전 결과 기반 후속 요청 |
-| `POST /api/export` | `export_result` ([:3343](../web_service.py)) | word/excel/txt 내보내기 |
+| `POST /api/followup/stream` | `_stream_followup` ([:2698](../web_service.py)) | 이전 결과 기반 후속 요청 |
+| `POST /api/export` | `export_result` ([:3387](../web_service.py)) | word/excel/txt 내보내기 |
 | `GET /api/files/{token}` | `download_file` | 토큰으로 파일 내려주기 |
 | `POST /api/sessions` 외 | 세션·저장쿼리 CRUD | 대화 목록, saved query |
 | `POST /api/managed-company-scope/parse` | `managed_scope` | 관리기업 명단 업로드 파싱 |
 
 ### 스트리밍 요청의 실제 호출 순서
 
-`_stream_query` ([:1982](../web_service.py)) 가 이 순서로 돈다.
+`_stream_query` ([:2026](../web_service.py)) 가 이 순서로 돈다.
 
 1. `agent.create_trace_context(session_id, message_id)` — 관측 컨텍스트
 2. `yield _sse("start", ...)` — 화면에 "질문을 분석 중입니다..."
@@ -85,7 +85,7 @@ flowchart LR
 
 ---
 
-## 2. LangGraph 19 노드
+## 2. LangGraph 21 노드
 
 ```mermaid
 flowchart TB
@@ -104,7 +104,9 @@ flowchart TB
     ST -->|"VQ"| EAP["extract_and_apply_params"] --> RMQ["run_matched_query"]
     RMQ -->|"성공"| GA
     RMQ -->|"실패"| HE["handle_error"]
-    ST -->|"미적중"| AQ
+    ST -->|"미적중"| CDC["check_domain_choice"]
+    CDC -->|"라우팅 확정"| AQ
+    CDC -->|"도메인 되묻기"| E1
 
     AQ --> CSP["check_sql_gen_params"] --> GS["generate_sql"] --> VS["validate_sql"]
     PDS --> VS
@@ -118,15 +120,17 @@ flowchart TB
     HE --> E2
 ```
 
-노드 이름은 SSE 의 `text2sql_step` 값이고, 화면 문구는 `NODE_LABELS` ([web_service.py:116](../web_service.py)) 가 정한다. 예: `analyze_question` → phase `table_selection`, 제목 "테이블 분석".
+노드 이름은 SSE 의 `text2sql_step` 값이고, 화면 문구는 `NODE_LABELS` ([web_service.py:117](../web_service.py)) 가 정한다. 예: `analyze_question` → phase `table_selection`, 제목 "테이블 분석".
 
-되묻기(`param_stage == "need_params"`)는 `check_tool_params` · `extract_and_apply_params` · `check_sql_gen_params` 세 곳에서 그래프를 조기 종료시킨다.
+되묻기(`param_stage == "need_params"`)는 `check_domain_choice` · `check_tool_params` · `extract_and_apply_params` · `check_sql_gen_params` 네 곳에서 그래프를 조기 종료시킨다.
+
+`check_domain_choice` 는 자유 SQL 경로에서만 돈다 — 툴과 VQ 는 이미 결정론적으로 답하므로 끊지 않는다. 도메인 점수가 약한 동점(1위가 `CLARIFY_DOMAIN_MIN_SCORE` 미만이고 2위와의 차이가 `CLARIFY_DOMAIN_MARGIN_RATIO` 이내)일 때만 한 번 묻고, 그 판단과 선택지 생성에는 LLM 을 쓰지 않는다. 사용자가 고른 도메인은 라우팅 결정으로 되들어가 다시 묻지 않는다.
 
 ---
 
 ## 3. classify_question — 질문 유형
 
-**호출 순서** ([workflow.py:411](../text2sql_agent/workflow.py))
+**호출 순서** ([workflow.py:425](../text2sql_agent/workflow.py))
 
 1. `check_content_safety` (HTTP 계층에서 이미 ALLOW 판정이 실려 오면 생략)
 2. `_looks_like_direct_sql` — `^\s*(SELECT|WITH)` 정규식 하나
@@ -149,13 +153,13 @@ flowchart TB
 
 ## 4. refine_search_query — 검색용 질의 정제
 
-**호출 순서** ([:510](../text2sql_agent/workflow.py))
+**호출 순서** ([:524](../text2sql_agent/workflow.py))
 
 1. 이미 `retrieval_query` 가 있으면 그대로 반환
 2. 후속·되묻기 흔적(`previous_question`, `selected_domain`, `selected_tables` 등)이 하나라도 있으면 원문 그대로 (재해석 금지)
 3. 그 외에는 LLM 에게 "의미를 바꾸지 말고 검색용 한 문장으로" 정제 요청, 실패하면 원문
 
-**중요한 부수 효과** — `_retrieval_question` ([:550](../text2sql_agent/workflow.py)) 은 정제문과 원문을 **줄바꿈으로 이어 붙인 두 줄 텍스트**를 돌려준다.
+**중요한 부수 효과** — `_retrieval_question` ([:564](../text2sql_agent/workflow.py)) 은 정제문과 원문을 **줄바꿈으로 이어 붙인 두 줄 텍스트**를 돌려준다.
 
 ```
 {정제된 질의}
@@ -168,7 +172,7 @@ flowchart TB
 
 ## 5. route_domain — 6개 도메인 중 하나
 
-**호출 순서** ([:645](../text2sql_agent/workflow.py))
+**호출 순서** ([:659](../text2sql_agent/workflow.py))
 
 ```mermaid
 flowchart TB
@@ -200,14 +204,14 @@ flowchart TB
 
 이 관문에서 뭐라도 잡히면 **테이블 선택 노드에 도달하지 않는다.** 테이블이 이미 검증된 SQL 안에 박혀 있기 때문이다.
 
-**호출 순서** ([:3668](../text2sql_agent/workflow.py))
+**호출 순서** ([:3712](../text2sql_agent/workflow.py))
 
 1. `skip_tool_selection` (후속 요청이 세운 깃발) → 즉시 빈 선택
 2. 상태에 툴/VQ 가 미리 지정돼 있으면 그대로 재사용
 3. `semantic_query_contract_candidates` 1건 확인
    - `support_status: blocked*` → "semantic layer 만으로는 안전하게 계산할 수 없습니다" 거절
    - `execution_mode: semantic_generation` → 툴·VQ 를 쓰지 않고 생성 경로로 표시
-4. `_select_verified_query_capability` ([:4433](../text2sql_agent/workflow.py)) — 룰 → 계약 바인딩 → 임베딩(기본 OFF) → LLM(기본 OFF, `ENABLE_VERIFIED_QUERY_LLM_FALLBACK`) 순으로 VQ 매칭, 그 뒤 기간·업종·행수 요청을 그 VQ 가 정말 지원하는지 가드
+4. `_select_verified_query_capability` ([:4479](../text2sql_agent/workflow.py)) — 룰 → 계약 바인딩 → 임베딩(기본 OFF) → LLM(기본 OFF, `ENABLE_VERIFIED_QUERY_LLM_FALLBACK`) 순으로 VQ 매칭, 그 뒤 기간·업종·행수 요청을 그 VQ 가 정말 지원하는지 가드
 5. `_rule_match_tool` — 태그 히트가 **단독 최다**일 때만 확정 (동점이면 LLM 에 위임)
 6. `_tool_candidates` (2히트 이상) + `_select_tool_capability` → LLM 이 툴과 파라미터를 JSON 으로 고름
 7. 그다음 `_extract_params_by_rule` 로 파라미터를 결정론적으로 덮어쓰고 `_normalize_params` 로 정규화
@@ -220,12 +224,12 @@ flowchart TB
 | 기업카드 보유회원 중 6개월 무실적 기업 회원 명단 | `corporate_card_active_no_usage_members` | 룰로 툴 확정 | 같음 |
 | 2026년 5월 가맹점 수를 업종별로 | 없음 | 미적중 | `analyze_question` |
 
-**툴 경로의 두 갈래** (`execute_tool`, [:3755](../text2sql_agent/workflow.py))
+**툴 경로의 두 갈래** (`execute_tool`, [:3801](../text2sql_agent/workflow.py))
 
 - 툴이 `is_complete: True` 를 돌려주면 SQL·행·답변·엑셀 경로까지 완성품이므로 곧장 `generate_answer` (대손비용률 툴이 이렇다)
 - 툴이 SQL 문자열만 돌려주면 `_route_verified_query_accumulation` 으로 적재 정책을 적용하고 `run_tool_query` 에서 실행. 실패하면 `analyze_question` 으로 내려가 일반 생성 경로로 재시도한다
 
-**VQ 경로** — `extract_and_apply_params` ([:4526](../text2sql_agent/workflow.py)) 가 파라미터 스펙을 만들고(`VQ_PARAM_SPECS` + VQ 자체 선언 + 사용자가 요청한 `limit`·`이름정확일치`) LLM 으로 값을 뽑은 뒤 템플릿에 채운다. 실행은 `run_matched_query`. 여기서 DB 오류가 나면 **생성 SQL 로 갈아타지 않고** `handle_error` 로 끝낸다 — 검증된 업무 필터를 조용히 잃는 것보다 실패를 보여 주는 편이 낫다는 판단이 주석으로 남아 있다.
+**VQ 경로** — `extract_and_apply_params` ([:4572](../text2sql_agent/workflow.py)) 가 파라미터 스펙을 만들고(`VQ_PARAM_SPECS` + VQ 자체 선언 + 사용자가 요청한 `limit`·`이름정확일치`) LLM 으로 값을 뽑은 뒤 템플릿에 채운다. 실행은 `run_matched_query`. 여기서 DB 오류가 나면 **생성 SQL 로 갈아타지 않고** `handle_error` 로 끝낸다 — 검증된 업무 필터를 조용히 잃는 것보다 실패를 보여 주는 편이 낫다는 판단이 주석으로 남아 있다.
 
 ---
 
@@ -247,7 +251,7 @@ flowchart TB
     SHORT --> S6
 ```
 
-### 7.1 `_rule_rank_tables` — 증거 점수 ([:5256](../text2sql_agent/workflow.py))
+### 7.1 `_rule_rank_tables` — 증거 점수 ([:5302](../text2sql_agent/workflow.py))
 
 | 증거 | 가점 | 코드 |
 |---|---|---|
@@ -296,7 +300,7 @@ tmdaa1d01    15 = 3 + 12
 
 `_contract_entity_bindings_available` 가 이 단축 경로의 안전장치다. 기업명이 required 인 계약이 이름 없는 질문까지 못박아 점수 계산 자체를 건너뛰던 버그(goldenset v2 easy 실패 6건)가 이 가드로 잡혀 있다.
 
-### 7.2 `_compact_table_catalog` ([:5516](../text2sql_agent/workflow.py))
+### 7.2 `_compact_table_catalog` ([:5562](../text2sql_agent/workflow.py))
 
 후보 4개 → `semantic_join_paths_for_tables` 로 직접 조인 이웃까지 확장 → 제외 목록 차감 → 10개 컷. 테이블마다 한 줄 설명 + 주요 차원 5 / 지표 4 / 시간축 3만 적는다. 가맹점 질문에서는 40줄 2,909자였다.
 
@@ -311,9 +315,9 @@ tmdaa1d01    15 = 3 + 12
 
 프롬프트에 들어가는 블록: 도메인 컨텍스트 · 라우팅 근거 · LLM semantic contract · 안전 조인 그래프 · **규칙 기반 우선 후보** · 후보 카탈로그 · 용어집 · semantic attribute · 메트릭 · 계약 · 참조. 응답은 `max_tokens=192`, 테이블명만.
 
-메트릭·계약·참조 텍스트는 `_route_merchant_time_context` ([:5218](../text2sql_agent/workflow.py))를 한 번 통과해 **프롬프트 안의 테이블명까지** 선택된 아카이브로 맞춘다. 그렇지 않으면 "월 질문인데 프롬프트에는 일 적재 테이블 이름이 보이는" 모순이 생긴다.
+메트릭·계약·참조 텍스트는 `_route_merchant_time_context` ([:5264](../text2sql_agent/workflow.py))를 한 번 통과해 **프롬프트 안의 테이블명까지** 선택된 아카이브로 맞춘다. 그렇지 않으면 "월 질문인데 프롬프트에는 일 적재 테이블 이름이 보이는" 모순이 생긴다.
 
-`_parse_table_selection` ([:5486](../text2sql_agent/workflow.py)) 실행 결과:
+`_parse_table_selection` ([:5532](../text2sql_agent/workflow.py)) 실행 결과:
 
 ```
 '가맹점 월별 실적 테이블(tmdaa5d01)과 업종 코드 테이블 tbdaadb17 을 조인해야 합니다.'
@@ -328,7 +332,7 @@ tmdaa1d01    15 = 3 + 12
 - 제외가 없으면 → `llm_tables[:4]`, 비었으면 `rule_tables[:4]`
 - LLM 호출이 예외를 던지면 규칙 후보가 있을 때만 생존, 없으면 raise
 
-### 7.5 `_route_accumulation_table_names` ([:5125](../text2sql_agent/workflow.py))
+### 7.5 `_route_accumulation_table_names` ([:5171](../text2sql_agent/workflow.py))
 
 시간축 판정(`_recent_merchant_time_route` → `daily` / `monthly` / `master`)과 짝 표(`TABLE_ACCUMULATION_POLICIES.historical_source`, [time_policy.py:156](../text2sql_agent/time_policy.py))로 테이블을 교체한다.
 
@@ -339,9 +343,9 @@ tmdaa1d01    15 = 3 + 12
                                      최종 ['tbdaadt01']   (점수상 tbdaaus01 16점이 남아 있었음)
 ```
 
-`master` 판정은 `_merchant_master_attribute_question` ([:2219](../text2sql_agent/workflow.py))이 한다. 주소·기본정보처럼 마스터 한 곳만 가리키는 속성이면 월 스냅샷으로 돌려도 답할 컬럼이 없기 때문이다. 다만 집계를 묻는 표현이 있으면(메트릭 이름이나 "몇 곳") 그 달을 세는 질문이므로 스냅샷이 맞다.
+`master` 판정은 `_merchant_master_attribute_question` ([:2263](../text2sql_agent/workflow.py))이 한다. 주소·기본정보처럼 마스터 한 곳만 가리키는 속성이면 월 스냅샷으로 돌려도 답할 컬럼이 없기 때문이다. 다만 집계를 묻는 표현이 있으면(메트릭 이름이나 "몇 곳") 그 달을 세는 질문이므로 스냅샷이 맞다.
 
-### 7.6 `_table_details` ([:5653](../text2sql_agent/workflow.py))
+### 7.6 `_table_details` ([:5699](../text2sql_agent/workflow.py))
 
 선택된 테이블의 컬럼을 질문 근거(`_column_evidence`) 기준으로 추린다. 예산은 테이블당 16개 · 전체 48개이고, 계약이 `prompt_column_budget` 을 선언하면 상향된다. 가맹점 질문의 두 테이블은 4,306자 51줄이었다. **여기서 잘린 컬럼은 SQL 생성 단계에서 존재조차 알 수 없다** — 골든셋 실패가 이 예산에서 나오는 경우가 많다.
 
@@ -349,13 +353,13 @@ tmdaa1d01    15 = 3 + 12
 
 ## 8. check_sql_gen_params — 되묻기 판단
 
-`_missing_ambiguous_target_params` ([:5972](../text2sql_agent/workflow.py) 내부 호출)가 "대상명" 처럼 없으면 SQL 을 만들 수 없는 값을 찾는다. `query_frame.entities` 에 이미 대상이 있으면 그 항목은 뺀다(후속 대화에서 이미 확보한 값). 남으면 `param_stage="need_params"` 로 그래프를 끝내고, HTTP 계층이 `parameter_required` SSE 와 `continuation` 을 내보낸다.
+`_missing_ambiguous_target_params` ([:6018](../text2sql_agent/workflow.py) 내부 호출)가 "대상명" 처럼 없으면 SQL 을 만들 수 없는 값을 찾는다. `query_frame.entities` 에 이미 대상이 있으면 그 항목은 뺀다(후속 대화에서 이미 확보한 값). 남으면 `param_stage="need_params"` 로 그래프를 끝내고, HTTP 계층이 `parameter_required` SSE 와 `continuation` 을 내보낸다. 이렇게 모인 항목은 `clarify.upgrade_params` 를 거쳐 질문 문장과 선택지를 달고 나가며(`ENABLE_INTERACTIVE_CLARIFICATION` 을 끄면 이름·라벨만 남는 예전 모양), 한 턴에 `CLARIFY_MAX_QUESTIONS`(기본 3) 개까지만 나간다.
 
 ---
 
 ## 9. generate_sql — SQL 생성
 
-**컨텍스트 조립 순서** ([:6103](../text2sql_agent/workflow.py)) — 전부 `_route_merchant_time_context` 를 통과시켜 테이블명을 일치시킨다.
+**컨텍스트 조립 순서** ([:6151](../text2sql_agent/workflow.py)) — 전부 `_route_merchant_time_context` 를 통과시켜 테이블명을 일치시킨다.
 
 1. `find_relevant_queries` — 참고 SQL 예시
 2. `find_relevant_references` — 질의 작성 reference
@@ -380,7 +384,7 @@ tmdaa1d01    15 = 3 + 12
 
 ## 10. validate_sql — 정적 검증 게이트
 
-**실행 순서** ([:6777](../text2sql_agent/workflow.py))
+**실행 순서** ([:6822](../text2sql_agent/workflow.py))
 
 | 순서 | 함수 | 하는 일 |
 |---|---|---|
@@ -392,7 +396,7 @@ tmdaa1d01    15 = 3 + 12
 | 6 | `_v2_audit_sql` | QUALIFY·WHERE 절 윈도함수·잘린 SQL |
 | 7 | `_validate_required_semantic_tables` | 계약이 `require_all_selected_tables` 면 누락 검사 |
 | 8 | `_validate_recent_month_semantics`, `_validate_requested_row_constraints`, `_validate_corporate_entity_grain`, `_validate_sales_slip_net_amount` | 업무 규칙 |
-| 9 | `_availability_policy_issues` ([:6583](../text2sql_agent/workflow.py)) | 적재 주기 위반 (전일 스냅샷에 없는 날짜, 월 테이블에 없는 열린 달 등) |
+| 9 | `_availability_policy_issues` ([:6632](../text2sql_agent/workflow.py)) | 적재 주기 위반 (전일 스냅샷에 없는 날짜, 월 테이블에 없는 열린 달 등) |
 
 하나라도 걸리면 `after_validate` 가 `generate_sql` 로 되돌리고 `retry_count` 를 올린다. `SQL_RETRY_LIMIT`(3)에 닿으면 `handle_error`. 사용자 입력 SQL(`direct_sql`)은 재시도하지 않고 바로 오류로 알린다.
 
@@ -400,7 +404,7 @@ tmdaa1d01    15 = 3 + 12
 
 **재시도가 남지 않은 마지막 패스에서는 이 LLM 검증을 아예 건너뛴다** (`retry_count >= SQL_RETRY_LIMIT - 1`). 세 번째 검증에서 의미 판정으로 실패시켜도 그 지적을 반영해 SQL 을 고칠 기회가 이미 없어서, 사용자에게는 "SQL 오류" 만 남고 정적으로 안전한 SQL 을 실행조차 못 한 채 버리게 된다. 그래서 마지막 패스는 정적 검증까지만 하고 `VALID (정적 검증 통과, 마지막 시도라 LLM 의미 검증 생략)` 으로 실행에 넘긴다. 정적 이슈가 남아 있으면 마지막 패스에서도 그대로 실패한다 — 실행해도 DB 오류가 될 SQL 이라 넘길 이유가 없다. 검증 테스트는 [tests/test_sql_validation_retry_budget.py](../tests/test_sql_validation_retry_budget.py) 에 있다.
 
-**재치환 실행 결과** (`_apply_accumulation_historical_sources`, [:2969](../text2sql_agent/workflow.py))
+**재치환 실행 결과** (`_apply_accumulation_historical_sources`, [:3013](../text2sql_agent/workflow.py))
 
 ```
 Q: 2026년 5월 가맹점 수를 업종별로 알려줘
@@ -420,7 +424,7 @@ after   FROM card_system.tbdaadt01 a WHERE a."실적기준년월일" = '20260820
 
 ## 11. run_query — 실행
 
-**호출 순서** ([:6880](../text2sql_agent/workflow.py) → [db.py:569](../text2sql_agent/db.py))
+**호출 순서** ([:6935](../text2sql_agent/workflow.py) → [db.py:569](../text2sql_agent/db.py))
 
 1. `_apply_accumulation_historical_sources` 한 번 더 (툴·VQ 경로에서 곧바로 들어오는 SQL 때문)
 2. `prepare_sql_for_backend` — 한글 식별자 따옴표, ILIKE 정규화, 오타 교정
@@ -437,7 +441,7 @@ after   FROM card_system.tbdaadt01 a WHERE a."실적기준년월일" = '20260820
 
 ## 12. generate_answer — 답변 생성
 
-**호출 순서** ([:7043](../text2sql_agent/workflow.py))
+**호출 순서** ([:7098](../text2sql_agent/workflow.py))
 
 1. 이미 `answer` 가 있으면 그대로 (완결형 툴)
 2. 0행이면 결정론적 문구 + `_implicit_time_basis_note` + `_open_month_live_source_notes` + `_loaded_period_notes` — "왜 없는지"를 함께 알린다
@@ -449,7 +453,7 @@ after   FROM card_system.tbdaadt01 a WHERE a."실적기준년월일" = '20260820
 
 ---
 
-## 13. 결과 후처리 — `_result_payload` ([web_service.py:1527](../web_service.py))
+## 13. 결과 후처리 — `_result_payload` ([web_service.py:1570](../web_service.py))
 
 그래프가 끝난 상태 dict 를 화면·저장·후속에 쓸 형태로 만든다. 세 갈래다.
 
@@ -512,9 +516,9 @@ flowchart TB
 
 그다음 LLM 문맥 라우터(`relation` = existing_result / refine_query / new_query)가 **일을 키우는 방향으로만** 덮어쓴다. `new_query` 면 `new_sql`, `refine_query` + `rediscover` 면 `new_sql`, `refine_query` + 나머지면 `rewrite_sql`. 결정론적 안전 규칙이 이미 SQL 재실행을 요구했다면 그것이 유지된다.
 
-`_resolve_followup_context` ([web_service.py:2280](../web_service.py))는 `_fallback_followup_context` 를 먼저 만들어 두고, 그것이 "이름만 바뀐 결정론적 교체"(`deterministic_entity_replacement`)면 LLM 을 아예 부르지 않는다. LLM 응답이 스키마에 안 맞으면 폴백으로 되돌린다.
+`_resolve_followup_context` ([web_service.py:2324](../web_service.py))는 `_fallback_followup_context` 를 먼저 만들어 두고, 그것이 "이름만 바뀐 결정론적 교체"(`deterministic_entity_replacement`)면 LLM 을 아예 부르지 않는다. LLM 응답이 스키마에 안 맞으면 폴백으로 되돌린다.
 
-### 상태 승계 규칙 (`_followup_query_state`, [:2410](../web_service.py))
+### 상태 승계 규칙 (`_followup_query_state`, [:2454](../web_service.py))
 
 - `skip_tool_selection` / `skip_verified_query_matching` = `relation != "new_query"` — 후속에서 툴·VQ 를 다시 잡지 않는다
 - `reroute_sources`(= `new_sql*`) 가 아니면 도메인·테이블·`table_details` 를 그대로 물려받는다 → `analyze_question` 이 첫 줄에서 조기 반환
@@ -539,6 +543,7 @@ flowchart TB
 | HTTP 입구 | 안전 정책 BLOCK | 그래프 미실행, `SAFETY_REFUSAL` |
 | `select_tool` | 계약이 `blocked` | 왜 계산할 수 없는지 조목별로 답변 |
 | `check_*_params` | 필수값 부족 | `parameter_required` + `continuation`, 다음 턴에 값만 받아 이어감 |
+| `check_domain_choice` | 도메인 점수가 약한 동점 | 선택지를 붙여 한 번 묻고 종료, 고른 도메인은 SQL 파라미터가 아니라 라우팅 결정으로 재진입 |
 | `validate_sql` | 정적 이슈 | `generate_sql` 재시도, 3회 후 `handle_error` |
 | `validate_sql` | LLM 검증기 형식 오류 | 통과로 처리 (서비스 실패로 만들지 않음) |
 | `validate_sql` | 마지막 패스 (재시도 없음) | LLM 의미 검증 생략, 정적 검증만으로 실행 |
@@ -588,7 +593,8 @@ flowchart TB
 | 3 | `classify_question` → `_rule_classify_question` | `True` → need_sql, LLM 생략 |
 | 4 | `refine_search_query` | (모델) 정제문 + 원문 두 줄 |
 | 5 | `route_domain` → `_reference_domain_by_rule` | `merchant_sales` (점수 23.89 로도 단독 1위) |
-| 6 | `select_tool` → `_tool_candidates` / `_match_vq_by_rules` | 후보 0건, VQ 없음 → `analyze_question` |
+| 6 | `select_tool` → `_tool_candidates` / `_match_vq_by_rules` | 후보 0건, VQ 없음 → `check_domain_choice` |
+| 6-1 | `check_domain_choice` | `merchant_sales` 단독 1위 → 되묻지 않고 `analyze_question` |
 | 7 | `_rule_rank_tables` | `tbdaadt01` 43, `tbdaadb17` 29, `tbdaaat01` 15, `tmdaa1d01` 15 |
 | 8 | `_attribute_snapshot_exclusions` | 없음 |
 | 9 | `_compact_table_catalog` | 후보 4개 + 조인 이웃 → 10개, 40줄 2,909자 |
@@ -646,6 +652,9 @@ from text2sql_agent.schema import SCHEMA
 q = "질문"
 w._rule_classify_question(q)                       # 분류 룰
 w._reference_domain_by_rule(q)                     # 도메인 룰
+cands = w._weighted_domain_scores(w._keyword_rule_domain_scores(SCHEMA, q),
+                                  w._metric_entity_domain_scores(SCHEMA, q), {})   # 도메인 점수
+w.clarify.needs_domain_clarification(cands, margin_ratio=0.12, min_score=5.0)  # 되묻기 여부
 w._rule_match_tool(q); w._tool_candidates(q)       # 툴 선점
 w._match_vq_by_rules(q)                            # VQ 룰
 w.semantic_query_contract_candidates(SCHEMA, q, max_count=2)   # 계약
@@ -661,7 +670,7 @@ w._apply_accumulation_historical_sources(q, sql)   # 물리 테이블 재치환
 **회귀 테스트** — 라우팅·적재 정책을 건드렸으면 이 묶음이 가장 빠르다.
 
 ```bash
-python -m pytest tests/test_metric_by_dimension_routing.py tests/test_table_accumulation_policy.py tests/test_domain_routing_grain.py tests/test_merchant_credit_sales_source.py tests/test_sql_validation_retry_budget.py -q
+python -m pytest tests/test_metric_by_dimension_routing.py tests/test_table_accumulation_policy.py tests/test_domain_routing_grain.py tests/test_merchant_credit_sales_source.py tests/test_sql_validation_retry_budget.py tests/test_interactive_clarification.py -q
 ```
 
-전체 `pytest` 는 이 스냅샷에서 **1,325 passed / 38 failed** 이고, 실패 38건은 전부 `tests/test_xlsx_semantic_failures.py` 의 기존 상태(baseline 부터 깨져 있음)다. 회귀로 착각하지 않는다.
+전체 `pytest` 는 이 스냅샷에서 **1,349 passed / 38 failed** 이고, 실패 38건은 전부 `tests/test_xlsx_semantic_failures.py` 의 기존 상태(baseline 부터 깨져 있음)다. 회귀로 착각하지 않는다.
