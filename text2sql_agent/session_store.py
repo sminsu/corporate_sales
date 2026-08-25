@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from text2sql_agent.pii_masker import mask_pii
+from text2sql_agent.time_policy import KST
 
 
 class SessionOwnershipError(Exception):
@@ -61,14 +62,21 @@ def _jsonable(value: Any) -> Any:
 
 def _iso(value: Any) -> str:
     if isinstance(value, datetime):
+        # 서버가 UTC로 돌아도 화면과 DB에는 한국시간으로 남긴다.
+        if value.tzinfo is not None:
+            value = value.astimezone(KST)
         return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
     return str(value or "")
 
 
+def _now() -> datetime:
+    return datetime.now(KST)
+
+
 def _now_iso() -> str:
-    return datetime.now().isoformat()
+    return _now().isoformat()
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -94,13 +102,19 @@ def _session_postgres_schema() -> str:
     return schema
 
 
+def _to_naive_kst(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(KST).replace(tzinfo=None)
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
+        return _to_naive_kst(value)
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+        return _to_naive_kst(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except ValueError:
         return None
 
@@ -109,7 +123,7 @@ def _is_expired(value: Any, retention_days: int) -> bool:
     if retention_days <= 0:
         return False
     parsed = _parse_datetime(value)
-    return bool(parsed and parsed < datetime.now() - timedelta(days=retention_days))
+    return bool(parsed and parsed < _now().replace(tzinfo=None) - timedelta(days=retention_days))
 
 
 class RetentionPolicy:
@@ -471,10 +485,12 @@ class PostgresSessionStore:
     def _conn(self):
         conn = self._get_pool().getconn()
         try:
-            if self.schema:
-                from psycopg2 import sql
+            from psycopg2 import sql
 
-                with conn.cursor() as cur:
+            with conn.cursor() as cur:
+                # DB 서버가 UTC여도 now()와 컬럼 default가 한국시간으로 기록되게 한다.
+                cur.execute("SET TIME ZONE 'Asia/Seoul'")
+                if self.schema:
                     cur.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(self.schema)))
                     cur.execute("SELECT current_schema()")
                     current_schema = cur.fetchone()[0]
@@ -689,7 +705,7 @@ class PostgresSessionStore:
                 )
                 messages = [self._row_to_message(dict(message_row)) for message_row in cur.fetchall()]
                 conn.commit()
-                row["updated_at"] = datetime.now()
+                row["updated_at"] = _now()
                 row["message_count"] = len(messages)
                 return self._row_to_session(dict(row), messages)
 

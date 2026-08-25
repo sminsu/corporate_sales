@@ -52,6 +52,7 @@ from text2sql_agent.schema import (  # noqa: E402
 )
 from text2sql_agent.session_store import SessionOwnershipError, create_session_store  # noqa: E402
 from text2sql_agent.time_policy import (  # noqa: E402
+    KST,
     accumulation_policy_for,
     format_accumulation_policy,
     kst_today,
@@ -800,7 +801,7 @@ def _append_message(session: dict[str, Any], role: str, content: str, **extra: A
         "role": role,
         "content": content,
         "text": content,
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(KST).isoformat(),
     }
     message.update({k: _jsonable(v) for k, v in extra.items() if v is not None})
     _SESSION_STORE.append_message(session, message)
