@@ -114,3 +114,49 @@ def test_policy_tells_the_prompt_when_to_bound_the_master() -> None:
     details = workflow._table_details(["tbdaadt01"], "가맹점 수 알려줘")
 
     assert "질문이 날짜를 말할 때만 실적기준년월일 조건" in details
+
+
+# 질문이 날짜를 찍지 않으면 답의 단위도 달이다. 마스터의 시간축은 일자뿐이라
+# 앞 6자리를 잘라 달로 쓰고, 요청한 달이 적재 범위 안이면 그 달을 그대로 읽는다.
+MASTER_MONTH_QUESTION = "한신포차 가맹점주 가맹점 기본정보 2026년 8월 기준으로 알려줘"
+
+
+@pytest.mark.parametrize(
+    ("bounds", "requested", "expected"),
+    [
+        # 요청한 달이 적재 범위 안이면 최신 달로 갈아타지 않는다.
+        (("20260801", "20260823"), ("202608", "202608"), ("202608", "202608")),
+        # 범위 밖이면 최신 적재 달로 물러난다.
+        (("20260801", "20260823"), ("202601", "202601"), ("202608", "202608")),
+        # 걸친 요청은 겹치는 구간만 읽는다.
+        (("20260715", "20260823"), ("202606", "202608"), ("202607", "202608")),
+        # 적재 범위를 못 읽으면 최신 가용일의 달로 답한다.
+        (None, ("202601", "202601"), ("202608", "202608")),
+    ],
+)
+def test_master_month_window_keeps_a_loaded_request(
+    bounds: tuple[str, str] | None,
+    requested: tuple[str, str],
+    expected: tuple[str, str],
+) -> None:
+    with (
+        patch.object(workflow, "loaded_period_range", return_value=bounds),
+        patch.object(workflow, "_latest_available_day", return_value="20260823"),
+    ):
+        assert workflow._master_month_window(*requested) == expected
+
+
+def test_a_month_question_is_cut_by_month_not_by_the_latest_day() -> None:
+    """"8월 기준" 을 8월 23일 하루로 좁히면 묻지 않은 조건이 답에 섞인다."""
+    with (
+        patch.object(workflow, "loaded_period_range", return_value=("20260801", "20260823")),
+        patch.object(workflow, "_latest_available_day", return_value="20260823"),
+    ):
+        routed = workflow._apply_accumulation_historical_sources(
+            MASTER_MONTH_QUESTION, MASTER_SQL
+        )
+        note = workflow._implicit_time_basis_note(MASTER_MONTH_QUESTION, routed)
+
+    assert f'SUBSTR(m."{workflow._TBDAADT01_TIME_COLUMN}", 1, 6) = \'202608\'' in routed
+    assert "20260823" not in routed
+    assert f"{workflow._TBDAADT01_MONTH_LABEL} 202608" in note

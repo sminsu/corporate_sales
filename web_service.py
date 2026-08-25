@@ -841,7 +841,9 @@ def _apply_safety_decision(target: dict[str, Any], decision: dict[str, str]) -> 
 
 def _blocked_result(decision: dict[str, str]) -> dict[str, Any]:
     result = agent._new_initial_state(agent.BLOCKED_USER_MESSAGE)
-    result.update({"question_type": "safety_blocked", "answer": agent.SAFETY_REFUSAL})
+    result.update(
+        {"question_type": "safety_blocked", "answer": agent.refusal_message(decision)}
+    )
     _apply_safety_decision(result, decision)
     return result
 
@@ -875,7 +877,7 @@ def _apply_output_guard(result: dict[str, Any]) -> None:
         return
     result.update(
         {
-            "answer": agent.SAFETY_REFUSAL,
+            "answer": agent.refusal_message(decision),
             "final_sql": "",
             "generated_sql": "",
             "query_columns": [],
@@ -1549,7 +1551,7 @@ def _result_payload(
     elif is_blocked:
         status = "blocked"
         result_id = ""
-        answer = agent.SAFETY_REFUSAL
+        answer = agent.refusal_message(result)
         documents = []
         continuation = None
         _SESSION_STORE.update_session_state(session, pending_continuation=None)
@@ -2668,7 +2670,14 @@ def _stream_followup(
     if decision["action"] == "BLOCK":
         blocked = _blocked_result(decision)
         blocked["parent_result_id"] = req.result_id
-        data = _result_payload(blocked, session, message_id, 10, source_override="안전 정책")
+        off_topic = decision.get("category") == "OFF_TOPIC"
+        data = _result_payload(
+            blocked,
+            session,
+            message_id,
+            10,
+            source_override="답변 범위" if off_topic else "안전 정책",
+        )
         data = _finalize_assistant_message(session, data, message_id)
         agent.emit_execution_log(
             context=context,

@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from text2sql_agent import schema, workflow
+from text2sql_agent.row_constraints import RowRequest, parse_row_request
 from text2sql_agent.tools.sql_builders import _apply_params_to_vq
 from text2sql_agent.tools.verified_queries import load_external_verified_queries
 import web_service
@@ -864,3 +865,91 @@ def test_public_result_error_does_not_expose_sql_or_db_details() -> None:
     assert public_detail == "SQL 처리에 실패했습니다. 아래 실패 원인 분석과 마지막 SQL을 확인해 주세요."
     assert "internal_schema" not in public_detail
     assert web_service._public_result_error("") == ""
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_limit", "expected_mode"),
+    [
+        ("한도소진율이 90% 이상인 기업 리스트 100개만 만들어줘", 100, "head"),
+        ("한도소진율이 높은 기업 리스트 100개만 만들어줘", 100, "top"),
+        ("한도소진율이 낮은 법인 100개만 생성해줘", 100, "bottom"),
+    ],
+)
+def test_list_building_verbs_and_bare_comparatives_are_row_requests(
+    question: str,
+    expected_limit: int,
+    expected_mode: str,
+) -> None:
+    """이용가이드 예시가 쓰는 "만들어줘"와 "순" 없는 "높은"도 행 요청이다."""
+    assert parse_row_request(question) == RowRequest(expected_limit, expected_mode)
+
+
+def test_bare_comparative_binds_the_ranking_metric_for_validation() -> None:
+    question = "한도소진율이 높은 기업 리스트 100개만 만들어줘"
+
+    assert workflow._explicit_rank_metric(question) == "limit_utilization"
+    assert workflow._validate_requested_row_constraints(
+        question,
+        'SELECT "고객식별자" FROM t ORDER BY "총매출금액" DESC LIMIT 100',
+    ) == ["요청한 순위 지표가 최종 ORDER BY의 첫 정렬 기준과 일치하지 않습니다."]
+    assert workflow._validate_requested_row_constraints(
+        question,
+        'SELECT "고객식별자" FROM t ORDER BY "한도소진율" DESC LIMIT 100',
+    ) == []
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("한도소진율 높은 법인 알려줘", ["한도소진율기준"]),
+        ("이용금액이 많은 기업 알려줘", ["이용금액기준"]),
+        # 임계값·개수·명시 순위 표현이 있으면 되묻지 않고 그대로 해석한다.
+        ("한도소진율이 90% 이상인 법인 알려줘", []),
+        ("한도소진율이 높은 기업 리스트 100개만 만들어줘", []),
+        ("한도소진율 높은 순으로 법인 알려줘", []),
+        ("한도소진율 상위 100개 법인 알려줘", []),
+        # 지표를 부르지 않은 크기 표현은 되묻을 기준이 없다.
+        ("규모가 큰 법인 알려줘", []),
+        # 순위 지표 목록에 없는 증가율은 되묻지 않고 정렬로 답한다.
+        ("2026년 7월 가맹점 매출을 전월과 비교해서 증가율이 높은 브랜드를 알려줘", []),
+    ],
+)
+def test_vague_magnitude_asks_for_a_criterion_only_without_any_clue(
+    question: str,
+    expected: list[str],
+) -> None:
+    state = {"question": question, "user_provided_params": {}, "query_frame": {}}
+    result = workflow.check_sql_gen_params(state)
+
+    assert [item["name"] for item in result["missing_params"]] == expected
+    assert result["param_stage"] == ("need_params" if expected else "done")
+
+
+@pytest.mark.parametrize(
+    "table_ref",
+    [
+        'card_system."tbdaa1d12"',
+        '"card_system"."tbdaa1d12"',
+        "card_system.tbdaa1d12",
+    ],
+)
+def test_schema_prefix_accepts_a_quoted_table_name(table_ref: str) -> None:
+    """Athena 에서 정상인 따옴표 테이블명을 prefix 누락으로 반려하면 안 된다.
+
+    prefix 검사가 문자열 포함으로만 보고 있어서 card_system."tbdaa1d12" 가
+    'prefix가 없습니다' 로 걸렸다. 모델은 이미 붙여 둔 prefix 를 고칠 수 없어
+    재시도를 다 태운다.
+    """
+    sql = f'SELECT "고객식별자" FROM {table_ref} LIMIT 1'
+
+    assert schema._validate_sql_against_schema(sql, ["tbdaa1d12"]) == []
+
+
+def test_schema_prefix_still_rejects_a_missing_prefix() -> None:
+    for sql in (
+        'SELECT "고객식별자" FROM "tbdaa1d12" LIMIT 1',
+        'SELECT "고객식별자" FROM tbdaa1d12 LIMIT 1',
+    ):
+        issues = schema._validate_sql_against_schema(sql, ["tbdaa1d12"])
+
+        assert any(f"{schema.DB_SCHEMA_PREFIX} prefix가 없습니다" in issue for issue in issues), sql

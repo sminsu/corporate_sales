@@ -39,7 +39,7 @@ from .row_constraints import (
     outer_select_list,
     parse_row_request,
 )
-from .safety import SAFETY_REFUSAL, check_content_safety
+from .safety import OUT_OF_SCOPE_GUIDE, check_content_safety, refusal_message
 from .schema import (
     SCHEMA,
     VERIFIED_QUERIES,
@@ -456,8 +456,17 @@ def classify_question(state: Text2SQLState) -> dict:
 **direct** - SQL 없이 바로 답변 가능한 질문:
 - 용어/개념 설명, 테이블/컬럼 구조 설명, 비즈니스 규칙/로직 설명
 
-**reject** - 답변할 수 없는 질문:
-- KB카드 기업영업 데이터와 전혀 무관한 질문
+**reject** - 이 에이전트가 답변할 수 있는 범위가 아닌 질문:
+- 이 서비스는 (1) 기업영업지원 질의와 (2) 가맹점·프랜차이즈 질의에만 답변합니다.
+  (1) 기업·법인 고객의 카드 보유와 이용, 매출, 여신한도와 한도소진율, 연체, 특수채권,
+      대손, 이상거래
+  (2) 가맹점·브랜드의 매출, 업종, 순위, 대손비용률, 개폐업, 가맹점 사업자 정보
+- 위 둘 중 어디에도 해당하지 않으면 reject 입니다. 내용이 무해해도 마찬가지입니다.
+- 인사말과 잡담, 일반 상식, 날씨·뉴스·주가, 코드 작성·번역·글짓기, 개인영업과 개인고객
+  상담, 카드 상품 안내와 분실·재발급 같은 고객센터 문의, 다른 부서·다른 회사 업무
+- 예: "안녕", "오늘 날씨 어때?", "파이썬 코드 짜줘", "내 카드 재발급 어떻게 해?" => reject
+- 단, 업무 용어나 기업·가맹점·브랜드 이름이 들어 있어 위 범위일 여지가 있으면
+  reject 가 아니라 need_sql 또는 direct 로 분류하세요.
 
 ## 보유 데이터 도메인
 {chr(10).join(domain_lines)}
@@ -979,6 +988,20 @@ def _accumulation_policy_instruction(table_names: list[str] | None = None) -> st
             else:
                 lines.append(f"      사용자의 일자/기간은 `{column}`의 YYYYMMDD 조건으로 변환합니다.")
         elif cadence == "monthly":
+            # 월 테이블을 CTE 안에서 WHERE 없이 통째로 읽고 바깥에서 rn·조인으로
+            # 좁히는 SQL 이 반복해서 반려됐다. 어디에 걸어야 하는지와 무엇이
+            # 조건으로 인정되지 않는지를 같이 못 박는다.
+            lines.append(
+                f"      [필수] `{name}`을 읽는 모든 SELECT 스코프(CTE·서브쿼리 포함)의 "
+                f"WHERE 에 `{column}` 조건을 직접 넣습니다. "
+                f"`\"{column}\" = 'YYYYMM'` 또는 "
+                f"`\"{column}\" BETWEEN 'YYYYMM' AND 'YYYYMM'` 형태여야 합니다."
+            )
+            lines.append(
+                "      ROW_NUMBER·RANK 등 윈도 순위와 그 결과를 바깥에서 거르는 rn 조건, "
+                "조인, HAVING, LIMIT 은 읽는 월을 줄이지 못하므로 적재 기간 조건으로 "
+                "인정되지 않습니다. 월 조건이 없으면 SQL 검증에서 반려됩니다."
+            )
             lines.append(
                 f"      일자 요청도 적재 기준 조건은 `{column}`의 YYYYMM으로 축약합니다. "
                 "업무 발생일은 분석·집계 축으로 쓸 수 있지만 적재 월 조건을 생략하지 않습니다."
@@ -1085,16 +1108,40 @@ def _extract_unrequested_time_literals(question: str, sql: str) -> list[str]:
     return sorted(literal_hits)
 
 
+def _master_month_window(start_ym: str, end_ym: str) -> tuple[str, str]:
+    """마스터로 답할 달. 질문이 날짜를 찍지 않았으면 답의 단위도 달이어야 한다.
+
+    마스터의 시간축은 일자지만 사용자가 고른 단위는 달이다. 최신 일자 하나로 좁히면
+    "8월 23일 상태" 를 "8월 기준" 이라고 물은 사람에게 돌려주는 셈이라, 요청한 달과
+    적재된 달이 겹치는 구간을 그대로 쓴다. 겹치는 달이 없을 때만 최신 적재 달로
+    물러나고, 그 사실은 _merchant_master_period_note() 가 답변에서 밝힌다.
+    """
+    latest_month = _latest_available_day(_TBDAADT01_TABLE)[:6]
+    bounds = loaded_period_range(_TBDAADT01_TABLE)
+    if not (start_ym and end_ym) or not bounds:
+        return latest_month, latest_month
+    overlap_start = max(start_ym, bounds[0][:6])
+    overlap_end = min(end_ym, bounds[1][:6])
+    if overlap_start > overlap_end:
+        return latest_month, latest_month
+    return overlap_start, overlap_end
+
+
 def _merchant_master_period_note(start_ym: str, end_ym: str) -> str:
     """요청한 달을 마스터로 답할 때 붙일 기준시점 안내.
 
     "없는 달을 최신 시점으로 대신 답했다" 는 사실을 사용자가 답변에서 알아야
     한다. 없다고 단정하는 것은 적재 범위를 실제로 읽어냈을 때뿐이다.
     """
-    latest = _latest_available_day(_TBDAADT01_TABLE)
+    answered_start, answered_end = _master_month_window(start_ym, end_ym)
+    answered = (
+        answered_start
+        if answered_start == answered_end
+        else f"{answered_start}~{answered_end}"
+    )
     requested = start_ym if start_ym == end_ym else f"{start_ym}~{end_ym}"
     basis = (
-        f"{_TBDAADT01_TABLE}의 최신 {_TBDAADT01_TIME_COLUMN} {latest} 기준으로 조회했습니다."
+        f"{_TBDAADT01_TABLE}의 {_TBDAADT01_MONTH_LABEL} {answered} 기준으로 조회했습니다."
     )
     bounds = loaded_period_range(_TBDAADT01_TABLE)
     if not bounds:
@@ -2116,6 +2163,10 @@ def _apply_recent_month_sql_fix(question: str, sql: str) -> str:
 
 _TBDAADT01_TABLE = "tbdaadt01"
 _TBDAADT01_TIME_COLUMN = "실적기준년월일"
+# 마스터에는 월 컬럼이 없다. 달 단위로 답할 때는 일자 축의 앞 6자리를 그렇게 부른다.
+_TBDAADT01_MONTH_LABEL = "실적기준년월"
+# 같은 가맹점 상태를 현재(마스터)와 과거 달(월 스냅샷)로 나눠 들고 있는 짝.
+_MERCHANT_MASTER_FAMILY = frozenset({_TBDAADT01_TABLE, "tmdaa5d01"})
 _SQL_SOURCE_KEYWORDS = {
     "from", "where", "join", "left", "right", "inner", "full", "cross", "on",
     "using", "group", "order", "limit", "union", "having", "qualify", "window",
@@ -2270,22 +2321,53 @@ def _master_only_attribute(attribute: dict) -> bool:
     } == {_TBDAADT01_TABLE}
 
 
+def _merchant_master_family_attribute(attribute: dict) -> bool:
+    """원천이 가맹점 마스터와 그 월 스냅샷 안에만 있는 속성.
+
+    마스터 전용 속성(merchant_profile)과, 같은 값을 기간별로 두 곳에 나눠 선언한
+    속성(merchant_address)을 함께 본다. 어느 쪽이든 한 질문이 고르는 원천은 하나다.
+    """
+    tables = {
+        str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+        for mapping in attribute.get("source_mappings", [])
+        if mapping.get("table")
+    }
+    return bool(tables) and tables <= _MERCHANT_MASTER_FAMILY and _TBDAADT01_TABLE in tables
+
+
+def _attribute_declared_columns(attribute: dict) -> set[str]:
+    columns: set[str] = set()
+    for mapping in attribute.get("source_mappings", []):
+        columns.update(str(name) for name in mapping.get("columns", []) if name)
+        if mapping.get("column"):
+            columns.add(str(mapping["column"]))
+    # 가맹점번호처럼 어느 질문에나 섞이는 식별자는 뺀다. 그것만으로 마스터 질문이라
+    # 단정하면 월 지표 질문까지 끌어온다.
+    return columns - {"가맹점번호", "기업고객식별자", "대표고객식별자"}
+
+
 @lru_cache(maxsize=1)
 def _master_only_attribute_columns() -> frozenset[str]:
-    """마스터 한 곳만 가리키는 속성이 선언한 컬럼.
+    """마스터 한 곳만 가리키는 속성이 선언한 컬럼."""
+    columns: set[str] = set()
+    for attribute in SCHEMA.get("semantic_attributes", []):
+        if _master_only_attribute(attribute):
+            columns |= _attribute_declared_columns(attribute)
+    return frozenset(columns)
 
-    가맹점번호처럼 어느 질문에나 섞이는 식별자는 뺀다. 그것만으로 마스터 질문이라
-    단정하면 월 지표 질문까지 끌어온다.
+
+@lru_cache(maxsize=1)
+def _merchant_master_family_columns() -> frozenset[str]:
+    """마스터 계열 속성이 선언한 컬럼.
+
+    속성은 별칭으로만 매칭된다. 사용자가 "우편번호" 처럼 컬럼명을 그대로 부르면 별칭에
+    없어서 후보에 안 뜨는데, 그 컬럼을 선언한 속성은 여전히 원천을 못 박고 있다.
     """
     columns: set[str] = set()
     for attribute in SCHEMA.get("semantic_attributes", []):
-        if not _master_only_attribute(attribute):
-            continue
-        for mapping in attribute.get("source_mappings", []):
-            columns.update(str(name) for name in mapping.get("columns", []) if name)
-            if mapping.get("column"):
-                columns.add(str(mapping["column"]))
-    return frozenset(columns - {"가맹점번호", "기업고객식별자", "대표고객식별자"})
+        if _merchant_master_family_attribute(attribute):
+            columns |= _attribute_declared_columns(attribute)
+    return frozenset(columns)
 
 
 # "이번주 실적 기준" · "이번달 실적 기준" 은 적재 축(실적기준년월일)의 일자를 좁혀
@@ -2346,6 +2428,9 @@ def _routed_time_predicate(column: str, cadence: str, start: str, end: str) -> s
             routed_column,
             flags=re.IGNORECASE,
         )
+    elif cadence == "master" and len(start) == 6 and len(end) == 6:
+        # 마스터의 시간축은 일자라서 달 조건은 앞 6자리를 잘라 건다.
+        routed_column = f"SUBSTR({routed_column}, 1, 6)"
     if start == end:
         return f"{routed_column} = '{start}'"
     return f"{routed_column} BETWEEN '{start}' AND '{end}'"
@@ -2531,17 +2616,60 @@ def _restore_master_from_archive(sql: str, archive_table: str) -> str:
     return restored
 
 
-def _master_attribute_alternate_sources(question: str) -> list[str]:
-    """이 질문에 걸린 속성이 마스터 대신 가리킬 수 있는 같은 엔티티의 스냅샷.
+def _declared_merchant_source(question: str) -> str:
+    """이 질문의 가맹점 속성이 원천으로 못 박은 테이블 하나. 없으면 빈 문자열.
 
-    "한신포차 가맹점주 가맹점 도로명 주소" 는 주소가 마스터에만 있어 마스터 질문으로
-    판정되는데, 함께 걸린 '가맹점 주대표자' 속성이 tbdaaus01·tmdaaus01·tmdaa5d01 을
-    같은 대표고객식별자의 원천으로 선언해 둔다. 그 목록이 프롬프트에 그대로 들어가서
-    SQL 생성이 마스터 대신 일별요약을 베껴 왔고, 주소 컬럼이 없는 테이블로 답이 나갔다.
+    "여기서만 읽는다" 는 선언은 마스터 전용 속성만 하는 것이 아니다. 원천을 기간별로
+    나눠 선언한 속성(merchant_address)도 한 질문에 대해서는 한 곳을 고른다 —
+    기간이 없으면 마스터, 지난 달 이전이면 월 스냅샷이다. 어느 쪽이든 답은 그 한 곳에서
+    나와야 하고, 같은 엔티티의 다른 스냅샷에는 그 속성의 컬럼이 없다.
     """
     candidates = semantic_attribute_candidates(SCHEMA, question, max_count=6)
-    if not any(_master_only_attribute(attribute) for attribute in candidates):
+    for attribute in candidates:
+        if _master_only_attribute(attribute):
+            return _TBDAADT01_TABLE
+    for attribute in candidates:
+        if not _merchant_master_family_attribute(attribute):
+            continue
+        tables = {
+            str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+            for mapping in _attribute_source_mappings(question, attribute)
+            if mapping.get("table")
+        }
+        if len(tables) == 1:
+            return tables.pop()
+    # 별칭에 없는 컬럼명을 그대로 부른 질문("우편번호")은 속성 후보에 안 뜬다. 그래도
+    # 그 컬럼을 선언한 원천은 정해져 있고, 어느 쪽인지는 질문의 기간이 가른다.
+    if _merchant_master_family_columns() & set(
+        _v2_named_columns(question, _schema_column_names())
+    ):
+        cadence, _, _ = _recent_merchant_time_route(question)
+        return _master_archive_table() if cadence == "monthly" else _TBDAADT01_TABLE
+    return ""
+
+
+def _master_archive_table() -> str:
+    """가맹점 마스터가 과거 달을 넘기는 원천."""
+    historical_source = (accumulation_policy_for(_TBDAADT01_TABLE) or {}).get(
+        "historical_source"
+    )
+    if not isinstance(historical_source, dict):
+        return ""
+    return str(historical_source.get("table") or "").rsplit(".", 1)[-1].lower()
+
+
+def _master_attribute_alternate_sources(question: str) -> list[str]:
+    """이 질문에 걸린 속성이 선언된 원천 대신 가리킬 수 있는 같은 엔티티의 스냅샷.
+
+    "한신포차 가맹점주 가맹점 도로명 주소" 는 주소를 한 원천에서 읽는 질문인데, 함께
+    걸린 '가맹점 주대표자' 속성이 tbdaaus01·tmdaaus01·tmdaa5d01 을 같은 대표고객식별자의
+    원천으로 선언해 둔다. 그 목록이 프롬프트에 그대로 들어가서 SQL 생성이 선언된 원천
+    대신 일별요약을 베껴 왔고, 주소 컬럼이 없는 테이블로 답이 나갔다.
+    """
+    declared = _declared_merchant_source(question)
+    if not declared:
         return []
+    candidates = semantic_attribute_candidates(SCHEMA, question, max_count=6)
     alternates: set[str] = set()
     for attribute in candidates:
         tables = {
@@ -2550,7 +2678,7 @@ def _master_attribute_alternate_sources(question: str) -> list[str]:
             if mapping.get("table")
         }
         if _TBDAADT01_TABLE in tables:
-            alternates.update(tables - {_TBDAADT01_TABLE})
+            alternates.update(tables - {_TBDAADT01_TABLE, declared})
     return sorted(alternates)
 
 
@@ -2570,10 +2698,19 @@ def _master_restore_missing_columns(sql: str, snapshot_table: str) -> list[str]:
 
 
 def _restore_master_attribute_sources(question: str, sql: str) -> str:
-    """마스터에만 있는 속성을 물었는데 스냅샷으로 생성된 SQL 을 마스터로 되돌린다."""
-    if _TBDAADT01_TABLE in _extract_schema_tables(sql):
+    """선언된 원천을 물었는데 같은 엔티티의 다른 스냅샷으로 생성된 SQL 을 되돌린다.
+
+    되돌릴 목적지가 월 스냅샷이어도 일단 마스터로 옮긴다. 곧바로 이어지는
+    _apply_tbdaadt01_historical_source() 가 질문의 기간을 보고 마스터를 그 기간의
+    원천으로 다시 돌리기 때문이다. 두 단계를 거치면 시간축 이름과 리터럴 자릿수
+    ('20260131' -> '202601')가 한 곳에서만 관리된다.
+    """
+    declared = _declared_merchant_source(question)
+    # 마스터를 거쳐 가는 경로다. 그 경로가 닿지 못하는 원천은 손대지 않는다.
+    if declared not in {_TBDAADT01_TABLE, _master_archive_table()}:
         return sql
-    if not _merchant_master_attribute_question(question):
+    used = _extract_schema_tables(sql)
+    if _TBDAADT01_TABLE in used or declared in used:
         return sql
     # 마스터로 되돌리면 스냅샷의 시간 축은 실적기준년월일이 된다. 그 값을 마스터의
     # 적재일로 다시 쓰는 것은 시간 라우팅이 하는 일이라, 라우팅이 없는데 축에 값이
@@ -2608,10 +2745,10 @@ def _apply_tbdaadt01_historical_source(question: str, sql: str) -> str:
     if _TBDAADT01_TABLE not in _extract_schema_tables(sql):
         return sql
     if cadence == "master":
-        # 마스터가 요청한 달을 들고 있을 리 없다. 최신 가용일 1건으로 좁혀 가맹점당
-        # 보관일수만큼 행이 불어나는 것을 막고, 요청한 달이 없다는 사실은
+        # 질문이 날짜를 찍지 않았으면 답의 단위도 달이다. 요청한 달과 적재된 달이
+        # 겹치면 그 달을, 겹치지 않으면 최신 적재 달을 쓰고 그 사실은
         # _implicit_time_basis_note() 가 답변에서 밝힌다.
-        start = end = _latest_available_day(_TBDAADT01_TABLE)
+        start, end = _master_month_window(start, end)
 
     if cadence == "monthly" and not isinstance(historical_source, dict):
         return sql
@@ -4058,7 +4195,7 @@ def _explicit_rank_metric(question: str) -> str:
         for alias in aliases:
             if re.search(
                 rf"{re.escape(alias)}\s*(?:기준(?:으로)?|순(?:으로)?|이|가|의|을|를)?\s*"
-                rf"(?:상위|하위|TOP|BOTTOM|톱|오름차순|내림차순|낮은\s*순|높은\s*순)",
+                rf"(?:상위|하위|TOP|BOTTOM|톱|오름차순|내림차순|낮은(?:\s*순)?|높은(?:\s*순)?)",
                 question or "",
                 re.IGNORECASE,
             ):
@@ -4767,6 +4904,11 @@ def direct_answer(state: Text2SQLState) -> dict:
 ## 질의 작성 Reference
 {references}
 
+## 답변 범위
+이 서비스는 기업영업지원 질의와 가맹점·프랜차이즈 질의에만 답변합니다. 위 정보로 설명할
+수 없고 기업영업·가맹점 업무와도 무관한 질문이면 다른 문장 없이 OUT_OF_SCOPE 한 단어만
+출력하세요. 알고 있는 일반 지식으로 대신 답하지 마세요.
+
 ## 사용자 질문
 {question}
 
@@ -4775,7 +4917,8 @@ def direct_answer(state: Text2SQLState) -> dict:
         answer = _coerce_llm_text(_call_llm(prompt, max_tokens=1000))
     except Exception:
         answer = ""
-    if answer:
+    out_of_scope = bool(re.match(r"^\W*OUT_OF_SCOPE\b", answer, flags=re.IGNORECASE))
+    if answer and not out_of_scope:
         return {"answer": answer}
     if schema_question and table_summary and "사용 가능한 테이블 없음" not in table_summary:
         return {"answer": table_summary}
@@ -4792,15 +4935,18 @@ def direct_answer(state: Text2SQLState) -> dict:
             if glossary_item.get("sql_hint"):
                 lines.append(f"- 조회 규칙: {glossary_item['sql_hint']}")
             return {"answer": "\n".join(lines)}
+    if out_of_scope:
+        return {"answer": OUT_OF_SCOPE_GUIDE}
     return {"answer": "요청하신 개념을 자동 설명하지 못했습니다. 용어 또는 지표명을 조금 더 구체적으로 입력해주세요."}
 
 
-def reject_answer(state: Text2SQLState) -> dict:
-    return {"answer": "죄송합니다. 현재 기업영업 데이터 범위에서는 답변하기 어려운 질문입니다.\n\n다음처럼 질문해 주세요:\n- 카드 매출·이용금액과 월별 추이\n- 가맹점·업종별 매출과 순위\n- 기업고객의 카드 보유, 여신한도, 연체, 특수채권, 대손충당금\n- 예: `2025년 12월 가맹점별 매출 상위 10곳을 보여줘`"}
+def reject_answer(_: Text2SQLState) -> dict:
+    return {"answer": OUT_OF_SCOPE_GUIDE}
 
 
-def policy_refusal(_: Text2SQLState) -> dict:
-    return {"answer": SAFETY_REFUSAL}
+def policy_refusal(state: Text2SQLState) -> dict:
+    # 범위를 벗어났을 뿐인 질문까지 안전 정책 문구로 돌려보내면 왜 막혔는지 알 수 없다.
+    return {"answer": refusal_message(state)}
 
 
 _GENERIC_TABLE_TERMS = {"기준년월", "기준년월일", "고객식별자", "회원일련번호", "금액", "건수"}
@@ -5208,14 +5354,20 @@ def _route_accumulation_table_names(
                     continue
             name = monthly_name or name
         add(name)
-    if master_archive:
-        # 같은 엔티티의 월 스냅샷은 마스터가 답할 질문에 보탤 것이 없다. 주소를
+    declared_source = _declared_merchant_source(question) if cadence else ""
+    if declared_source in _MERCHANT_MASTER_FAMILY and (master_archive or archive_table):
+        # 같은 엔티티의 다른 스냅샷은 선언된 원천이 답할 질문에 보탤 것이 없다. 주소를
         # 물었는데 주소 컬럼이 아예 없는 tmdaaus01 이 후보로 남아 SQL 에 섞였다.
         # 월 "팩트"(tmdaa5e11 등)는 다른 엔티티이므로 걷어내지 않는다.
-        routed = [name for name in routed if name.lower() not in _ARCHIVE_SNAPSHOT_TABLES]
-        if _TBDAADT01_TABLE not in routed:
-            # 마스터도 그 짝도 고르지 않았다면 답할 곳이 아예 없다.
-            routed.insert(0, _TBDAADT01_TABLE)
+        routed = [
+            name
+            for name in routed
+            if name.lower() == declared_source
+            or name.lower() not in _ARCHIVE_SNAPSHOT_TABLES
+        ]
+        if declared_source not in routed:
+            # 선언된 원천을 아무도 고르지 않았다면 답할 곳이 아예 없다.
+            routed.insert(0, declared_source)
     return routed
 
 
@@ -5973,6 +6125,50 @@ def analyze_question(state: Text2SQLState) -> dict:
     }
 
 
+# 임계값 없는 크기 표현. "90% 이상"처럼 값이 있으면 그 값을 쓰고, "상위 100개"나
+# "100개만"처럼 개수·방향이 있으면 순위로 읽는다. 둘 다 없으면 모델이 임계값을
+# 지어내는데, 한도소진율의 unit 은 % 이고 expression 은 0~1 비율이라 지어낸 90 은
+# 늘 0건이 된다. 그래서 조용히 추측하는 대신 기준을 되묻는다.
+_VAGUE_MAGNITUDE_RE = re.compile(r"높은|낮은|많은|적은")
+_EXPLICIT_MAGNITUDE_RE = re.compile(
+    r"\d\s*%|이상|이하|초과|미만|넘는|이내|"
+    r"상위|하위|TOP|BOTTOM|톱|순위|랭킹|순\s*으로|차순",
+    re.IGNORECASE,
+)
+
+
+def _missing_magnitude_criterion_params(question: str) -> list[dict]:
+    """기준값도 개수도 없는 '높은/낮은' 질문에 물어볼 기준을 돌려준다."""
+    text = question or ""
+    if not _VAGUE_MAGNITUDE_RE.search(text) or _EXPLICIT_MAGNITUDE_RE.search(text):
+        return []
+    if parse_row_request(text).limit is not None:
+        return []
+    # 비교어 바로 앞의 지표만 본다. "증가율이 높은 브랜드"의 증가율은 순위 지표
+    # 목록에 없으므로 되묻을 기준도 없다 — 그 질문은 정렬로 답한다.
+    metric = next(
+        (
+            alias
+            for _, aliases in _RANK_METRIC_ALIASES
+            for alias in aliases
+            if re.search(
+                rf"{re.escape(alias)}\s*(?:이|가|은|는|의)?\s*"
+                rf"(?:{_VAGUE_MAGNITUDE_RE.pattern})",
+                text,
+            )
+        ),
+        "",
+    )
+    if not metric:
+        return []
+    return [
+        {
+            "name": f"{metric}기준",
+            "label": f"'{metric}' 기준 (예: 90% 이상 / 1억원 이상 / 상위 100개)",
+        }
+    ]
+
+
 def check_sql_gen_params(state: Text2SQLState) -> dict:
     if state.get("user_provided_params"):
         return {"param_stage": "done", "missing_params": []}
@@ -5982,6 +6178,7 @@ def check_sql_gen_params(state: Text2SQLState) -> dict:
     query_frame = state.get("query_frame") or {}
     if needed and query_frame.get("entities"):
         needed = [item for item in needed if item.get("name") != "대상명"]
+    needed += _missing_magnitude_criterion_params(question)
 
     if needed:
         return {
@@ -6445,19 +6642,79 @@ def _where_regions(sql: str) -> list[str]:
     return regions
 
 
+# ON 조건은 sqlparse 가 Where 노드로 묶지 않는다. 적재 기간을 JOIN 조건에 건
+# SQL 이 "기간 조건이 없다"고 반려돼, 술어가 사는 자리로 WHERE 와 함께 본다.
+_ON_CLAUSE_END_RE = re.compile(
+    r"\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|WINDOW|QUALIFY"
+    r"|UNION|INTERSECT|EXCEPT|INNER|LEFT|RIGHT|FULL|CROSS|JOIN)\b",
+    re.IGNORECASE,
+)
+
+
+def _join_on_regions(sql: str) -> list[str]:
+    """Return JOIN ... ON predicate regions."""
+    text = str(sql or "")
+    regions: list[str] = []
+    for match in re.finditer(r"\bON\b", text, re.IGNORECASE):
+        rest = text[match.end() :]
+        end = _ON_CLAUSE_END_RE.search(rest)
+        regions.append(rest[: end.start()] if end else rest)
+    return regions
+
+
+def _predicate_regions(sql: str) -> list[str]:
+    """Return every region that can carry a load-axis predicate."""
+    return _where_regions(sql) + _join_on_regions(sql)
+
+
 def _table_axis_patterns(sql: str, table_name: str, column: str) -> list[str]:
     """Build table-owned load-axis patterns, preserving explicit aliases."""
+    # 한정자 없는 컬럼을 어느 테이블 것으로 볼지가 관건이다. 그 이름의 컬럼을
+    # 가진 테이블이 이 SQL 에 하나뿐이면 무조건 그 테이블 것이고, 여럿이면
+    # 스코프를 나눠 쓰는 무별칭 소유 테이블에만 남긴다. 이걸 구분하지 않아
+    # tbd↔tmd 를 함께 읽는 SQL 에서 월 테이블의 `기준년월` 이 일별 테이블의
+    # 없는 컬럼으로 읽히거나, ON 절의 무한정 월 조건이 "기간 조건 없음"이 됐다.
+    table_columns, _ = _table_column_index()
+    lowered = str(table_name or "").lower()
+    others_own_column = any(
+        other != lowered and column in table_columns.get(other, set())
+        for other in _extract_schema_tables(sql)
+    )
+    owns_column = column in table_columns.get(lowered, set())
+    unqualified = [
+        rf'(?<![0-9A-Za-z_가-힣."]){re.escape(column)}(?![0-9A-Za-z_가-힣])',
+        rf'(?<![0-9A-Za-z_가-힣.])"{re.escape(column)}"',
+    ]
     patterns: list[str] = []
     for alias, explicit_alias in _table_aliases(sql, table_name):
-        if explicit_alias:
-            patterns.append(_qualified_column(alias, column))
-        else:
-            patterns.append(
-                rf'(?<![0-9A-Za-z_가-힣])'
-                rf'(?:(?:"?{re.escape(table_name)}"?\s*\.\s*)?)'
-                rf'"?{re.escape(column)}"?'
-                rf'(?![0-9A-Za-z_가-힣])'
-            )
+        qualified = (
+            _qualified_column(alias, column)
+            if explicit_alias
+            else rf'"?{re.escape(table_name)}"?\s*\.\s*"?{re.escape(column)}"?'
+            rf'(?![0-9A-Za-z_가-힣])'
+        )
+        attributable = not others_own_column or (owns_column and not explicit_alias)
+        alternatives = [qualified, *(unqualified if attributable else [])]
+        patterns.append("(?:" + "|".join(alternatives) + ")")
+    return list(dict.fromkeys(patterns))
+
+
+def _table_axis_filter_patterns(sql: str, table_name: str, column: str) -> list[str]:
+    """Widen attribution for "did the SQL constrain this axis?" checks.
+
+    조건을 안 건 SQL 을 통과시키면 Athena 가 다시 잡지만, 건 조건을 못 보고
+    반려하면 사용자는 답을 못 받는다. 그래서 이 테이블이 실제로 가진 컬럼이면
+    별칭을 붙이지 않은 조건도 이 테이블 것으로 센다. `FROM tmdaa1d12 m ...
+    WHERE "기준년월" = p.ym` 처럼 별칭을 선언만 하고 조건엔 안 쓴 SQL 이
+    "월 조건이 없다"고 반려됐다.
+    """
+    patterns = list(_table_axis_patterns(sql, table_name, column))
+    table_columns, _ = _table_column_index()
+    if column in table_columns.get(str(table_name or "").lower(), set()):
+        patterns.append(
+            rf'(?<![0-9A-Za-z_가-힣."]){re.escape(column)}(?![0-9A-Za-z_가-힣])'
+        )
+        patterns.append(rf'(?<![0-9A-Za-z_가-힣.])"{re.escape(column)}"')
     return list(dict.fromkeys(patterns))
 
 
@@ -6465,8 +6722,8 @@ def _has_table_axis_filter(sql: str, table_name: str, column: str) -> bool:
     """Whether the declared load axis participates in a WHERE predicate."""
     tail = r"(?:(?!\b(?:AND|OR|WHERE|HAVING)\b).){0,120}"
     operators = r"(?:=|<>|!=|<=|>=|<|>|\bBETWEEN\b|\bIN\b|\bIS\b|\bLIKE\b)"
-    for region in _where_regions(sql):
-        for axis in _table_axis_patterns(sql, table_name, column):
+    for region in _predicate_regions(sql):
+        for axis in _table_axis_filter_patterns(sql, table_name, column):
             if re.search(
                 rf"(?:{axis}{tail}{operators}|{operators}{tail}{axis})",
                 region,
@@ -6480,7 +6737,7 @@ def _table_axis_literal_values(sql: str, table_name: str, column: str) -> list[s
     """Extract only date literals compared with a table's declared load axis."""
     values: list[str] = []
     tail = r"(?:(?!\b(?:AND|OR|WHERE|HAVING)\b).){0,100}"
-    for region in _where_regions(sql):
+    for region in _predicate_regions(sql):
         for axis in _table_axis_patterns(sql, table_name, column):
             patterns = (
                 rf"{axis}{tail}\bBETWEEN\s*'(20\d{{2,6}})'\s+AND\s+'(20\d{{2,6}})'",
@@ -6503,7 +6760,7 @@ def _has_exact_table_axis_value(
 ) -> bool:
     """Whether a load axis is fixed to the requested one-day snapshot."""
     exact_value = rf"(?:'{re.escape(value)}'|{_DYNAMIC_PREVIOUS_DAY_SQL})"
-    for region in _where_regions(sql):
+    for region in _predicate_regions(sql):
         for axis in _table_axis_patterns(sql, table_name, column):
             if re.search(
                 rf"(?:{axis}\s*=\s*{exact_value}|{exact_value}\s*=\s*{axis}|"
@@ -6525,7 +6782,7 @@ def _has_recent_table_axis_window(
     values = _table_axis_literal_values(sql, table_name, column)
     if start in values and end in values:
         return True
-    for region in _where_regions(sql):
+    for region in _predicate_regions(sql):
         if not any(
             re.search(axis, region, re.IGNORECASE)
             for axis in _table_axis_patterns(sql, table_name, column)
@@ -6608,8 +6865,20 @@ def _availability_policy_issues(
         column = str(policy.get("query_time_dimension") or "")
 
         if policy.get("has_reference_month") is False:
-            reference_month_patterns = _table_axis_patterns(
-                sql, table_name, "기준년월"
+            # 이 규칙의 처방이 SUBSTR 로 월을 파생하라는 것인데, 파생 결과에 붙인
+            # `AS "기준년월"` 별칭과 그 별칭을 다시 읽는 참조까지 물리 컬럼으로
+            # 읽혀 처방대로 쓴 SQL 이 반려됐다. 파생 별칭이 있으면 그 이름은
+            # 이 SQL 안에서 파생값을 가리키므로 테이블 한정 참조만 본다.
+            derives_month = re.search(
+                r'\bAS\s+"?기준년월"?(?![0-9A-Za-z_가-힣])', sql or "", re.IGNORECASE
+            )
+            reference_month_patterns = (
+                [
+                    _qualified_column(alias, "기준년월")
+                    for alias, _ in _table_aliases(sql, table_name)
+                ]
+                if derives_month
+                else _table_axis_patterns(sql, table_name, "기준년월")
             )
             if any(
                 re.search(pattern, sql or "", re.IGNORECASE)

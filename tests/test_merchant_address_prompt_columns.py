@@ -17,13 +17,22 @@ import pytest
 from text2sql_agent import schema, workflow
 
 ADDRESS_QUESTION = "한신포차 가맹점주 가맹점 도로명 주소 2026년 5월 기준으로 알려줘"
+UNDATED_ADDRESS_QUESTION = "한신포차 가맹점주 가맹점 도로명 주소 알려줘"
 
 
-def test_business_address_reaches_the_prompt() -> None:
-    ranked = workflow._rule_rank_tables(ADDRESS_QUESTION)
+@pytest.mark.parametrize(
+    ("question", "expected_source"),
+    [
+        (UNDATED_ADDRESS_QUESTION, "tbdaadt01"),
+        (ADDRESS_QUESTION, "tmdaa5d01"),
+    ],
+)
+def test_business_address_reaches_the_prompt(question: str, expected_source: str) -> None:
+    """기간에 맞는 원천이 1순위이고, 그 원천의 주소 본문 컬럼이 프롬프트에 있어야 한다."""
+    ranked = workflow._rule_rank_tables(question)
 
-    assert ranked == ["tbdaadt01"], ranked
-    assert "- 가맹점상세주소 [" in workflow._table_details(ranked, ADDRESS_QUESTION)
+    assert ranked[0] == expected_source, (question, ranked)
+    assert "- 가맹점상세주소 [" in workflow._table_details(ranked, question)
 
 
 @pytest.mark.parametrize(
@@ -58,48 +67,76 @@ def test_personal_addresses_stay_out_of_the_prompt(table_name: str, column: str)
     assert schema._is_restricted_column(table, column)
 
 
-def test_missing_month_answers_from_the_master_and_says_so() -> None:
-    """마스터에 없는 달을 물으면 최신 실적기준일자로 답하고 그 사실을 밝힌다."""
-    sql = (
+def _address_sql(table: str) -> str:
+    return (
         'SELECT m."가맹점번호", m."가맹점명", m."가맹점상세주소", m."주소표시구분코드"\n'
-        "FROM tbdaadt01 m\n"
+        f"FROM {table} m\n"
         "WHERE LOWER(COALESCE(m.\"가맹점명\", '')) LIKE LOWER(CONCAT('%', '한신포차', '%'))"
     )
-    routed = workflow._apply_accumulation_historical_sources(ADDRESS_QUESTION, sql)
-    note = workflow._implicit_time_basis_note(ADDRESS_QUESTION, routed)
+
+
+def test_a_past_month_reads_the_monthly_snapshot() -> None:
+    """마스터는 최근 며칠만 들고 있다. 지난 달 주소는 월 스냅샷이 답해야 한다."""
+    routed = workflow._apply_accumulation_historical_sources(
+        ADDRESS_QUESTION, _address_sql("tbdaadt01")
+    )
+
+    assert "tmdaa5d01" in routed
+    assert "tbdaadt01" not in routed
+    assert '"기준년월" = \'202605\'' in routed
+    # 요청한 달을 그대로 읽었으니 "다른 시점으로 대신 답했다" 는 안내가 필요 없다.
+    assert workflow._implicit_time_basis_note(ADDRESS_QUESTION, routed) == ""
+
+
+def test_the_open_month_answers_from_the_master_by_month() -> None:
+    """월 스냅샷이 아직 없는 달은 마스터가 답하되, 단위는 일자가 아니라 달이다."""
+    question = "한신포차 가맹점주 가맹점 도로명 주소 이번 달 기준으로 알려줘"
+    routed = workflow._apply_accumulation_historical_sources(
+        question, _address_sql("tbdaadt01")
+    )
+    note = workflow._implicit_time_basis_note(question, routed)
 
     assert "tbdaadt01" in routed
-    assert "tmdaa5d01" not in routed
-    assert '"실적기준년월일" = ' in routed
-    assert "202605" in note
-    assert "최신 실적기준년월일" in note
+    assert f'SUBSTR(m."{workflow._TBDAADT01_TIME_COLUMN}", 1, 6) = ' in routed
+    assert workflow._current_ym() in routed
+    assert workflow._TBDAADT01_MONTH_LABEL in note
 
 # 우편번호도 같은 속성이 답한다. 전표(tbdaabt30)가 같은 값을 "가맹점우편번호" 라는
 # 이름으로 복사해 갖고 있어서, 질문이 컬럼명을 그대로 불렀다는 가점이 사본 쪽에
 # 붙고 마스터가 밀렸다.
 POSTAL_QUESTIONS = [
-    "한신포차 가맹점 우편번호 알려줘",
-    "도미노피자 가맹점 우편번호 알려줘",
-    "한신포차 가맹점주 가맹점 우편번호 2026년 5월 기준으로 알려줘",
+    ("한신포차 가맹점 우편번호 알려줘", "tbdaadt01"),
+    ("도미노피자 가맹점 우편번호 알려줘", "tbdaadt01"),
+    ("한신포차 가맹점주 가맹점 우편번호 2026년 5월 기준으로 알려줘", "tmdaa5d01"),
 ]
 
 
-@pytest.mark.parametrize("question", POSTAL_QUESTIONS)
-def test_merchant_postal_code_reads_the_master(question: str) -> None:
+@pytest.mark.parametrize(("question", "expected_source"), POSTAL_QUESTIONS)
+def test_merchant_postal_code_reads_the_declared_source(
+    question: str, expected_source: str
+) -> None:
     ranked = workflow._rule_rank_tables(question)
 
-    assert ranked[0] == "tbdaadt01", (question, ranked)
+    assert ranked[0] == expected_source, (question, ranked)
     details = workflow._table_details(ranked, question)
     assert "- 우편번호 [" in details
     assert "- 도로명우편번호 [" in details
 
 
-def test_postal_question_is_a_master_attribute_question() -> None:
-    """마스터 한 곳만 가리키는 속성이 걸려야 "없는 달은 최신 기준" 안내까지 이어진다."""
-    question = "한신포차 가맹점주 가맹점 우편번호 2026년 5월 기준으로 알려줘"
+def test_an_undated_postal_question_is_a_master_attribute_question() -> None:
+    """기간을 말하지 않으면 현재 상태를 묻는 것이고, 그 원천은 마스터다."""
+    question = "한신포차 가맹점주 가맹점 우편번호 알려줘"
 
     assert workflow._merchant_master_attribute_question(question)
-    assert workflow._recent_merchant_time_route(question)[0] == "master"
+    assert workflow._recent_merchant_time_route(question)[0] == ""
+
+
+def test_a_past_month_postal_question_leaves_the_master() -> None:
+    """지난 달을 물으면 마스터가 아니라 그 달을 들고 있는 월 스냅샷이 답한다."""
+    question = "한신포차 가맹점주 가맹점 우편번호 2026년 5월 기준으로 알려줘"
+
+    assert not workflow._merchant_master_attribute_question(question)
+    assert workflow._recent_merchant_time_route(question) == ("monthly", "202605", "202605")
 
 
 def test_customer_postal_questions_stay_out_of_the_merchant_master() -> None:
@@ -119,14 +156,30 @@ def test_slip_copy_is_called_out_in_the_prompt() -> None:
     assert "전표(tbdaabt30)의 가맹점우편번호는 전표 시점의 사본이다" in summary
 
 
-def test_single_source_attribute_outranks_a_denormalized_copy() -> None:
-    """원천을 한 곳만 선언한 속성은 그 원천이 1순위여야 한다."""
+@pytest.mark.parametrize(
+    ("question", "expected_source"),
+    [
+        ("한신포차 가맹점 우편번호 알려줘", "tbdaadt01"),
+        ("한신포차 가맹점주 가맹점 우편번호 2026년 5월 기준으로 알려줘", "tmdaa5d01"),
+    ],
+)
+def test_single_source_attribute_outranks_a_denormalized_copy(
+    question: str, expected_source: str
+) -> None:
+    """한 기간에 원천을 하나만 고르는 속성은 그 원천이 1순위여야 한다.
+
+    속성은 현재·과거 원천 둘을 선언하지만 한 질문이 고르는 원천은 하나다. 가점은
+    그 해석된 원천에 붙어야 전표의 사본("가맹점우편번호")을 이긴다.
+    """
     attribute = next(
         item
         for item in schema.SCHEMA["semantic_attributes"]
         if item["name"] == "merchant_address"
     )
-    sources = {mapping["table"] for mapping in attribute["source_mappings"]}
+    sources = {
+        mapping["table"]
+        for mapping in workflow._attribute_source_mappings(question, attribute)
+    }
 
-    assert sources == {"tbdaadt01"}
+    assert sources == {expected_source}
     assert workflow._SINGLE_SOURCE_ATTRIBUTE_WEIGHT >= 40

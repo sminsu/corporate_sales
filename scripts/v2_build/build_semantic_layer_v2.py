@@ -408,8 +408,28 @@ def apply_recent_merchant_semantic_overrides(schema: dict) -> int:
 # 주소표시구분코드다) 주소 계열 컬럼에 동의어가 하나도 없어서다. 질문이 남긴
 # 유일한 단서가 "가맹점주"(merchant_owner) 였고, 그 속성은 마스터·일별·월별
 # 스냅샷 4개를 동점으로 올린다. 그래서 주소 컬럼이 아예 없는 tmdaaus01 까지
-# 후보가 됐다. 주소를 마스터 한 곳으로만 매핑되는 속성으로 선언한다.
+# 후보가 됐다. 주소를 원천이 선언된 속성으로 만들어 그 넷 중 둘만 남긴다.
+#
+# 원천을 마스터 하나로 두었더니 이번에는 지난 달 이전을 물을 수 없었다.
+# _merchant_master_attribute_question() 이 이 속성을 마스터 전용으로 읽어 시간
+# 라우팅을 'master' 로 고정하고, 마스터는 최근 며칠만 보관하므로 요청한 달이
+# 최신 적재 시점으로 바뀌었다("2026년 1월 도로명 주소" -> 8월 상태). 월 스냅샷
+# tmdaa5d01 이 주소 컬럼 9개를 하나도 빠짐없이 갖고 있으므로, 신용판매 매출금액과
+# 같은 방식으로 현재·과거 원천을 나눠 선언한다.
 # ---------------------------------------------------------------------------
+# 마스터와 월 스냅샷이 같은 9개 컬럼을 갖는다. 한쪽만 고치는 일이 없도록 공유한다.
+MERCHANT_ADDRESS_COLUMNS = [
+    "가맹점상세주소",
+    "주소표시구분코드",
+    "우편번호",
+    "도로명우편번호",
+    "도로명우편읍면번호",
+    "도로명구역번호",
+    "도로명건물본번호",
+    "도로명건물부번호",
+    "도로명지하구분코드",
+]
+
 MERCHANT_ADDRESS_ATTRIBUTE = {
     "name": "merchant_address",
     "korean_name": "가맹점 주소",
@@ -431,28 +451,33 @@ MERCHANT_ADDRESS_ATTRIBUTE = {
         {
             "entity": "merchant",
             "table": "tbdaadt01",
-            "columns": [
-                "가맹점상세주소",
-                "주소표시구분코드",
-                "우편번호",
-                "도로명우편번호",
-                "도로명우편읍면번호",
-                "도로명구역번호",
-                "도로명건물본번호",
-                "도로명건물부번호",
-                "도로명지하구분코드",
-            ],
-        }
+            "columns": list(MERCHANT_ADDRESS_COLUMNS),
+            "role": "current_merchant_address",
+        },
+        {
+            "entity": "merchant_monthly_snapshot",
+            "table": "tmdaa5d01",
+            "columns": list(MERCHANT_ADDRESS_COLUMNS),
+            "role": "monthly_merchant_address",
+        },
     ],
+    "source_selection": {
+        "default_role_prefix": "current_",
+        "period_role_prefix": "monthly_",
+        "current_terms": ["이번 달", "이번달", "당월", "현재", "최신", "지금", "오늘"],
+        # 요청 월이 실행일이 속한 달이면 월 스냅샷에 아직 그 달 행이 없다.
+        "open_month_uses_current": True,
+    },
     "semantic_cautions": [
         "도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소이고 도로명·지번 표기 여부는 주소표시구분코드로 판별한다.",
         "도로명 주소를 물으면 가맹점상세주소를 주소표시구분코드·우편번호와 함께 내보내고, 도로명 번호 컬럼만으로 주소를 조립하지 않는다.",
+        "지난 달 이전의 주소는 tmdaa5d01의 기준년월 행에서 읽는다. 마스터(tbdaadt01)는 최근 며칠만 보관하므로 과거 월을 최신 적재분으로 대체하지 않는다.",
     ],
 }
 
 
 def apply_merchant_address_semantics(schema: dict) -> int:
-    """Give 가맹점 주소 one master-only attribute instead of no attribute at all."""
+    """Give 가맹점 주소 a declared source per period instead of no attribute at all."""
     attributes = schema.get("semantic_attributes")
     if not isinstance(attributes, list):
         raise SystemExit("semantic_attributes 없음")
@@ -460,6 +485,21 @@ def apply_merchant_address_semantics(schema: dict) -> int:
         item.get("name") == MERCHANT_ADDRESS_ATTRIBUTE["name"] for item in attributes
     ):
         raise SystemExit(f"이미 있는 속성: {MERCHANT_ADDRESS_ATTRIBUTE['name']}")
+
+    # 월 원천이 주소 컬럼을 하나라도 빠뜨리면 과거 월 답변이 컬럼 오류가 된다.
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    for mapping in MERCHANT_ADDRESS_ATTRIBUTE["source_mappings"]:
+        table = tables.get(str(mapping["table"]))
+        if table is None:
+            raise SystemExit(f"테이블 없음: {mapping['table']}")
+        declared = {
+            str(column.get("name") or "")
+            for section in COLUMN_SECTIONS
+            for column in table.get(section) or []
+        }
+        missing = [name for name in mapping["columns"] if name not in declared]
+        if missing:
+            raise SystemExit(f"{mapping['table']} 에 없는 컬럼: {', '.join(missing)}")
 
     anchor = next(
         (
@@ -729,6 +769,11 @@ def apply_corporate_customer_semantic_overrides(schema: dict) -> int:
             *filters,
             "현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용",
         ]
+
+    # unit 은 % 인데 expression 은 1.0 - 잔여/총한도, 즉 0~1 비율이다. 프롬프트에
+    # unit=% 만 보이면 임계값 없는 "소진율 높은" 질문에서 모델이 90 을 써 늘 0건이
+    # 된다. 비율이라는 사실을 unit 에 적어 둔다.
+    metrics["기업한도소진율"]["unit"] = "비율 0~1 (90% 는 0.9)"
 
     fixed_monthly_contracts = (
         "corporate_member_with_monthly_usage_count",
@@ -2624,6 +2669,17 @@ def apply_merchant_fee_revenue_metric(schema: dict) -> int:
             if _table_column(merchant, name) is None:
                 raise SystemExit(f"{MERCHANT_MONTHLY_TABLE} 에 {name} 컬럼이 없다")
     attributes.append(deepcopy(MERCHANT_FEE_ATTRIBUTE))
+
+    # 기업한도소진율과 같은 자리다. unit 은 % 인데 expression 은 AVG(수수료율 컬럼),
+    # 즉 0~1 비율이다. 프롬프트에 unit=% 만 보이면 임계값 없는 "수수료율 높은" 질문에서
+    # 모델이 90 을 써 늘 0건이 된다. 비율이라는 사실을 unit 에 적어 둔다.
+    metrics = {
+        str(item.get("name") or ""): item for item in schema.get("canonical_metrics", [])
+    }
+    if "신용카드가맹점수수료율" not in metrics:
+        raise SystemExit("수수료율 단위 교정 대상 지표 없음: 신용카드가맹점수수료율")
+    metrics["신용카드가맹점수수료율"]["unit"] = "비율 0~1 (90% 는 0.9)"
+
     return 2
 
 

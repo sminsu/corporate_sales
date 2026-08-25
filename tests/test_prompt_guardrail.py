@@ -233,3 +233,46 @@ def test_blocked_output_is_not_saved_as_a_result() -> None:
     assert payload["sql"] == ""
     assert payload["rows"] == []
     save_result.assert_not_called()
+
+
+def test_off_topic_block_answers_with_the_usage_guide() -> None:
+    """범위를 벗어났을 뿐인 질문은 안전 정책 문구가 아니라 무엇을 물으면 되는지로 답한다."""
+
+    off_topic = {
+        "action": "BLOCK",
+        "category": "OFF_TOPIC",
+        "reason_code": "OUT_OF_SCOPE",
+        "direction": "INPUT",
+    }
+
+    assert safety.refusal_message(off_topic) == safety.OUT_OF_SCOPE_GUIDE
+    assert safety.refusal_message(BLOCK) == safety.SAFETY_REFUSAL
+    assert web_service._blocked_result(off_topic)["answer"] == safety.OUT_OF_SCOPE_GUIDE
+
+    state = workflow._new_initial_state("오늘 날씨 어때?")
+    with (
+        patch.object(config, "PROMPT_GUARDRAIL_ENABLED", True),
+        patch.object(safety.llm, "_call_llm", return_value=json.dumps(off_topic)),
+    ):
+        classified = workflow.classify_question(state)
+
+    assert workflow.route_by_question_type(classified) == "policy_refusal"
+    assert workflow.policy_refusal(classified)["answer"] == safety.OUT_OF_SCOPE_GUIDE
+
+
+def test_out_of_scope_paths_share_one_message() -> None:
+    """가드레일이 꺼진 배포에서도 분류기의 reject 가 같은 안내로 나가야 한다."""
+
+    assert workflow.reject_answer(workflow._new_initial_state("안녕"))["answer"] == (
+        safety.OUT_OF_SCOPE_GUIDE
+    )
+    assert "이 에이전트가 답변할 수 있는 범위가 아닙니다" in safety.OUT_OF_SCOPE_GUIDE
+    assert "기업영업지원 에이전트 질의" in safety.OUT_OF_SCOPE_GUIDE
+    assert "가맹점 · 프랜차이즈 관련 질의" in safety.OUT_OF_SCOPE_GUIDE
+
+
+def test_scope_is_declared_in_both_classifier_prompts() -> None:
+    policy = safety.SAFETY_CLASSIFIER_SYSTEM_PROMPT
+    assert "기업영업지원 질의" in policy
+    assert "가맹점·프랜차이즈 질의" in policy
+    assert "OFF_TOPIC 은 '위험한가'가 아니라 '이 서비스의 범위인가'로 판정합니다" in policy

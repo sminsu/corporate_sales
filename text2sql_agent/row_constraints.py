@@ -27,7 +27,7 @@ _DIRECTIONAL_ROW_RE = re.compile(
 )
 _PLAIN_ROW_RE = re.compile(
     r"(?P<count>\d[\d,]*)\s*(?:개사|개(?!월)|건|명|곳|행|좌|업체|회사|가맹점)"
-    r"\s*(?:까지만|만(?=\s*(?:$|[.!?]))|(?:만\s*)?(?:을|를)?\s*(?:뽑|추출|표시|보여|알려|조회|가져|출력))",
+    r"\s*(?:까지만|만(?=\s*(?:$|[.!?]))|(?:만\s*)?(?:을|를)?\s*(?:뽑|추출|표시|보여|알려|조회|가져|출력|만들|생성|정리))",
     re.IGNORECASE,
 )
 
@@ -46,9 +46,9 @@ def _row_mode(direction: str) -> RowMode:
 
 
 def _direction_in_text(text: str) -> RowMode:
-    if re.search(r"(?:하위|BOTTOM|낮은\s*순|작은\s*순|오름차순|\bASC\b)", text, re.IGNORECASE):
+    if re.search(r"(?:하위|BOTTOM|낮은(?:\s*순)?|적은(?:\s*순)?|작은\s*순|오름차순|\bASC\b)", text, re.IGNORECASE):
         return "bottom"
-    if re.search(r"(?:상위|TOP|톱|높은\s*순|큰\s*순|내림차순|\bDESC\b)", text, re.IGNORECASE):
+    if re.search(r"(?:상위|TOP|톱|높은(?:\s*순)?|많은(?:\s*순)?|큰\s*순|내림차순|\bDESC\b)", text, re.IGNORECASE):
         return "top"
     if re.search(r"(?:뒤(?:에서|쪽|에)|마지막|끝(?:에서|쪽)|\bLAST\b)", text, re.IGNORECASE):
         return "tail"

@@ -16846,9 +16846,36 @@ semantic_attributes:
     - 도로명건물본번호
     - 도로명건물부번호
     - 도로명지하구분코드
+    role: current_merchant_address
+  - entity: merchant_monthly_snapshot
+    table: tmdaa5d01
+    columns:
+    - 가맹점상세주소
+    - 주소표시구분코드
+    - 우편번호
+    - 도로명우편번호
+    - 도로명우편읍면번호
+    - 도로명구역번호
+    - 도로명건물본번호
+    - 도로명건물부번호
+    - 도로명지하구분코드
+    role: monthly_merchant_address
+  source_selection:
+    default_role_prefix: current_
+    period_role_prefix: monthly_
+    current_terms:
+    - 이번 달
+    - 이번달
+    - 당월
+    - 현재
+    - 최신
+    - 지금
+    - 오늘
+    open_month_uses_current: true
   semantic_cautions:
   - 도로명주소라는 단일 컬럼은 없다. 주소 본문은 가맹점상세주소이고 도로명·지번 표기 여부는 주소표시구분코드로 판별한다.
   - 도로명 주소를 물으면 가맹점상세주소를 주소표시구분코드·우편번호와 함께 내보내고, 도로명 번호 컬럼만으로 주소를 조립하지 않는다.
+  - 지난 달 이전의 주소는 tmdaa5d01의 기준년월 행에서 읽는다. 마스터(tbdaadt01)는 최근 며칠만 보관하므로 과거 월을 최신 적재분으로 대체하지 않는다.
   - 전표(tbdaabt30)의 가맹점우편번호는 전표 시점의 사본이다. 가맹점 우편번호는 가맹점 마스터(tbdaadt01)의 우편번호를 쓴다.
 - name: merchant_credit_sales
   korean_name: 가맹점 신용판매 매출금액
@@ -17535,7 +17562,7 @@ canonical_metrics:
   synonyms: [은행별 가맹점 수, 결제은행 가맹점 수, 가맹점 계좌 은행별 개수, KB국민은행 가맹점 수]
   unit: 개
   aggregation_behavior: distinct_count
-- {name: 신용카드가맹점수수료율, domain: merchant_sales, expression: 'AVG(tmdaa5e11."신용카드가맹점수수료율")', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점수수료율, 수수료율], unit: '%', aggregation_behavior: derived_non_additive}
+- {name: 신용카드가맹점수수료율, domain: merchant_sales, expression: 'AVG(tmdaa5e11."신용카드가맹점수수료율")', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점수수료율, 수수료율], unit: '비율 0~1 (90% 는 0.9)', aggregation_behavior: derived_non_additive}
 - name: 기업고객수
   domain: customer_card_portfolio
   business_definition: 개인기업구분코드가 기업인 고유 고객식별자 수
@@ -17610,7 +17637,7 @@ canonical_metrics:
     missing_month: 0원으로 포함
     active_month_exception: 사용월 평균 또는 실적월 평균을 명시한 경우에만 실적이 있는 월수를 분모로 사용
 - {name: 기업유효카드수, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tbdaa1d12."유효기업신용카드수", 0) + COALESCE(tbdaa1d12."유효기업체크카드수", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [기업카드보유수, 유효기업카드수, 카드보유], unit: 매, aggregation_behavior: snapshot_dedup_then_aggregate}
-- {name: 기업한도소진율, domain: corporate_sales_targeting, expression: '1.0 - CAST(COALESCE(tbdaa1d12."기업총잔여한도금액", 0) AS DOUBLE) / NULLIF(CAST(tbdaa1d12."기업총한도금액" AS DOUBLE), 0.0)', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [tbdaa1d12."기업총한도금액" > 0, 현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [한도소진율, 한도사용률, 한도사용비율], unit: '%', aggregation_behavior: derived_non_additive}
+- {name: 기업한도소진율, domain: corporate_sales_targeting, expression: '1.0 - CAST(COALESCE(tbdaa1d12."기업총잔여한도금액", 0) AS DOUBLE) / NULLIF(CAST(tbdaa1d12."기업총한도금액" AS DOUBLE), 0.0)', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [tbdaa1d12."기업총한도금액" > 0, 현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [한도소진율, 한도사용률, 한도사용비율], unit: '비율 0~1 (90% 는 0.9)', aggregation_behavior: derived_non_additive}
 - {name: 기업잔여한도금액, domain: credit_risk, expression: 'SUM(COALESCE(tbdaa1d12."기업총잔여한도금액", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [잔여한도, 가용한도, 남은한도, 기업총잔여한도], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 기업한도사용금액, domain: credit_risk, expression: 'SUM(COALESCE(tbdaa1d12."기업총한도금액", 0) - COALESCE(tbdaa1d12."기업총잔여한도금액", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [사용한도, 한도사용금액, 소진한도, 사용중인한도], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 가맹점월지급금액, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tmdaaus01."가맹점총지급금액", 0))', source_table: tmdaaus01, source_entity: merchant_monthly_enrichment, default_time_dimension: 기준년월, required_filters: [가맹점별 월 최신 기준년월일 1건], synonyms: [가맹점총지급금액, 총지급액, 월지급금액, 정산지급금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
