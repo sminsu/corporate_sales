@@ -392,6 +392,22 @@ def test_previous_day_tables_expose_d_minus_one_without_reference_month() -> Non
     assert f"최신 가용일은 `{FROZEN_PREVIOUS_DAY}`" in instruction
     assert "물리 `기준년월` 컬럼은 없습니다" in instruction
 
+def test_monthly_tables_demand_the_load_month_in_every_scope() -> None:
+    """월 테이블을 CTE 안에서 WHERE 없이 읽고 바깥 rn 으로 좁히는 SQL 이 반복됐다.
+
+    어디에 걸어야 하는지(모든 스코프의 WHERE)와 무엇이 기간 조건으로 인정되지
+    않는지(윈도 순위·rn·조인)를 생성 프롬프트에 함께 못 박는다.
+    """
+    with frozen_clock(), no_period_range():
+        instruction = workflow._accumulation_policy_instruction(["tmdaa1d12"])
+
+    assert "[필수]" in instruction
+    assert "CTE·서브쿼리 포함" in instruction
+    assert "\"기준년월\" BETWEEN 'YYYYMM' AND 'YYYYMM'" in instruction
+    assert "ROW_NUMBER" in instruction
+    assert "인정되지 않습니다" in instruction
+
+
 
 def test_table_details_exposes_accumulation_policy_to_sql_generation() -> None:
     details = workflow._table_details(["tbdaadt01"], "최근 가맹점 현황")
@@ -472,6 +488,9 @@ def test_explicit_daily_and_month_range_choose_the_declared_merchant_source() ->
 
 
 MASTER_ADDRESS_QUESTION = "한신포차 가맹점주 가맹점 도로명 주소 2026년 5월 기준으로 알려줘"
+# 주소는 마스터와 월 스냅샷에 함께 있어서 지난 달은 tmdaa5d01 이 답한다. 원천이
+# 마스터뿐인 속성(가맹점 기본정보)은 그 달을 마스터에서 읽을 수밖에 없다.
+MASTER_PROFILE_QUESTION = "한신포차 가맹점주 가맹점 기본정보 2026년 5월 기준으로 알려줘"
 
 MASTER_ADDRESS_SQL = """
 SELECT m."가맹점번호", m."가맹점명", m."가맹점상세주소", m."주소표시구분코드"
@@ -490,15 +509,26 @@ def loaded_window(start: str, end: str):
 POSTCODE_QUESTION = "역전우동 가맹점주 우편번호 2026년 5월 기준으로 알려줘"
 
 
-def test_named_master_column_routes_to_the_master_even_without_an_alias() -> None:
+@pytest.mark.parametrize(
+    ("question", "cadence", "expected_source"),
+    [
+        ("역전우동 가맹점주 우편번호 알려줘", "", "tbdaadt01"),
+        (POSTCODE_QUESTION, "monthly", "tmdaa5d01"),
+    ],
+)
+def test_named_master_column_routes_to_the_declared_source_even_without_an_alias(
+    question: str, cadence: str, expected_source: str
+) -> None:
     """속성은 별칭으로만 매칭된다. 사용자는 컬럼명을 그대로 부른다.
 
     "우편번호" 는 merchant_address 의 선언 컬럼인데 별칭에 없어서 안 걸렸고,
     남은 단서 하나("가맹점주")가 우편번호 컬럼조차 없는 tmdaaus01 을 끌어왔다.
+    선언된 원천은 기간이 가른다 — 기간이 없으면 마스터, 지난 달이면 월 스냅샷이다.
     """
     with frozen_clock():
-        assert workflow._tbdaadt01_time_route(POSTCODE_QUESTION)[0] == "master"
-        assert workflow._rule_rank_tables(POSTCODE_QUESTION)[0] == "tbdaadt01"
+        assert workflow._tbdaadt01_time_route(question)[0] == cadence
+        assert workflow._declared_merchant_source(question) == expected_source
+        assert workflow._rule_rank_tables(question)[0] == expected_source
 
 
 @pytest.mark.parametrize(
@@ -515,13 +545,16 @@ def test_aggregation_questions_stay_on_the_month_snapshot(question: str) -> None
         assert workflow._tbdaadt01_time_route(question)[0] == "monthly"
 
 
-def test_master_only_columns_exclude_shared_identifiers() -> None:
-    """가맹점번호처럼 어느 질문에나 섞이는 식별자로 마스터를 단정하면 안 된다."""
-    columns = workflow._master_only_attribute_columns()
+def test_master_family_columns_exclude_shared_identifiers() -> None:
+    """가맹점번호처럼 어느 질문에나 섞이는 식별자로 원천을 단정하면 안 된다."""
+    columns = workflow._merchant_master_family_columns()
     assert "우편번호" in columns
     assert "가맹점상세주소" in columns
     assert "가맹점번호" not in columns
     assert "대표고객식별자" not in columns
+    # 마스터 전용 컬럼은 계열 전체의 부분집합이다.
+    assert workflow._master_only_attribute_columns() <= columns
+    assert "사업자등록번호" in workflow._master_only_attribute_columns()
 
 
 def test_merchant_business_address_is_queryable_while_personal_ones_stay_blocked() -> None:
@@ -550,20 +583,34 @@ def test_merchant_business_address_is_queryable_while_personal_ones_stay_blocked
         assert schema._is_restricted_column(tables[table_name], column), column
 
 
-def test_master_route_drops_same_entity_snapshots_but_keeps_monthly_facts() -> None:
+@pytest.mark.parametrize(
+    ("question", "expected_source"),
+    [
+        (MASTER_ADDRESS_QUESTION, "tmdaa5d01"),
+        (MASTER_PROFILE_QUESTION, "tbdaadt01"),
+    ],
+)
+def test_declared_source_drops_same_entity_snapshots_but_keeps_monthly_facts(
+    question: str, expected_source: str
+) -> None:
     """주소를 물었는데 주소 컬럼이 없는 tmdaaus01 이 후보로 남아 SQL 에 섞였다.
 
-    같은 엔티티의 월 스냅샷은 마스터가 답할 질문에 보탤 것이 없다. 월 팩트
+    같은 엔티티의 다른 스냅샷은 선언된 원천이 답할 질문에 보탤 것이 없다. 월 팩트
     (tmdaa5e11)는 다른 엔티티이므로 걷어내면 안 된다.
     """
     with frozen_clock():
         assert workflow._route_accumulation_table_names(
-            MASTER_ADDRESS_QUESTION, ["tmdaa5d01", "tmdaaus01", "tmdaa1d12"]
-        ) == ["tbdaadt01"]
+            question, ["tmdaa5d01", "tmdaaus01", "tmdaa1d12"]
+        ) == [expected_source]
         assert workflow._route_accumulation_table_names(
-            MASTER_ADDRESS_QUESTION, ["tbdaadt01", "tmdaa5e11", "tmdaaus01"]
-        ) == ["tbdaadt01", "tmdaa5e11"]
-        # 월 지표 질문은 스냅샷이 정답이므로 걷어내지 않는다.
+            question, ["tbdaadt01", "tmdaa5e11", "tmdaaus01"]
+        ) == [expected_source, "tmdaa5e11"]
+
+
+def test_a_counting_question_keeps_every_snapshot() -> None:
+    """선언된 원천이 없는 월 지표 질문은 스냅샷이 정답이므로 걷어내지 않는다."""
+    with frozen_clock():
+        assert workflow._declared_merchant_source("2026년 5월 가맹점 수를 알려줘") == ""
         assert workflow._route_accumulation_table_names(
             "2026년 5월 가맹점 수를 알려줘", ["tbdaadt01", "tmdaaus01"]
         ) == ["tmdaa5d01", "tmdaaus01"]
@@ -591,7 +638,7 @@ def test_validation_prompt_carries_the_system_chosen_time_basis() -> None:
     ):
         result = workflow.validate_sql(
             {
-                "question": MASTER_ADDRESS_QUESTION,
+                "question": MASTER_PROFILE_QUESTION,
                 "generated_sql": sql,
                 "selected_tables": ["tbdaadt01"],
                 "retry_count": 0,
@@ -600,7 +647,7 @@ def test_validation_prompt_carries_the_system_chosen_time_basis() -> None:
 
     assert result["is_valid"]
     basis = prompts[0].split("시스템이 정한 기준시점:")[1].split("스키마 기반")[0]
-    assert "20260818" in basis
+    assert "202608" in basis
     assert "202605" in basis
 
 
@@ -618,12 +665,13 @@ def test_generated_snapshot_sql_is_restored_to_the_master_with_its_own_time_colu
     )
 
     with frozen_clock(), latest_loaded_day("20260819"):
-        routed = workflow._apply_tbdaadt01_historical_source(MASTER_ADDRESS_QUESTION, sql)
+        routed = workflow._apply_tbdaadt01_historical_source(MASTER_PROFILE_QUESTION, sql)
 
     assert "tmdaa5d01" not in routed
     assert "card_system.tbdaadt01" in routed
     assert "기준년월일\" = '20260531'" not in routed
-    assert '"실적기준년월일" = \'20260819\'' in routed
+    # 요청한 달이 적재 범위 안이면 최신 달로 갈아타지 않고 그 달을 읽는다.
+    assert 'SUBSTR(m."실적기준년월일", 1, 6) = \'202605\'' in routed
     assert not schema._validate_sql_against_schema(routed, ["tbdaadt01"])
 
 
@@ -638,15 +686,25 @@ def test_snapshot_sql_joined_to_a_monthly_fact_is_left_alone() -> None:
     )
 
     with frozen_clock(), latest_loaded_day("20260819"):
-        routed = workflow._apply_tbdaadt01_historical_source(MASTER_ADDRESS_QUESTION, sql)
+        routed = workflow._apply_tbdaadt01_historical_source(MASTER_PROFILE_QUESTION, sql)
 
     assert routed == sql
 
 
-def test_llm_chosen_month_snapshot_is_routed_back_to_the_merchant_master(
+@pytest.mark.parametrize(
+    ("question", "expected_source", "dropped"),
+    [
+        (MASTER_PROFILE_QUESTION, "tbdaadt01", "tmdaa5d01"),
+        (MASTER_ADDRESS_QUESTION, "tmdaa5d01", "tmdaaus01"),
+    ],
+)
+def test_llm_chosen_snapshot_is_routed_back_to_the_declared_source(
     monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    expected_source: str,
+    dropped: str,
 ) -> None:
-    """규칙 랭킹이 마스터를 1순위로 올려도 analyze_question 은 LLM 목록을 그대로 쓴다.
+    """규칙 랭킹이 원천을 1순위로 올려도 analyze_question 은 LLM 목록을 그대로 쓴다.
 
     "2026년 5월" 이 붙으면 LLM 은 월 스냅샷을 고르고, 치환이 마스터→스냅샷
     한 방향뿐이던 동안에는 그 선택을 되돌릴 곳이 없었다.
@@ -656,15 +714,15 @@ def test_llm_chosen_month_snapshot_is_routed_back_to_the_merchant_master(
     with frozen_clock():
         result = workflow.analyze_question(
             {
-                "question": MASTER_ADDRESS_QUESTION,
+                "question": question,
                 "selected_domain": "merchant_sales",
                 "domain_context": "테스트 도메인",
                 "domain_routing_trace": "테스트 라우팅",
             }
         )
 
-    assert result["selected_tables"][0] == "tbdaadt01"
-    assert "tmdaa5d01" not in result["selected_tables"]
+    assert result["selected_tables"][0] == expected_source
+    assert dropped not in result["selected_tables"]
 
 
 def test_month_metric_question_still_routes_the_master_to_its_snapshot() -> None:
@@ -675,27 +733,37 @@ def test_month_metric_question_still_routes_the_master_to_its_snapshot() -> None
         ) == ["tmdaa5d01"]
 
 
-def test_master_attribute_question_keeps_the_merchant_master_for_a_past_month() -> None:
-    """주소는 마스터 한 곳만 가리키는 속성이다. 월 스냅샷으로 돌리면 답할 곳이 없다.
+@pytest.mark.parametrize(
+    ("question", "expected_source"),
+    [
+        (MASTER_PROFILE_QUESTION, "tbdaadt01"),
+        (MASTER_ADDRESS_QUESTION, "tmdaa5d01"),
+    ],
+)
+def test_declared_attribute_question_keeps_its_source_for_a_past_month(
+    question: str, expected_source: str
+) -> None:
+    """속성이 원천을 못 박은 질문은 그 원천이 1순위여야 한다.
 
     질문이 남긴 단서가 "가맹점주"(merchant_owner) 뿐이던 동안에는 마스터·일별·월별
     스냅샷 4개가 동점이었고, 월 라우팅이 그중 마스터만 걷어내 tmdaa5d01 이 1순위였다.
     """
     with frozen_clock():
-        selected = workflow._rule_rank_tables(MASTER_ADDRESS_QUESTION)
+        selected = workflow._rule_rank_tables(question)
 
-    assert selected[0] == "tbdaadt01"
+    assert selected[0] == expected_source
 
 
-def test_master_attribute_sql_is_pinned_to_the_latest_loaded_day() -> None:
-    """마스터는 보관일수만큼 가맹점당 행이 늘어난다. 최신 가용일 1건으로 좁힌다."""
+def test_master_attribute_sql_is_cut_by_month_not_by_the_latest_day() -> None:
+    """질문이 날짜를 찍지 않았으면 답의 단위도 달이다. 요청한 달은 적재 범위 밖이다."""
     with frozen_clock(), loaded_window("20260803", "20260812"):
         routed = workflow._apply_tbdaadt01_historical_source(
-            MASTER_ADDRESS_QUESTION, MASTER_ADDRESS_SQL
+            MASTER_PROFILE_QUESTION, MASTER_ADDRESS_SQL
         )
 
     assert "tmdaa5d01" not in routed
-    assert 'm."실적기준년월일" = \'20260812\'' in routed
+    assert 'SUBSTR(m."실적기준년월일", 1, 6) = \'202608\'' in routed
+    assert "20260812" not in routed
     assert not schema._validate_sql_against_schema(
         routed, sorted(workflow._extract_schema_tables(routed))
     )
@@ -704,19 +772,19 @@ def test_master_attribute_sql_is_pinned_to_the_latest_loaded_day() -> None:
 def test_master_attribute_answer_says_the_requested_month_is_missing() -> None:
     with frozen_clock(), loaded_window("20260803", "20260812"):
         note = workflow._implicit_time_basis_note(
-            MASTER_ADDRESS_QUESTION, MASTER_ADDRESS_SQL
+            MASTER_PROFILE_QUESTION, MASTER_ADDRESS_SQL
         )
 
     assert "202605 데이터는 없습니다" in note
     assert "20260803 ~ 20260812" in note
-    assert "20260812 기준으로 조회했습니다" in note
+    assert f"{workflow._TBDAADT01_MONTH_LABEL} 202608 기준으로 조회했습니다" in note
 
 
 def test_master_attribute_answer_does_not_claim_a_gap_it_did_not_read() -> None:
     """적재 범위를 못 읽었으면 "없다" 고 단정하지 않는다."""
     with frozen_clock(), no_period_range():
         note = workflow._implicit_time_basis_note(
-            MASTER_ADDRESS_QUESTION, MASTER_ADDRESS_SQL
+            MASTER_PROFILE_QUESTION, MASTER_ADDRESS_SQL
         )
 
     assert "없을 수 있습니다" in note
@@ -895,6 +963,127 @@ def test_policy_validator_blocks_a_previous_day_table_queried_by_month() -> None
     month_issues = workflow._availability_policy_issues("현재 기업 현황", bad_month_sql)
 
     assert any('물리 "기준년월" 컬럼이 없습니다' in issue for issue in month_issues)
+
+
+def test_reference_month_rule_does_not_claim_another_table_column() -> None:
+    """무별칭 테이블의 축이 다른 별칭의 같은 이름 컬럼을 뺏어오면 안 된다.
+
+    "매출액 상위 가맹점 중 기업카드 미보유" 처럼 일별 요약(tbdaaus01)과 월별
+    실적을 조인하면, tbdaaus01 을 별칭 없이 쓴 SQL 에서 월 테이블의
+    `f."기준년월"` 이 tbdaaus01 의 없는 컬럼으로 읽혀 실행되는 SQL 이 반려됐다.
+    """
+    joined_sql = (
+        'SELECT tbdaaus01."가맹점번호", SUM(f."가맹점일시불매출금액") AS amt '
+        "FROM card_system.tbdaaus01 "
+        'JOIN card_system.tmdaa5e11 f ON f."가맹점번호" = tbdaaus01."가맹점번호" '
+        f"WHERE tbdaaus01.\"기준년월일\" = '{FROZEN_PREVIOUS_DAY}' "
+        "AND f.\"기준년월\" = '202507' "
+        'GROUP BY tbdaaus01."가맹점번호"'
+    )
+
+    with frozen_clock():
+        issues = workflow._availability_policy_issues(
+            "매출액 상위 가맹점 중 KB국민 기업카드를 보유하고 있지 않은 기업회원을 알려줘",
+            joined_sql,
+        )
+
+    assert not [issue for issue in issues if '물리 "기준년월"' in issue]
+
+
+def test_reference_month_rule_accepts_the_derived_month_it_prescribes() -> None:
+    """규칙이 시킨 SUBSTR 파생에 붙인 별칭까지 물리 컬럼으로 읽으면 안 된다."""
+    derived_sql = (
+        'WITH card AS (SELECT "가맹점번호", SUBSTR("기준년월일", 1, 6) AS "기준년월" '
+        "FROM card_system.tbdaaus01 "
+        f"WHERE \"기준년월일\" = '{FROZEN_PREVIOUS_DAY}') "
+        'SELECT c."가맹점번호" FROM card c GROUP BY c."가맹점번호", "기준년월"'
+    )
+
+    with frozen_clock():
+        issues = workflow._availability_policy_issues("현재 기업 현황", derived_sql)
+
+    assert not [issue for issue in issues if '물리 "기준년월"' in issue]
+
+
+def test_reference_month_rule_still_blocks_the_table_qualified_column() -> None:
+    """파생을 해뒀더라도 없는 물리 컬럼을 직접 읽으면 여전히 반려한다."""
+    mixed_sql = (
+        'SELECT SUBSTR(u."기준년월일", 1, 6) AS "기준년월", u."기준년월" '
+        f"FROM card_system.tbdaaus01 u WHERE u.\"기준년월일\" = '{FROZEN_PREVIOUS_DAY}'"
+    )
+
+    with frozen_clock():
+        issues = workflow._availability_policy_issues("현재 기업 현황", mixed_sql)
+
+    assert any('물리 "기준년월" 컬럼이 없습니다' in issue for issue in issues)
+
+def test_load_window_predicate_counts_when_it_sits_in_a_join_condition() -> None:
+    """적재 기간을 ON 절에 건 SQL 을 "기간 조건이 없다"고 반려하면 안 된다.
+
+    sqlparse 는 ON 조건을 Where 노드로 묶지 않는다. WHERE 만 보던 검사가
+    tbd↔tmd 를 조인하며 월 조건을 ON 절에 둔 SQL 을 전부 반려했다.
+    """
+    on_clause_sql = (
+        'SELECT d."기업고객식별자", SUM(m."이용금액") AS amt '
+        "FROM card_system.tbdaa1d12 d "
+        "JOIN card_system.tmdaa1d12 m "
+        '  ON m."기업고객식별자" = d."기업고객식별자" AND m."기준년월" = \'202607\' '
+        f"WHERE d.\"기준년월일\" = '{FROZEN_PREVIOUS_DAY}' "
+        'GROUP BY d."기업고객식별자"'
+    )
+
+    with frozen_clock():
+        issues = workflow._availability_policy_issues("2026년 7월 기업 이용금액", on_clause_sql)
+
+    assert not issues
+
+
+def test_unqualified_month_column_belongs_to_the_table_that_has_it() -> None:
+    """tbd↔tmd 를 함께 읽으면 무한정 `기준년월`은 월 테이블 것이다.
+
+    일별 테이블은 그 컬럼을 갖고 있지도 않은데, 월 테이블이 건 조건을
+    일별 테이블의 없는 컬럼으로 읽어 실행되는 SQL 을 반려했다.
+    """
+    paired_sql = (
+        'WITH sales AS (SELECT "기업고객식별자", SUM("이용금액") AS amt '
+        "FROM card_system.tmdaa1d12 "
+        "WHERE \"기준년월\" = '202607' GROUP BY \"기업고객식별자\") "
+        'SELECT s."기업고객식별자", s.amt FROM sales s '
+        'JOIN card_system.tbdaa1d12 ON tbdaa1d12."기업고객식별자" = s."기업고객식별자" '
+        f"WHERE tbdaa1d12.\"기준년월일\" = '{FROZEN_PREVIOUS_DAY}' "
+        "ORDER BY s.amt DESC LIMIT 10"
+    )
+
+    with frozen_clock():
+        issues = workflow._availability_policy_issues("2026년 7월 기업 이용금액", paired_sql)
+
+    assert not issues
+
+
+def test_load_window_counts_an_unqualified_predicate_on_an_aliased_table() -> None:
+    """별칭을 선언만 하고 조건엔 안 붙인 SQL 도 기간을 건 것이다.
+
+    월 테이블이 둘 있으면 무한정 조건의 주인을 못 정해 한정 참조만 셌는데,
+    Athena 는 그 컬럼을 가진 유일한 테이블로 해석해 정상 실행한다.
+    """
+    unqualified_predicate_sql = (
+        "WITH params AS (SELECT '202607' AS ym) "
+        'SELECT c."고객식별자", SUM(m."이용금액") AS amt '
+        "FROM card_system.tmdaa1d12 m "
+        "CROSS JOIN params p "
+        'JOIN card_system.tmdaa3e16 c ON c."고객식별자" = m."고객식별자" '
+        'AND c."기준년월" = p.ym '
+        'WHERE "기준년월" = p.ym '
+        'GROUP BY c."고객식별자"'
+    )
+
+    with frozen_clock():
+        issues = workflow._availability_policy_issues(
+            "2026년 7월 기업 이용금액", unqualified_predicate_sql
+        )
+
+    assert not issues
+
 
 
 def test_merchant_master_does_not_require_a_load_window_filter() -> None:

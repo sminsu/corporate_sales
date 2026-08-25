@@ -259,3 +259,39 @@ def test_real_prose_is_still_detected(text: str) -> None:
     from text2sql_agent.v2.sql_dialect_guard import looks_like_prose
 
     assert looks_like_prose(text)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # FROM "tbdaa1d12" 의 따옴표 낀 테이블명이 별칭 없는 컬럼과 형태가 같아서
+        # 'tbdaa1d12에 "tbdaa1d12" 컬럼이 없습니다' 로 보고됐다. 없는 컬럼을 고치라는
+        # 지시가 되니 재시도로도 못 벗어난다.
+        'SELECT "고객식별자" FROM "tbdaa1d12" LIMIT 10',
+        'SELECT a."고객식별자" FROM "tbdaa1d12" a JOIN "tbdaaat01" b'
+        ' ON a."고객식별자" = b."고객식별자" LIMIT 10',
+        # 한정자 자리의 따옴표 이름도 컬럼이 아니다.
+        'SELECT "고객식별자" FROM "card_system"."tbdaa1d12" LIMIT 10',
+        # 따옴표 낀 CTE 이름.
+        'WITH "base" AS (SELECT "고객식별자" FROM tbdaa1d12)'
+        ' SELECT "고객식별자" FROM "base" LIMIT 10',
+    ],
+)
+def test_quoted_table_and_cte_names_are_not_read_as_columns(index, sql: str) -> None:
+    table_columns, owners = index
+    repaired, issues = repair_columns(sql, table_columns, column_owners=owners)
+
+    assert issues == []
+    assert repaired == sql
+
+
+def test_a_real_missing_column_still_reports_next_to_a_quoted_table(index) -> None:
+    """따옴표 테이블명을 넘겨도 같은 SQL 안의 없는 컬럼은 그대로 잡아야 한다."""
+    table_columns, owners = index
+    sql = 'SELECT "고객식별자", a."모바일카드여부" FROM "tbdaa1d12" a LIMIT 10'
+    _, issues = repair_columns(sql, table_columns, column_owners=owners)
+
+    assert len(issues) == 1
+    assert "모바일카드여부" in issues[0]
+    assert "tbdaaat05" in issues[0]
+    assert 'tbdaa1d12" 컬럼이 없습니다' not in issues[0]

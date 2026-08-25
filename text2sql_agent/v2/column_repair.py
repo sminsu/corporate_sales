@@ -57,7 +57,9 @@ _TABLE_REF_RE = re.compile(
 )
 _CTE_NAME_RE = re.compile(r'(?:\bWITH\b|,)\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\s+AS\s*\(', re.IGNORECASE)
 _ALIAS_RE = re.compile(r'\bAS\s+(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))', re.IGNORECASE)
-_QUOTED_RE = re.compile(r'(?<!\.)(?<!\w)"([^"]+)"')
+# 한정자 자리의 따옴표 이름은 컬럼이 아니다. 뒤쪽 lookahead 가 없으면
+# `"kb"."tbdaa1d12"` 의 스키마 이름을 별칭 없는 컬럼으로 읽는다.
+_QUOTED_RE = re.compile(r'(?<!\.)(?<!\w)"([^"]+)"(?!\s*\.)')
 _QUALIFIED_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*"([^"]+)"')
 
 def _strip_literals(sql: str) -> str:
@@ -349,6 +351,12 @@ def repair_columns(
             if scope.opaque:
                 continue
             for name in _QUOTED_RE.findall(body):
+                # FROM "tbdaa1d12" 처럼 테이블·CTE 이름을 따옴표로 감싼 참조는
+                # 별칭 없는 컬럼과 형태가 같다. 그대로 두면 테이블명 자체가 없는
+                # 컬럼으로 보고돼 재시도를 다 태우고도 못 고친다. 어차피 컬럼명과
+                # 테이블명이 겹치는 경우는 스키마에 없다.
+                if name.lower() in scope.sources:
+                    continue
                 inspect(name, scope.available, where, scope.defined)
 
     if not rewrites:

@@ -21,7 +21,13 @@ from .config import (
 )
 from .exports import _get_source_label, export_all, export_to_excel, export_to_text, export_to_word, prepare_export_result
 from .llm import _call_llm, close_common_clients, probe_llm
-from .safety import BLOCKED_USER_MESSAGE, SAFETY_REFUSAL, check_content_safety
+from .safety import (
+    BLOCKED_USER_MESSAGE,
+    OUT_OF_SCOPE_GUIDE,
+    SAFETY_REFUSAL,
+    check_content_safety,
+    refusal_message,
+)
 from .workflow import (
     _new_initial_state,
     build_graph,
@@ -36,6 +42,7 @@ __all__ = [
     "LLM_ENDPOINT_PATH",
     "LLM_MODEL",
     "LLM_PROVIDER",
+    "OUT_OF_SCOPE_GUIDE",
     "REPORT_DIR",
     "SAFETY_REFUSAL",
     "_call_llm",
@@ -58,5 +65,6 @@ __all__ = [
     "prepare_export_result",
     "observability_context",
     "probe_llm",
+    "refusal_message",
     "run_agent_with_prompts",
 ]

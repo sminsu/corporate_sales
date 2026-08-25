@@ -1920,18 +1920,32 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
     # 스키마 prefix가 설정된 경우에만 prefix 누락을 검증한다.
     if DB_SCHEMA_PREFIX:
         prefix_lower = DB_SCHEMA_PREFIX.lower()
+        lowered = stripped.lower()
+
+        def is_prefixed(name: str) -> bool:
+            """prefix 가 붙어 있는지. ``card_system."tbdaa1d12"`` 도 붙은 것으로 본다.
+
+            따옴표를 허용하지 않으면 Athena 에서 정상인 SQL 을 "prefix가 없습니다"
+            로 반려하고, 모델은 이미 붙여 놓은 prefix 를 고칠 수 없어 재시도를 다
+            태운다.
+            """
+            schema_name = re.escape(prefix_lower.removesuffix("."))
+            return bool(
+                re.search(rf'"?{schema_name}"?\s*\.\s*"?{re.escape(name)}"?', lowered)
+            )
+
         for table in selected_tables:
             table_lower = str(table).lower()
             if table_lower.startswith(prefix_lower):
                 table_lower = table_lower[len(prefix_lower):]
             if len(table_lower) < 4:
                 continue
-            if table_lower in stripped.lower() and f"{prefix_lower}{table_lower}" not in stripped.lower():
+            if table_lower in lowered and not is_prefixed(table_lower):
                 issues.append(f"테이블 '{table}'에 {DB_SCHEMA_PREFIX} prefix가 없습니다.")
 
         for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", stripped, re.IGNORECASE):
             table = match.group(2)
-            if table.lower() != "select" and f"{prefix_lower}{table.lower()}" not in stripped.lower():
+            if table.lower() != "select" and not is_prefixed(table.lower()):
                 if table.lower() in known_tables:
                     issues.append(f"테이블 '{table}'은 {DB_SCHEMA_PREFIX}{table} 형태로 사용해야 합니다.")
 

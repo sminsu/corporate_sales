@@ -55,11 +55,14 @@ def test_master_answer_is_not_rejected_for_missing_month_condition(
 
 @pytest.mark.parametrize("question", RELATIVE_MONTH_QUESTIONS)
 def test_master_answer_names_its_load_basis(question: str) -> None:
-    """검증 LLM 과 사용자 답변이 "무엇을 기준으로 답했는지" 를 받아야 한다."""
+    """검증 LLM 과 사용자 답변이 "무엇을 기준으로 답했는지" 를 받아야 한다.
+
+    질문이 날짜를 찍지 않았으므로 기준도 일자가 아니라 달로 밝힌다.
+    """
     note = workflow._implicit_time_basis_note(question, MASTER_SQL)
 
     assert "tbdaadt01" in note
-    assert workflow._TBDAADT01_TIME_COLUMN in note
+    assert workflow._TBDAADT01_MONTH_LABEL in note
 
 
 @pytest.mark.parametrize("question", RELATIVE_MONTH_QUESTIONS)
