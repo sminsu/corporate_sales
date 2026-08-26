@@ -3177,7 +3177,7 @@ verified_queries:
       AVG(신용카드가맹점수수료율) AS 평균수수료율
     FROM card_system.tbdaaus01
     WHERE 기준년월일 = DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
-      AND COALESCE(가맹점거래정지여부, 'N') <> 'Y'
+      AND COALESCE(가맹점거래정지여부, '0') = '0'
       AND COALESCE(휴폐업여부, 'N') <> 'Y'
     GROUP BY 한글시도명, 한글시군구명
     ORDER BY 전월매입금액 DESC

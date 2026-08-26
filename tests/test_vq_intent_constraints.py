@@ -65,6 +65,69 @@ def test_vq_is_rejected_when_metric_grain_direction_or_cardinality_conflicts(
     assert workflow._select_verified_query_capability(question, {}) is None
 
 
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("2026년 7월 일시불매출이 가장 큰 가맹점업종 상위 3개를 알려줘", "가맹점업종"),
+        ("2026년 7월 매출 상위 3개 업종을 알려줘", "업종"),
+        # 순위 지표를 축으로 읽으면 안 된다. 단위는 뒤에 오는 가맹점이다.
+        ("2026년 상반기 평균 수수료율 상위 20개 가맹점을 뽑아줘", ""),
+        ("2026년 상반기 가맹점별 평균 수수료율 상위 20개만 뽑아줘", ""),
+        ("2026년 상반기 가맹점별 매출건수 상위 20개만 뽑아줘", ""),
+        ("2026년 7월 매출이 가장 큰 가맹점 3개 알려줘", ""),
+    ],
+)
+def test_ranked_axis_unit_separates_grouping_axis_from_ranking_metric(
+    question: str,
+    expected: str,
+) -> None:
+    assert workflow._ranked_axis_unit(question) == expected
+
+
+def test_merchant_grain_vq_is_rejected_for_an_industry_ranking() -> None:
+    """축 단위 순위에 가맹점 단위 VQ가 붙으면 결과 grain 이 다르다.
+
+    top_merchants_by_revenue 는 가맹점업종명을 SELECT 에 들고 있어 어휘가 겹치지만
+    가맹점번호·가맹점명까지 GROUP BY 해 업종 3행 대신 가맹점 목록을 낸다.
+    """
+    question = (
+        "2026년 7월 정상상태인 가맹점 중에 일시불매출이 가장 큰 "
+        "가맹점업종 상위 3개를 업종이름으로 알려줘"
+    )
+    merchant_grain_vq = next(
+        vq for vq in workflow.VERIFIED_QUERIES if vq["name"] == "top_merchants_by_revenue"
+    )
+
+    assert workflow._verified_query_matches_intent(
+        question, merchant_grain_vq, contract_question=question
+    ) is False
+    assert workflow._select_verified_query_capability(question, {}) is None
+
+
+def test_generated_sql_keeps_an_industry_ranking_at_industry_grain() -> None:
+    question = "2026년 7월 일시불매출이 가장 큰 가맹점업종 상위 3개를 알려줘"
+    merchant_grain_sql = (
+        'SELECT a."가맹점번호", a."가맹점명", b."가맹점업종명", '
+        'SUM(a."가맹점일시불매출금액") AS "일시불매출금액" '
+        "FROM tmdaa5e11 a JOIN tbdaadb17 b ON a.\"가맹점업종코드\" = b.\"가맹점업종코드\" "
+        'GROUP BY a."가맹점번호", a."가맹점명", b."가맹점업종명" '
+        'ORDER BY "일시불매출금액" DESC LIMIT 3'
+    )
+    industry_grain_sql = (
+        'SELECT b."가맹점업종명", SUM(a."가맹점일시불매출금액") AS "일시불매출금액" '
+        "FROM tmdaa5e11 a JOIN tbdaadb17 b ON a.\"가맹점업종코드\" = b.\"가맹점업종코드\" "
+        'GROUP BY b."가맹점업종명" ORDER BY "일시불매출금액" DESC LIMIT 3'
+    )
+
+    issues = workflow._validate_ranked_axis_grain(question, merchant_grain_sql)
+    assert issues and "가맹점번호" in issues[0] and "가맹점업종" in issues[0]
+    assert workflow._validate_ranked_axis_grain(question, industry_grain_sql) == []
+    # 단위가 가맹점인 순위는 같은 SQL 이라도 걸리면 안 된다.
+    assert workflow._validate_ranked_axis_grain(
+        "2026년 7월 매출 상위 3개 가맹점을 알려줘", merchant_grain_sql
+    ) == []
+
+
 def test_presentation_and_grain_words_are_not_merchant_names() -> None:
     assert workflow._extract_merchant_name_by_rule("일별 매출 최근 20건만 보여줘") == ""
     assert workflow._extract_merchant_name_by_rule(

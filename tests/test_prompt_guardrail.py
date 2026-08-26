@@ -267,7 +267,7 @@ def test_out_of_scope_paths_share_one_message() -> None:
         safety.OUT_OF_SCOPE_GUIDE
     )
     assert "이 에이전트가 답변할 수 있는 범위가 아닙니다" in safety.OUT_OF_SCOPE_GUIDE
-    assert "기업영업지원 에이전트 질의" in safety.OUT_OF_SCOPE_GUIDE
+    assert "기업영업지원 질의" in safety.OUT_OF_SCOPE_GUIDE
     assert "가맹점 · 프랜차이즈 관련 질의" in safety.OUT_OF_SCOPE_GUIDE
 
 

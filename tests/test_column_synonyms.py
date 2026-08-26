@@ -205,6 +205,24 @@ def test_predicate_endings_do_not_cross_word_boundaries(question: str, phrase: s
     assert not phrase_in_text(question, phrase)
 
 
+@pytest.mark.parametrize(
+    ("question", "phrase"),
+    [
+        # 나열 조사. "건수랑 금액" 처럼 붙여 쓰면 앞말이 컬럼으로 안 잡혔다.
+        ("가맹점번호랑 가맹점명 알려줘", "가맹점번호"),
+        ("매출금액이랑 매출건수 알려줘", "매출금액"),
+        ("매출금액하고 건수 알려줘", "매출금액"),
+    ],
+)
+def test_matcher_follows_list_particles(question: str, phrase: str) -> None:
+    assert phrase_in_text(question, phrase)
+
+
+def test_list_particles_do_not_cross_word_boundaries() -> None:
+    # 조사를 늘려도 어절 경계는 그대로다.
+    assert not phrase_in_text("카드론하고 리스를 보여줘", "카드")
+
+
 def test_matcher_handles_empty_input() -> None:
     assert not phrase_in_text("질문", "")
     assert not phrase_in_text("", "가맹점상태구분")

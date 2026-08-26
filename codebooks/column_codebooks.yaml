@@ -21,7 +21,7 @@ column_codebooks:
   provenance: user_provided_business_codebook
   values:
   - code: '0'
-    label: 거래정지 아님
+    label: 정상영업
     status: active
   - code: '1'
     label: 거래정지
@@ -255,21 +255,33 @@ column_codebooks:
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업신용
+    - 신용카드
   - code: 'CP52'
     label: 기업정부구매카드
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업신용
+    - 신용카드
   - code: 'CP53'
     label: 기업체크카드
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업체크
+    - 체크카드
   - code: 'CP54'
     label: 기업직불카드
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업직불
+    - 직불카드
   - code: 'CP55'
     label: 기업순구매카드
     valid_from: '2018-06-05'
@@ -950,6 +962,8 @@ column_codebooks:
   values:
   - code: '1'
     label: 일반
+    aliases:
+    - 일시불
     status: active
   - code: '2'
     label: 할부

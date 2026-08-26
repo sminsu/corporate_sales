@@ -16,7 +16,7 @@
         }
       })();
     </script>
-    <title>기업영업지원 에이전트</title>
+    <title>기업영업 에이전트</title>
     <script>
       (() => {
         try {if(
@@ -121,7 +121,7 @@
       <main class="thread" id="mainContent" aria-busy="false">
         <header class="topbar">
           <div class="topbar-title">
-            <h2>기업영업지원 에이전트</h2>
+            <h2>기업영업 에이전트</h2>
             <p class="conversation-note"><span aria-hidden="true">✦</span> 긴 대화 시 이전 내용을 기억하지 못할 수 있어요. 필요한 정보는 다시 말씀해 주세요.</p>
           </div>
           <div class="topbar-actions">
@@ -316,7 +316,7 @@
             <h3>업무 질문 예시</h3>
             <div class="user-guide-examples">
               <article>
-                <h4>기업영업지원 에이전트 질의</h4>
+                <h4>기업영업지원 질의</h4>
                 <p class="guide-example-scope">기업영업에 관련된 질의만 진행합니다. 카드 관련 문의나 개인영업 및 개인정보에 관한 질의에는 답변할 수 없습니다.</p>
                 <ul>
                   <li>한도소진율이 90% 이상인 기업 리스트 100개만 만들어줘.</li>
@@ -496,6 +496,9 @@ const state = {
   failedRequest: null,
   tableCatalog: [],
   tableCatalogLoaded: false,
+  tablePeriods: {},
+  tablePeriodsLoaded: false,
+  tablePeriodsLoading: false,
   sessionDeleteEnabled: false,
 };
 
@@ -1729,6 +1732,32 @@ async function loadExamples() {
   }
 }
 
+function formatPeriodValue(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length === 8) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  if (digits.length === 6) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}`;
+  return digits || String(value ?? "");
+}
+
+// 실제 보유 구간은 접힌 줄에서도 보여야 한다. 어떤 기간을 물을 수 있는 테이블인지
+// 하나하나 펼쳐 보지 않고 고르게 하는 정보다. 값을 읽는 동안, 그리고 못 읽었을
+// 때는 기준이 되는 기간 컬럼명이라도 남긴다.
+function tablePeriodCell(table) {
+  const column = String(table.accumulation_policy?.query_time_dimension || "").trim();
+  if (!column) return `<span class="table-catalog-period is-empty">기간 컬럼 없음</span>`;
+  const range = state.tablePeriodsLoaded ? state.tablePeriods[table.name] : null;
+  if (!range) {
+    return `<span class="table-catalog-period is-unknown" title="${escapeHtml(column)}">
+              <strong>${escapeHtml(column)}</strong>
+              <small>${state.tablePeriodsLoaded ? "보유 구간 확인 불가" : "보유 구간 확인 중"}</small>
+            </span>`;
+  }
+  return `<span class="table-catalog-period" title="${escapeHtml(column)} 최소~최대">
+              <strong>${escapeHtml(`${formatPeriodValue(range.min)} ~ ${formatPeriodValue(range.max)}`)}</strong>
+              <small>${escapeHtml(column)}</small>
+            </span>`;
+}
+
 function renderTableCatalog() {
   if (!tableCatalogList || !tableCatalogMeta) return;
   const query = String(tableCatalogSearch?.value || "").trim().toLocaleLowerCase("ko-KR");
@@ -1759,6 +1788,7 @@ function renderTableCatalog() {
               <strong>${escapeHtml(table.korean_name || table.name)}</strong>
               <code>${escapeHtml(table.physical_table || table.name)}</code>
             </span>
+            ${tablePeriodCell(table)}
             <span class="table-catalog-toggle" aria-hidden="true">+</span>
           </summary>
           <div class="table-catalog-detail">
@@ -1787,10 +1817,27 @@ async function loadTableCatalog() {
     state.tableCatalog = Array.isArray(data?.tables) ? data.tables : [];
     state.tableCatalogLoaded = true;
     renderTableCatalog();
+    loadTablePeriods();
   } catch (error) {
     tableCatalogMeta.textContent = "사용 테이블을 불러오지 못했습니다.";
     tableCatalogList.innerHTML = `<div class="inspector-empty">${escapeHtml(friendlyErrorMessage(error))}</div>`;
   }
+}
+
+// 테이블마다 MIN/MAX 를 한 건씩 읽는 조회다. 목록이 먼저 뜨고 구간은 뒤따라
+// 채운다. 실패해도 카탈로그는 그대로 쓸 수 있어야 하므로 조용히 접는다.
+async function loadTablePeriods() {
+  if (state.tablePeriodsLoaded || state.tablePeriodsLoading) return;
+  state.tablePeriodsLoading = true;
+  try {
+    const data = await api("api/tables/periods");
+    state.tablePeriods = data?.periods && typeof data.periods === "object" ? data.periods : {};
+  } catch {
+    state.tablePeriods = {};
+  }
+  state.tablePeriodsLoaded = true;
+  state.tablePeriodsLoading = false;
+  renderTableCatalog();
 }
 
 function extractTemplateParameters(queryTemplate) {

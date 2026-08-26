@@ -110,14 +110,17 @@ def test_corporate_member_with_usage_count_uses_month_latest_snapshot() -> None:
 
     assert workflow._rule_classify_question(question)
     assert selection is not None
-    result = workflow.extract_and_apply_params(
-        {
-            "question": question,
-            "matched_query_name": selection["matched_query_name"],
-            "matched_query_sql": selection["matched_query_sql"],
-            "matched_query_params": selection["matched_query_params"],
-        }
-    )
+    # 파라미터 추출은 규칙만으로 끝나야 한다. 실제 LLM을 부르면 엔드포인트가 없는 환경에서
+    # 타임아웃·재시도로 3분 넘게 걸린 뒤 같은 규칙 경로로 떨어진다.
+    with patch.object(workflow, "_call_llm", return_value="{}"):
+        result = workflow.extract_and_apply_params(
+            {
+                "question": question,
+                "matched_query_name": selection["matched_query_name"],
+                "matched_query_sql": selection["matched_query_sql"],
+                "matched_query_params": selection["matched_query_params"],
+            }
+        )
 
     assert result["param_stage"] == "done"
     assert result["extracted_params"]["기준년월"] == "202606"

@@ -2385,9 +2385,41 @@ summary:focus-visible,
 }
 
 .table-catalog-item summary > span:first-child {
+  flex: 1 1 auto;
   min-width: 0;
   display: grid;
   gap: 4px;
+}
+
+.table-catalog-period {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  text-align: right;
+}
+
+.table-catalog-period strong {
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.table-catalog-period small {
+  color: var(--subtle);
+  font: 10px/1.35 var(--mono);
+  white-space: nowrap;
+}
+
+.table-catalog-period.is-empty {
+  color: var(--subtle);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.table-catalog-period.is-unknown strong {
+  color: var(--subtle);
+  font-weight: 600;
 }
 
 .table-catalog-item summary strong {

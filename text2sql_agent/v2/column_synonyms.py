@@ -30,7 +30,9 @@ _SEPARATOR_RE = re.compile(r"[^0-9A-Za-z가-힣_]+")
 
 # 조사. 원본 매처는 조사를 한 개만 허용해서 "회원자격별로" 처럼 조사가 겹친
 # 표면형("별"+"로")을 놓쳤다. 실패 481건 중 상당수가 이 한 글자 때문이었다.
-_PARTICLE = r"(?:으로|에서|에게|의|은|는|이|가|을|를|에|로|와|과|도|만|별|인)"
+# 나열 조사가 빠져 있어 "가맹점번호랑 가맹점명", "건수랑 금액" 의 앞말이 컬럼으로
+# 안 잡혔다. '이랑'은 '이'+'랑' 으로 이어 받으므로 '랑' 하나면 된다.
+_PARTICLE = r"(?:으로|에서|에게|하고|의|은|는|이|가|을|를|에|로|와|과|도|만|별|인|랑)"
 _PARTICLES = rf"(?:{_PARTICLE})*"
 
 # 용언 활용과 예정 표현. 질문은 컬럼을 명사로만 부르지 않는다.
@@ -183,6 +185,25 @@ def phrase_in_text(text: str, phrase: object) -> bool:
     if not needle:
         return False
     return bool(_phrase_pattern(needle).search(str(text or "")))
+
+
+# 코드 라벨의 표기 흔들림. 이 시스템의 도메인은 법인영업인데 코드북 라벨은 '기업'
+# 으로만 적혀 있고("기업체크카드"), 질문은 '법인' 으로 온다("법인체크카드 매출").
+# 라벨마다 별칭을 손으로 베껴 넣는 대신 한 쌍의 등가어로 처리한다. 코드북에 '기업'
+# 이 붙은 라벨은 상품중분류(CP51~CP57)·개인기업구분·카드소유자구분에 걸쳐 있고,
+# 코드북이 늘 때마다 목록을 다시 손봐야 하는 일을 만들지 않는다.
+_LABEL_EQUIVALENTS: tuple[tuple[str, str], ...] = (("기업", "법인"),)
+
+
+def label_surface_forms(label: object) -> list[str]:
+    """코드 라벨을 질문이 실제로 부르는 표면형까지 넓힌다."""
+    forms = [str(label or "")]
+    for left, right in _LABEL_EQUIVALENTS:
+        for form in list(forms):
+            for swapped in (form.replace(left, right), form.replace(right, left)):
+                if swapped != form and swapped not in forms:
+                    forms.append(swapped)
+    return forms
 
 
 def _strip_suffixes(name: str) -> list[str]:

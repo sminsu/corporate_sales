@@ -50,7 +50,7 @@ def test_frontend_uses_allowed_login_id_for_access_and_request_user_id() -> None
     source = INDEX_HTML.read_text(encoding="utf-8")
     denied = ACCESS_DENIED_HTML.read_text(encoding="utf-8")
 
-    auth_guard = source.split("<title>기업영업지원 에이전트</title>", 1)[1].split(
+    auth_guard = source.split("<title>기업영업 에이전트</title>", 1)[1].split(
         "text2sql:console:theme:v2", 1
     )[0]
     assert '.includes(localStorage.getItem("loginID"))' in auth_guard

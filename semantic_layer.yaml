@@ -87,11 +87,13 @@ semantic_layer_metadata:
   - 법인카드 이용금액에 사용자 표면형을 달아 카드 월실적(tmdaa3e16)으로 돌리고, 이용 기업수를 전표(tbdaabt30) 기업고객식별자를 세는 지표·용어로 신설했다.
   - 가맹점 우편번호를 주소 속성의 별칭으로 세우고, 마스터의 접두사 없는 우편번호에 가맹점우편번호 표면형을 달아 전표 사본 대신 마스터를 보게 했다.
   - 기업카드 좌수를 카드 속성 축으로 쪼갤 때는 회원카드기본(tbdaaat05) 한 곳에서 세도록 유효 기업카드 보유 속성에 카드 단위 원천과 축 정책을 선언했다.
+  - 유효 기업카드 수를 카드 종류(신용·체크)와 소유 형태(개별·공용) 두 축으로 선언해, 개별·공용을 물어도 그 컬럼이 프롬프트에 남게 했다.
   - 해외 가맹점 매출 건수·금액을 가맹점 월실적(tmdaa5e11) 지표로 신설하고, 해외 전표·가맹점 월스냅샷에 그 사실을 주의사항으로 붙였다.
   - 기업 매출건수의 코드 필터(카드매출유형구분코드 일반·할부·리볼빙, 회원·가맹점 소속회사 당사)를 지표 required_filters 로 못 박았다.
   - 가맹점 수수료 금액을 tmdaa5e11 가맹점수입수수료 지표로 신설하고, 전표당 수수료와 수수료율은 그대로 두었다.
   - 최근 3·6개월 실적은 tmdaa5e11 누적 컬럼 한 행에서 읽고 평균은 개월 수로 나누도록 질의 참조와 용어를 추가했다.
   - 회원 마스터(tbdaaat03)의 테이블 동의어에서 낱말 '회원' 을 걷어냈다. 모집단을 가리키는 말이 테이블을 지목하지 않는다.
+  - 가맹점거래정지여부를 '0' 정상영업·'1' 거래정지로 통일했다. 활성가맹점 용어가 반대로 말하던 'N' 을 걷어냈다.
   - 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.
 tables:
 - name: tbdaa1d12
@@ -2919,6 +2921,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -3899,8 +3914,12 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    - 정상영업
+    - 영업중
+    - 정상가맹점
+    - 활성가맹점
     value_semantics:
-      '0': 거래정지 아님
+      '0': 정상영업
       '1': 거래정지
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 가맹점거래정지여부
@@ -4197,6 +4216,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드를 의미한다.
@@ -4264,6 +4296,9 @@ tables:
       C: 과잉금
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 카드매출유형구분코드
+    value_aliases:
+      '1':
+      - 일시불
   - name: 매출전표종류구분코드
     data_type: VARCHAR
     description: '매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.'
@@ -4473,6 +4508,9 @@ tables:
       C: 과잉금
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 카드매출유형구분코드
+    value_aliases:
+      '1':
+      - 일시불
   - name: 매출전표종류구분코드
     data_type: VARCHAR
     description: '매출전표의 종류관리코드. 금액·건수 집계의 부호를 정한다: 정당(1)·취소정정(4)은 더하고 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 뺀다.'
@@ -4552,6 +4590,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -5914,6 +5965,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -6770,8 +6834,12 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    - 정상영업
+    - 영업중
+    - 정상가맹점
+    - 활성가맹점
     value_semantics:
-      '0': 거래정지 아님
+      '0': 정상영업
       '1': 거래정지
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 가맹점거래정지여부
@@ -7517,8 +7585,12 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    - 정상영업
+    - 영업중
+    - 정상가맹점
+    - 활성가맹점
     value_semantics:
-      '0': 거래정지 아님
+      '0': 정상영업
       '1': 거래정지
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 가맹점거래정지여부
@@ -8615,6 +8687,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -9417,6 +9502,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -9936,6 +10034,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -11513,6 +11624,19 @@ tables:
       FP08: 팩토링
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 상품중분류구분코드
+    value_aliases:
+      CP51:
+      - 기업신용
+      - 신용카드
+      CP52:
+      - 기업신용
+      - 신용카드
+      CP53:
+      - 기업체크
+      - 체크카드
+      CP54:
+      - 기업직불
+      - 직불카드
   - name: 카드등급그룹코드
     data_type: VARCHAR
     description: MFX월카드통합실적집계의 KB카드사의 카드상품 등급에 대한 분류의 그룹핑 코드
@@ -13272,8 +13396,12 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    - 정상영업
+    - 영업중
+    - 정상가맹점
+    - 활성가맹점
     value_semantics:
-      '0': 거래정지 아님
+      '0': 정상영업
       '1': 거래정지
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 가맹점거래정지여부
@@ -14122,8 +14250,12 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    - 정상영업
+    - 영업중
+    - 정상가맹점
+    - 활성가맹점
     value_semantics:
-      '0': 거래정지 아님
+      '0': 정상영업
       '1': 거래정지
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 가맹점거래정지여부
@@ -15230,8 +15362,12 @@ tables:
     - 가맹점거래정지
     - 거래정지여부
     - 거래정지
+    - 정상영업
+    - 영업중
+    - 정상가맹점
+    - 활성가맹점
     value_semantics:
-      '0': 거래정지 아님
+      '0': 정상영업
       '1': 거래정지
     value_semantics_provenance: user_provided_business_codebook
     codebook_ref: 가맹점거래정지여부
@@ -17285,12 +17421,28 @@ semantic_attributes:
       label: 기업카드
       aliases: [법인카드]
       filter_expression: COALESCE("유효기업신용카드수", 0) + COALESCE("유효기업체크카드수", 0) > 0
+    individual:
+      label: 기업 개별카드
+      aliases:
+      - 기업개별카드
+      - 법인개별카드
+      - 개별카드
+      - 기업 개별 카드
+      filter_expression: COALESCE("유효기업개별카드수", 0) > 0
+    shared:
+      label: 기업 공용카드
+      aliases:
+      - 기업공용카드
+      - 법인공용카드
+      - 공용카드
+      - 기업 공용 카드
+      filter_expression: COALESCE("유효기업공용카드수", 0) > 0
   filter_expression: COALESCE("유효기업신용카드수", 0) + COALESCE("유효기업체크카드수", 0) > 0
   source_mappings:
-  - {entity: corporate_customer_daily, table: tbdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수], role: current_corporate_card_holding}
-  - {entity: corporate_customer_no_usage_snapshot, table: tmdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수], role: monthly_corporate_card_holding}
-  - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수], role: current_merchant_card_holding}
-  - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수], role: monthly_merchant_card_holding}
+  - {entity: corporate_customer_daily, table: tbdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수, 유효기업개별카드수, 유효기업공용카드수], role: current_corporate_card_holding}
+  - {entity: corporate_customer_no_usage_snapshot, table: tmdaa1d12, columns: [유효기업신용카드수, 유효기업체크카드수, 유효기업개별카드수, 유효기업공용카드수], role: monthly_corporate_card_holding}
+  - {entity: merchant_daily_enrichment, table: tbdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수, 유효기업개별카드수, 유효기업공용카드수], role: current_merchant_card_holding}
+  - {entity: merchant_monthly_enrichment, table: tmdaaus01, columns: [유효기업신용카드수, 유효기업체크카드수, 유효기업개별카드수, 유효기업공용카드수], role: monthly_merchant_card_holding}
   - entity: member_card
     table: tbdaaat05
     columns:
@@ -17306,6 +17458,7 @@ semantic_attributes:
   - 개별+공용은 소유 형태 축이므로 신용+체크와 함께 네 컬럼을 합산하지 않는다.
   - 현재·최신 보유는 tbdaa1d12 KST 전일 기준년월일, 명시한 과거 월은 tmdaa1d12 기준년월에서 읽는다.
   - 카드등급그룹·상품·브랜드·발급유형·카드거래매체처럼 카드 한 장의 속성으로 쪼개는 질의는 회원카드기본(tbdaaat05) 한 곳에서 센다. 기업고객 스냅샷의 유효기업신용카드수는 기업고객당 합계라 그 축으로 쪼갤 수 없고, 조인해도 좌수가 부풀려진다.
+  - 카드 종류를 물으면 유효기업신용카드수·유효기업체크카드수를, 소유 형태를 물으면 유효기업개별카드수·유효기업공용카드수를 읽는다. 네 컬럼 모두 기업고객당 좌수라 고객×월 최신 1건으로 줄인 뒤 SUM 한다.
   source_selection:
     default_role_prefix: current_
     period_role_prefix: monthly_
@@ -19746,10 +19899,15 @@ glossary:
   aliases: ["개인", "개인회원"]
   sql_hint: "개인 조건은 \"개인기업구분코드\" = '1' 을 사용한다."
 - term: "활성가맹점"
-  canonical: "가맹점거래정지여부 = 'N' 인 가맹점"
-  description: "거래정지 상태가 아닌(영업 중인) 가맹점."
-  aliases: ["정상가맹점", "거래중가맹점", "영업중가맹점"]
-  sql_hint: "활성 조건은 (\"가맹점거래정지여부\" = 'N' OR \"가맹점거래정지여부\" IS NULL) 를 사용한다."
+  canonical: "가맹점거래정지여부 = '0' 인 가맹점"
+  description: "거래정지 상태가 아닌(정상영업 중인) 가맹점. 가맹점거래정지여부는 '0' 정상영업, '1' 거래정지 두 값만 가진다."
+  aliases:
+  - 정상가맹점
+  - 거래중가맹점
+  - 영업중가맹점
+  - 정상영업가맹점
+  - 정상영업
+  sql_hint: "활성 조건은 (\"가맹점거래정지여부\" = '0' OR \"가맹점거래정지여부\" IS NULL), 거래정지 조건은 \"가맹점거래정지여부\" = '1' 이다. 'Y'/'N' 은 이 컬럼의 값이 아니다."
 - term: "연체"
   canonical: "연체회차 > 0 또는 연체발생년월일 존재"
   description: "카드/여신 대금을 약정일까지 상환하지 못한 상태. 카드연체일별(tddaa3l01)의 연체회차/연체일수로 판단한다."
@@ -20487,7 +20645,7 @@ column_codebooks:
   provenance: user_provided_business_codebook
   values:
   - code: '0'
-    label: 거래정지 아님
+    label: 정상영업
     status: active
   - code: '1'
     label: 거래정지
@@ -20721,21 +20879,33 @@ column_codebooks:
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업신용
+    - 신용카드
   - code: 'CP52'
     label: 기업정부구매카드
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업신용
+    - 신용카드
   - code: 'CP53'
     label: 기업체크카드
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업체크
+    - 체크카드
   - code: 'CP54'
     label: 기업직불카드
     valid_from: '2018-06-05'
     valid_to: '9999-12-31'
     status: active
+    aliases:
+    - 기업직불
+    - 직불카드
   - code: 'CP55'
     label: 기업순구매카드
     valid_from: '2018-06-05'
@@ -21416,6 +21586,8 @@ column_codebooks:
   values:
   - code: '1'
     label: 일반
+    aliases:
+    - 일시불
     status: active
   - code: '2'
     label: 할부

@@ -107,6 +107,7 @@ from .v2.sql_dialect_guard import (
 )
 from .v2.column_repair import repair_columns as _v2_repair_columns
 from .v2.column_synonyms import compact as _v2_compact
+from .v2.column_synonyms import label_surface_forms as _label_surface_forms
 from .v2.vq_output_guard import (
     absolute_period_requested as _v2_absolute_period_requested,
     named_columns as _v2_named_columns,
@@ -4191,6 +4192,12 @@ def _verified_query_matches_intent(
     if _asks_scalar_count(question_text) and _vq_lists_entities(str(matched.get("sql") or "")):
         return False
 
+    # v2: 순위의 단위가 축이면 결과도 그 축 1행씩이어야 한다. "일시불매출이 가장 큰
+    # 가맹점업종 상위 3개"에 top_merchants_by_revenue 가 붙었는데, 이 VQ는 축 이름을
+    # SELECT 에 들고 있어도 가맹점번호·가맹점명까지 GROUP BY 해 행 단위가 가맹점이다.
+    if _ranked_axis_unit(question_text) and _vq_lists_entities(str(matched.get("sql") or "")):
+        return False
+
     asks_sales = bool(re.search(r"매출(?:액|금액|건수)?|판매(?:액|금액|건수)", question_text))
     if asks_sales and not re.search(r"매출|판매", matched_text):
         return False
@@ -4398,6 +4405,7 @@ def _verified_query_time_source_compatible(question: str, query: dict) -> bool:
 # CPython 이 그 id 를 재사용해서 엉뚱한 스키마의 인덱스를 돌려준다. 실제로 파일 하나만
 # 돌리면 통과하고 전체 스위트에서는 깨지는 순서 의존이 났다.
 _COLUMN_NAMES_KEY = "_v2_column_names_cache"
+_DIMENSION_FORMS_KEY = "_v2_dimension_forms_cache"
 _TABLE_COLUMN_INDEX_KEY = "_v2_table_column_index_cache"
 
 
@@ -4414,6 +4422,58 @@ def _schema_column_names() -> frozenset[str]:
         )
         SCHEMA[_COLUMN_NAMES_KEY] = cached
     return cached
+
+
+def _dimension_surface_forms() -> frozenset[str]:
+    """dimension 컬럼명과 그 동의어. 순위 단위가 축인지 가르는 데 쓴다."""
+    cached = SCHEMA.get(_DIMENSION_FORMS_KEY)
+    if cached is None:
+        cached = frozenset(
+            _v2_compact(form)
+            for table in SCHEMA.get("tables", [])
+            for column in (table.get("dimensions") or [])
+            for form in [column.get("name"), *(column.get("synonyms") or [])]
+            if form
+        )
+        SCHEMA[_DIMENSION_FORMS_KEY] = cached
+    return cached
+
+
+# 순위의 단위를 짚는 두 어순. "상위 3개 업종"은 단위가 뒤에, "매출이 가장 큰
+# 업종 상위 3개"는 앞에 온다. 앞에 오는 쪽은 비교 수식어를 요구해야 지표와
+# 갈린다 — "수수료율 상위 20개 가맹점"의 수수료율은 단위가 아니라 정렬 지표다.
+_RANK_UNIT_AFTER_RE = re.compile(
+    r"(?:상위|하위|TOP|톱|BOTTOM)\s*\d[\d,]*\s*(?:개|곳|군데|위)?\s*(?P<unit>[0-9A-Za-z가-힣]+)",
+    re.IGNORECASE,
+)
+_RANK_UNIT_BEFORE_RE = re.compile(
+    r"(?:큰|많은|높은|작은|적은|낮은)\s*(?P<unit>[0-9A-Za-z가-힣]+)\s*"
+    r"(?:(?:상위|하위|TOP|톱|BOTTOM)\s*)?\d[\d,]*\s*(?:개|곳|군데|위)",
+    re.IGNORECASE,
+)
+
+
+def _ranked_axis_unit(question: str) -> str:
+    """순위의 단위로 질문이 짚은 축 이름. 엔티티 단위 순위면 빈 문자열.
+
+    "일시불매출이 가장 큰 가맹점업종 상위 3개"가 요구하는 것은 업종 1행씩이다.
+    반면 "수수료율 상위 20개 가맹점"의 단위는 가맹점이라 축이 아니다. 축인지는
+    스키마 dimension 의 표면형에 있는지로 가른다. 가맹점·기업·업체 같은 엔티티
+    이름은 dimension 표면형이 아니라 저절로 빠진다.
+    """
+    text = str(question or "")
+    forms = _dimension_surface_forms()
+    for pattern in (_RANK_UNIT_AFTER_RE, _RANK_UNIT_BEFORE_RE):
+        for match in pattern.finditer(text):
+            word = match.group("unit")
+            # 조사가 붙어 있어도("업종이름으로") 앞에서부터 잘라 맞춰 본다.
+            for end in range(len(word), 1, -1):
+                unit = word[:end]
+                if _v2_compact(unit) not in forms:
+                    continue
+                # 가맹점명·기업명도 dimension 이지만 그건 엔티티 단위 순위다.
+                return "" if unit in _ENTITY_ID_COLUMNS else unit
+    return ""
 
 
 def _table_column_index() -> tuple[dict[str, set[str]], dict[str, list[str]]]:
@@ -5848,6 +5908,56 @@ def _matched_attribute_columns(
     return {table: frozenset(values) for table, values in columns.items()}
 
 
+_QUESTION_WORD_RE = re.compile(r"[0-9A-Za-z가-힣]+")
+# 복합어 앞머리로 붙은 라벨을 받는 최소 길이. '기업신용'은 받고 '신용'·'체크'
+# 두 글자는 '신용등급'·'체크환급' 에 걸리므로 어절 경계 매칭에만 맡긴다.
+_MIN_COMPOUND_LABEL_LENGTH = 4
+
+
+def _label_term_in_question(question: str, term: object) -> bool:
+    """질문이 이 라벨을 불렀는지. 복합어 앞머리로 붙은 것도 부른 것이다.
+
+    phrase 매칭은 어절 경계를 요구해서 뒤에 말이 붙는 순간 놓친다.
+    "기업신용매출건수랑 금액" 의 '기업신용' 이 그렇다.
+    """
+    needle = _v2_compact(term).lower()
+    if len(needle) < 2:
+        return False
+    if _phrase_in_question(question, term):
+        return True
+    if len(needle) < _MIN_COMPOUND_LABEL_LENGTH:
+        return False
+    return any(
+        word.lower().startswith(needle)
+        for word in _QUESTION_WORD_RE.findall(str(question or ""))
+    )
+
+
+def _value_label_in_question(question: str, column: dict) -> bool:
+    """질문이 이 컬럼의 코드 라벨을 그대로 불렀는지.
+
+    코드 컬럼은 이름으로 불리지 않는다. "기업체크카드 매출" 은
+    상품중분류구분코드를, "할부 매출금액" 은 카드매출유형구분코드를 한 번도
+    말하지 않지만, 그 컬럼이 프롬프트에 없으면 모델은 CP53·'2' 로 거를 수 없고
+    전체 매출을 그대로 답한다. 라벨을 부른 것은 컬럼 이름을 부른 것과 같은 급의
+    증거다. v2 는 이 문제를 컬럼마다 라벨을 synonyms 에 손으로 베껴 넣어
+    막았는데(가맹점거래정지여부의 '정상영업'·'영업중'), 코드북이 붙은 컬럼
+    전부에 같은 일을 되풀이할 수는 없다.
+
+    라벨 그대로만 보지 않는다. 코드북 라벨은 '기업체크카드' 인데 질문은
+    '법인체크카드' 로 오고(_label_surface_forms), 라벨이 '일반' 인 카드매출유형을
+    현업은 '일시불' 이라 부른다(코드북의 value_aliases).
+    """
+    aliases = column.get("value_aliases") or {}
+    for code, raw_value in (column.get("value_semantics") or {}).items():
+        label = raw_value.get("label", "") if isinstance(raw_value, dict) else raw_value
+        for raw_term in [label, *(aliases.get(code) or [])]:
+            for term in _label_surface_forms(raw_term):
+                if _label_term_in_question(question, term):
+                    return True
+    return False
+
+
 def _table_details(
     table_names: list[str],
     question: str = "",
@@ -5952,6 +6062,8 @@ def _table_details(
                 terms = [name, *column.get("synonyms", [])]
                 if any(_phrase_in_question(question, term) for term in terms):
                     score += 70
+                if _value_label_in_question(question, column):
+                    score += 70
                 # 속성이 "이 값은 이 컬럼에서 읽는다" 고 선언한 컬럼. 질문이 이름을 댄
                 # 것과 같은 급의 증거다. 이름이 근거 문장에 스치는 것(+45)으로는
                 # 예산을 못 넘겼다 — "가맹점 수수료가 가장 높은 가맹점" 에서
@@ -6036,6 +6148,11 @@ def _table_details(
                 value_text = json.dumps(column.get("value_semantics"), ensure_ascii=False)
                 provenance = str(column.get("value_semantics_provenance") or "")
                 metadata.append(f"values={value_text}; provenance={provenance}")
+            # 컬럼을 프롬프트에 올려도 라벨이 '일반' 이면 "일시불 매출" 이 어느 코드인지
+            # 모델은 모른다. 코드북이 이어 둔 별칭을 값 옆에 같이 적는다.
+            if column.get("value_aliases"):
+                alias_text = json.dumps(column.get("value_aliases"), ensure_ascii=False)
+                metadata.append(f"value_aliases={alias_text}")
             suffix = f" ({'; '.join(metadata)})" if metadata else ""
             lines.append(
                 f"  - {column.get('name')} [{semantic_role}, {column.get('data_type', 'UNKNOWN')}]: "
@@ -6464,6 +6581,7 @@ def generate_sql(state: Text2SQLState) -> dict:
 13. 상세 목록 조회는 요청 개수가 없으면 LIMIT {DEFAULT_QUERY_ROW_LIMIT}을 적용합니다. 집계 결과는 의미있는 순서로 정렬하고, CTE와 서브쿼리를 포함해 SELECT * 는 쓰지 않습니다.
 13-1. 요청 지표 하나만 덜렁 내지 말고, 그 값을 읽는 데 필요한 컬럼을 함께 SELECT 합니다. SELECT * 를 쓰라는 뜻이 아니라 아래 네 가지를 빠뜨리지 말라는 뜻입니다.
     - 기업·가맹점·회원 목록이나 순위면 식별 컬럼을 같이 냅니다. 기업은 고객식별자·사업자등록번호·기업명, 가맹점은 가맹점번호·가맹점명입니다.
+      다만 순위의 단위가 업종·등급 같은 축이면 그 축만 GROUP BY 하고 식별 컬럼은 넣지 않습니다. "매출이 가장 큰 가맹점업종 상위 3개"는 업종 3행입니다.
     - "X별"로 집계하면 그 축 컬럼을 SELECT에 남깁니다. 필터로 값이 하나로 고정된 축도 남깁니다.
     - 비율·평균·증감률은 분자와 분모(또는 비교 대상 두 시점의 값)를 함께 냅니다. 예: 월평균이용금액이면 기간총이용금액과 평균산정월수도 냅니다.
     - 정렬·필터 기준으로 쓴 지표는 결과에도 포함합니다. "연체원금이 가장 큰"이면 연체원금을 냅니다.
@@ -6567,6 +6685,27 @@ _CORPORATE_ENTITY_RANK_RE = re.compile(
     re.IGNORECASE,
 )
 _CARD_GRAIN_COLUMNS = ("회원일련번호", "카드구분키번호")
+
+
+def _validate_ranked_axis_grain(question: str, sql: str) -> list[str]:
+    """Check that an axis-unit ranking emits one row per axis value.
+
+    "일시불매출이 가장 큰 가맹점업종 상위 3개"는 업종 1행씩을 요구하는데
+    가맹점번호·가맹점명까지 GROUP BY 하면 행 단위가 가맹점으로 내려간다.
+    """
+    axis = _ranked_axis_unit(question)
+    if not axis:
+        return []
+    select_list = _strip_aggregate_calls(outer_select_list(sql))
+    if not select_list:
+        return []
+    leaked = [column for column in _ENTITY_ID_COLUMNS if column in select_list]
+    if not leaked:
+        return []
+    return [
+        f"'{axis}' 단위 순위 결과가 {'·'.join(leaked)} 기준으로 쪼개져 있습니다. "
+        f"GROUP BY 축을 '{axis}' 하나로 두고 1행씩 내세요."
+    ]
 
 
 def _validate_corporate_entity_grain(question: str, sql: str) -> list[str]:
@@ -7110,6 +7249,7 @@ def validate_sql(state: Text2SQLState) -> dict:
     issues.extend(_validate_recent_month_semantics(question, sql))
     issues.extend(_validate_requested_row_constraints(question, sql))
     issues.extend(_validate_corporate_entity_grain(question, sql))
+    issues.extend(_validate_ranked_axis_grain(question, sql))
     issues.extend(_validate_sales_slip_net_amount(sql))
     issues.extend(_availability_policy_issues(retrieval_question, sql, selected_tables))
     implicit_time_basis = _implicit_time_basis_note(question, sql)

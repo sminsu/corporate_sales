@@ -59,7 +59,7 @@ CHAT_CODEBOOKS = {
     ),
     "가맹점거래정지여부": (
         "tbdaadt01",
-        {"0": "거래정지 아님", "1": "거래정지"},
+        {"0": "정상영업", "1": "거래정지"},
     ),
     "가맹점해지사유구분코드": (
         "tmdaa5e11",
@@ -172,3 +172,186 @@ def test_chat_codebooks_are_in_the_embedded_codebook_section(schema: dict) -> No
         assert book is not None, f"{column_name} 코드북이 없다"
         assert {str(v["code"]): v["label"] for v in book["values"]} == values
         assert all(str(source).startswith("chat/") for source in book["source_files"])
+
+
+def test_active_merchant_term_reads_the_suspension_codebook() -> None:
+    """용어 "활성가맹점" 은 컬럼 상세보다 프롬프트 앞에 붙는다. 두 곳이 어긋나면
+    모델은 앞엣것을 쓴다. v1 은 여기서 = 'N' 이라고 말하고 있었다."""
+    schema = yaml.safe_load((PROJECT_ROOT / "semantic_layer.yaml").read_text(encoding="utf-8"))
+    term = next(item for item in schema["glossary"] if item.get("term") == "활성가맹점")
+    text = " ".join(str(term.get(key) or "") for key in ("canonical", "description", "sql_hint"))
+    assert "'0'" in text and "'1'" in text
+    assert "'N'" not in term["canonical"]
+    assert "= 'N'" not in term["sql_hint"] and "'Y'" not in term["canonical"]
+
+
+def test_verified_queries_filter_suspension_with_the_codebook_values() -> None:
+    """참고 SQL 예시는 프롬프트에 그대로 들어가므로 여기 있는 값을 모델이 베낀다."""
+    document = yaml.safe_load(
+        (PROJECT_ROOT / "text2sql_agent" / "tools" / "sql_verified_queries.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    offenders = [
+        str(query.get("name"))
+        for query in document.get("verified_queries") or []
+        for line in str(query.get("sql") or "").splitlines()
+        if "가맹점거래정지여부" in line and ("'Y'" in line or "'N'" in line)
+    ]
+    assert offenders == [], f"'Y'/'N' 로 거래정지를 거르는 예시: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["정상영업 중인 가맹점 수 알려줘", "영업중인 도미노 가맹점 수", "거래정지된 가맹점 수 알려줘"],
+)
+def test_suspension_column_reaches_the_prompt_for_either_side(question: str) -> None:
+    """용어가 컬럼 이름을 불러도 테이블 상세에 그 컬럼이 없으면 모델은 못 쓴다.
+    '0' 쪽을 부르는 말('정상영업'·'영업중')에도 컬럼이 예산 안에 들어야 한다."""
+    from text2sql_agent.workflow import _table_details
+
+    detail = _table_details(["tbdaadt01"], question)
+    line = next(
+        (row for row in detail.splitlines() if "가맹점거래정지여부" in row),
+        "",
+    )
+    assert line, f"{question}: 가맹점거래정지여부가 프롬프트 컬럼에 없다"
+    assert '"0": "정상영업"' in line and '"1": "거래정지"' in line
+
+
+@pytest.mark.parametrize(
+    ("question", "column_name", "code", "label"),
+    [
+        ("2025년 6월 기업체크카드 매출금액 알려줘", "상품중분류구분코드", "CP53", "기업체크카드"),
+        ("기업정부구매카드 이용금액 알려줘", "상품중분류구분코드", "CP52", "기업정부구매카드"),
+        ("기업신용카드와 기업체크카드 매출 비교해줘", "상품중분류구분코드", "CP51", "기업신용카드"),
+        ("2025년 6월 할부 매출금액 알려줘", "카드매출유형구분코드", "2", "할부"),
+        ("현금서비스 이용금액 얼마야", "카드매출유형구분코드", "3", "현금서비스"),
+        ("리볼빙 매출 건수 알려줘", "카드매출유형구분코드", "4", "리볼빙"),
+        ("연회비 매출 알려줘", "카드매출유형구분코드", "9", "연회비"),
+    ],
+)
+def test_code_label_pulls_its_column_into_the_prompt(
+    question: str, column_name: str, code: str, label: str
+) -> None:
+    """질문이 코드 라벨만 부를 때도 그 코드 컬럼이 프롬프트 예산 안에 들어야 한다.
+
+    코드 컬럼은 이름으로 불리지 않는다. "기업체크카드 매출" 은 상품중분류구분코드를
+    한 번도 말하지 않는데, 그 컬럼이 테이블 상세에서 잘려나가면 모델은 CP53 으로
+    거르지 못하고 개인카드까지 합친 전체 매출을 답한다.
+    """
+    from text2sql_agent.workflow import _table_details
+
+    detail = _table_details(["tbdaabt30"], question)
+    line = next((row for row in detail.splitlines() if column_name in row), "")
+    assert line, f"{question}: {column_name} 이 프롬프트 컬럼에 없다"
+    assert f'"{code}": "{label}"' in line
+
+
+@pytest.mark.parametrize(
+    ("question", "column_name"),
+    [
+        ("법인체크카드 매출 알려줘", "상품중분류구분코드"),
+        ("법인신용카드 매출 알려줘", "상품중분류구분코드"),
+        ("법인 정부구매카드 이용금액", "상품중분류구분코드"),
+        ("일시불 매출금액 알려줘", "카드매출유형구분코드"),
+        ("법인카드 일시불 매출 건수", "카드매출유형구분코드"),
+    ],
+)
+def test_business_wording_reaches_the_same_code_column(question: str, column_name: str) -> None:
+    """코드북 라벨과 현업 표현이 다른 두 자리를 잇는다.
+
+    라벨은 '기업체크카드'·'일반' 인데 질문은 '법인체크카드'·'일시불' 로 온다.
+    '기업'↔'법인' 은 라벨 표면형으로, '일시불' 은 코드북 별칭으로 처리한다.
+    """
+    from text2sql_agent.workflow import _table_details
+
+    detail = _table_details(["tbdaabt30"], question)
+    assert any(column_name in row for row in detail.splitlines()), (
+        f"{question}: {column_name} 이 프롬프트 컬럼에 없다"
+    )
+
+
+def test_installment_free_alias_reaches_the_prompt_with_its_code(schema: dict) -> None:
+    """별칭이 컬럼에만 붙고 프롬프트에 안 실리면, 모델은 일시불이 '1' 인 줄 모른다."""
+    from text2sql_agent.workflow import _table_details
+
+    column = _column(schema, "tbdaabt30", "카드매출유형구분코드")
+    assert column.get("value_aliases") == {"1": ["일시불"]}
+
+    detail = _table_details(["tbdaabt30"], "일시불 매출금액 알려줘")
+    line = next(row for row in detail.splitlines() if "카드매출유형구분코드" in row)
+    assert '"1": ["일시불"]' in line
+
+
+CREDIT_CHECK_DEBIT_ALIASES = {
+    "CP51": ["기업신용", "신용카드"],
+    "CP52": ["기업신용", "신용카드"],
+    "CP53": ["기업체크", "체크카드"],
+    "CP54": ["기업직불", "직불카드"],
+}
+
+
+def test_card_kind_aliases_split_the_product_class_codes(schema: dict) -> None:
+    """신용·체크·직불을 가르는 키는 상품중분류구분코드 하나다.
+
+    라벨만으로는 CP52(기업정부구매카드)가 신용 쪽이라는 것을 알 수 없다. 사용자가
+    지정한 구분(CP51·CP52 신용 / CP53 체크 / CP54 직불)을 별칭으로 못 박는다.
+    """
+    column = _column(schema, "tbdaabt30", "상품중분류구분코드")
+    assert column.get("value_aliases") == CREDIT_CHECK_DEBIT_ALIASES
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # 라벨은 '기업신용카드' 인데 질문은 복합어로 붙여 쓴다.
+        "26년 7월 9일 기준 기업신용매출건수랑 금액",
+        "2026년 7월 기업체크매출 금액 알려줘",
+        "2026년 7월 법인신용매출 건수 알려줘",
+        "2026년 7월 신용카드매출금액 알려줘",
+    ],
+)
+def test_compound_card_kind_wording_reaches_the_product_class_column(question: str) -> None:
+    """"기업신용매출건수" 는 라벨도 컬럼명도 부르지 않은 채 코드 컬럼을 요구한다.
+
+    이 컬럼이 프롬프트에서 잘리면 모델은 신용·체크를 가를 수단 자체가 없어
+    개인·체크·직불까지 합친 전체 전표 매출을 답한다.
+    """
+    from text2sql_agent.workflow import _table_details
+
+    detail = _table_details(["tbdaabt30"], question)
+    line = next((row for row in detail.splitlines() if "상품중분류구분코드" in row), "")
+    assert line, f"{question}: 상품중분류구분코드가 프롬프트 컬럼에 없다"
+    # 코드 매핑과 별칭이 함께 실려야 CP51·CP52 를 신용으로 묶을 수 있다.
+    assert '"CP51": "기업신용카드"' in line
+    assert '"CP51": ["기업신용", "신용카드"]' in line
+
+
+def test_two_letter_card_kind_words_do_not_pull_the_column_alone() -> None:
+    """'신용'·'체크' 두 글자가 복합어 앞머리로 걸리면 엉뚱한 질문까지 끌려온다."""
+    from text2sql_agent.workflow import _value_label_in_question
+
+    column = {
+        "value_semantics": {"CP51": "기업신용카드", "CP53": "기업체크카드"},
+        "value_aliases": CREDIT_CHECK_DEBIT_ALIASES,
+    }
+    assert not _value_label_in_question("기업 신용등급별 회원 수 알려줘", column)
+    assert _value_label_in_question("기업신용매출건수랑 금액", column)
+
+
+def test_termination_reason_label_pulls_its_column_into_the_prompt() -> None:
+    """해지사유는 코드로도 컬럼명으로도 불리지 않는다. 라벨이 유일한 단서다."""
+    from text2sql_agent.workflow import _table_details
+
+    for question, code, label in [
+        ("장기무실적으로 해지된 가맹점 수 알려줘", "01", "장기무실적"),
+        ("자진폐업으로 해지된 가맹점", "08", "자진폐업"),
+        ("강제폐업 가맹점 수", "09", "강제폐업"),
+    ]:
+        detail = _table_details(["tmdaa5e11"], question)
+        line = next(
+            (row for row in detail.splitlines() if "가맹점해지사유구분코드" in row), ""
+        )
+        assert line, f"{question}: 가맹점해지사유구분코드가 프롬프트 컬럼에 없다"
+        assert f'"{code}": "{label}"' in line
