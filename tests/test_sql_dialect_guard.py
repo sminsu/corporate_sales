@@ -113,6 +113,34 @@ def test_flags_sql_ending_mid_clause() -> None:
     assert any("끊긴" in issue or "끝났다" in issue for issue in audit_sql("SELECT a, b FROM t WHERE x = 1 AND"))
 
 
+def test_period_filter_at_the_end_is_not_a_truncated_sql() -> None:
+    """리터럴을 공백으로 지우면 기간 조건이 AND 로 끝난 것처럼 보인다.
+
+    "26년 7월 신규 가맹점수는?" 이 이 오탐에 걸렸다. SQL 은 멀쩡한데 guard 가
+    "절 중간에서 끝났다" 로 반려해, 모델이 고칠 것이 없는 채로 재시도만 돌다
+    끝났다. BETWEEN 으로 끝나는 기간 조건은 이 코드베이스에서 흔한 모양이다.
+    """
+    sql = (
+        'SELECT COUNT(DISTINCT m."가맹점번호") AS "신규가맹점수"\n'
+        'FROM tmdaa5d01 m\n'
+        'WHERE m."기준년월" = \'202607\'\n'
+        '  AND m."가맹점신규년월일" BETWEEN \'20260701\' AND \'20260731\''
+    )
+
+    assert audit_sql(sql) == []
+
+
+def test_string_literal_at_the_end_is_not_a_truncated_sql() -> None:
+    assert audit_sql("SELECT a FROM t WHERE x = '202607'") == []
+
+
+def test_truncation_before_a_comment_is_still_flagged() -> None:
+    """주석은 자리표로 채우지 않는다. 채우면 주석 앞에서 잘린 SQL 을 놓친다."""
+    issues = audit_sql("SELECT a FROM t WHERE x = 1 AND -- 메모")
+
+    assert any("끊긴" in issue or "끝났다" in issue for issue in issues)
+
+
 def test_empty_sql_is_reported() -> None:
     assert audit_sql("   ") == ["빈 SQL이다."]
 

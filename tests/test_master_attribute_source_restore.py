@@ -43,9 +43,14 @@ def _snapshot_sql(table: str, column: str, value: str) -> str:
 
 
 def test_the_question_declares_the_snapshot_siblings() -> None:
+    # tmdaa5e11 은 merchant_search_name 이 데려온다. 이 질문은 브랜드 이름으로
+    # 찾는 질문이고("한신포차 가맹점주"), 그 속성이 가맹점 월실적도 이름 검색
+    # 원천으로 선언해 두었다. 기본정보 컬럼이 없는 테이블이라 되돌릴 대상이
+    # 맞다 — 같은 엔티티의 다른 스냅샷이라는 점에서 나머지 셋과 같다.
     assert workflow._master_attribute_alternate_sources(QUESTION) == [
         "tbdaaus01",
         "tmdaa5d01",
+        "tmdaa5e11",
         "tmdaaus01",
     ]
 
@@ -214,6 +219,7 @@ def test_the_dated_question_declares_the_monthly_source() -> None:
     assert workflow._declared_merchant_source(DATED_ADDRESS_QUESTION) == "tmdaa5d01"
     assert workflow._master_attribute_alternate_sources(DATED_ADDRESS_QUESTION) == [
         "tbdaaus01",
+        "tmdaa5e11",
         "tmdaaus01",
     ]
 

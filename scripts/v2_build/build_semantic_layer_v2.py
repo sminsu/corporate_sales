@@ -2356,6 +2356,85 @@ CORPORATE_CARD_OWNERSHIP_CAUTION = (
 )
 
 
+# 10-8-1-2. 휴폐업 상태와 가맹점주 문맥의 검색명.
+#
+# "빽다방 가맹점주 중에 2026년 5월 기준으로 폐업처리된 건 몇 개야?" 가 세 군데서
+# 걸렸다.
+#
+#   1. 휴폐업여부의 동의어가 '휴폐업' 하나뿐이라 "폐업처리된" 이 안 걸렸다.
+#   2. 그 컬럼과 브랜드명을 가진 tmdaaus01 이 1순위가 아니었다(tmdaa5d01 이 이겼는데
+#      거기엔 두 컬럼이 아예 없다).
+#   3. merchant_search_name 의 별칭이 '가맹점명'·'브랜드명' 이라 "가맹점주" 문맥의
+#      브랜드 이름("빽다방")을 못 받아 브랜드명이 프롬프트에서 빠졌다.
+#
+# 값 코드는 손대지 않는다. 이 스키마는 휴폐업여부의 '0'(정상)만 확인된 가정으로
+# 적어 두었고(참고문서 가정, 운영 코드 마스터 검증 대상), 나머지 코드는 근거가
+# 없다. 그래서 폐업 판정은 이미 지표가 쓰는 규약 그대로 <> '0' 으로 둔다.
+MERCHANT_CLOSURE_COLUMN = "휴폐업여부"
+# 같은 말을 쓰는 다른 낟알. 기업고객(사업자)의 폐업은 자산건전성 기준이고
+# 가맹점의 휴폐업은 국세청 사업자등록상태 기준이다. 값 규약도 반대다 —
+# 폐업여부는 '1' 이 폐업이고, 휴폐업여부는 '0' 이 정상이다.
+CORPORATE_CLOSURE_COLUMN = "폐업여부"
+# '폐업'·'폐업여부' 는 기업고객 컬럼(폐업여부)의 이름과 동의어다. 가맹점 컬럼에
+# 같이 달면 두 낟알이 한 표면형을 다투므로 가맹점 쪽에만 있는 말만 넣는다.
+MERCHANT_CLOSURE_SYNONYMS = ("폐업처리", "휴업")
+MERCHANT_CLOSURE_FILTER = 'COALESCE("휴폐업여부", \'0\') <> \'0\''
+MERCHANT_CLOSURE_ATTRIBUTE = {
+    "name": "merchant_closure",
+    "korean_name": "가맹점 휴폐업 상태",
+    "domains": ["merchant_sales", "corporate_sales_targeting"],
+    "business_definition": "사업자가 폐업 상태인지. 가맹점은 국세청 사업자등록상태, 기업고객은 자산건전성 기준으로 각자 컬럼을 가진다",
+    "aliases": ["폐업", "폐업처리", "휴폐업", "폐업한 가맹점", "문 닫은", "문닫은"],
+    "parameter_name": "휴폐업상태",
+    "filter_expression": MERCHANT_CLOSURE_FILTER,
+    "source_mappings": [
+        {
+            "entity": "merchant_daily_enrichment",
+            "table": "tbdaaus01",
+            "columns": [MERCHANT_CLOSURE_COLUMN],
+            "role": "current_merchant_closure",
+        },
+        {
+            "entity": "merchant_monthly_enrichment",
+            "table": "tmdaaus01",
+            "columns": [MERCHANT_CLOSURE_COLUMN],
+            "role": "monthly_merchant_closure",
+        },
+        {
+            "entity": "corporate_customer_daily",
+            "table": "tbdaa1d12",
+            "columns": [CORPORATE_CLOSURE_COLUMN],
+            "role": "current_corporate_closure",
+        },
+        {
+            "entity": "corporate_customer_no_usage_snapshot",
+            "table": "tmdaa1d12",
+            "columns": [CORPORATE_CLOSURE_COLUMN],
+            "role": "monthly_corporate_closure",
+        },
+    ],
+    "semantic_cautions": [
+        "휴폐업여부는 국세청 사업자등록상태다. KB 가맹점 계약 해지(가맹점해지년월일)와 다른 개념이므로 섞지 않는다.",
+        "정상('0')만 확인된 값이므로 폐업은 COALESCE(\"휴폐업여부\", '0') <> '0' 으로 판정한다. 다른 코드값을 지어내지 않는다.",
+        "가맹점의 휴폐업여부를 가진 원천은 가맹점 일별요약(tbdaaus01)과 월요약(tmdaaus01) 둘뿐이다. 가맹점 월스냅샷(tmdaa5d01)·월실적(tmdaa5e11)에는 없다.",
+        "질문의 주체가 가맹점·점주면 휴폐업여부(tbdaaus01·tmdaaus01), 기업·사업자·법인고객이면 폐업여부(tbdaa1d12·tmdaa1d12)를 쓴다. 두 컬럼은 기준도 값 규약도 달라 한 질문에서 섞지 않는다.",
+        "기업고객의 폐업여부는 '1' 이 폐업이다. 가맹점의 휴폐업여부는 '0' 이 정상이므로 부호가 반대다.",
+        "폐업 시점을 물으면 실제 폐업 신고일이 없으므로 휴폐업 상태가 처음 관측된 기준년월일을 쓴다.",
+    ],
+    "source_selection": {
+        "default_role_prefix": "current_",
+        "period_role_prefix": "monthly_",
+        "current_terms": ["현재", "현재기준", "현재 시점", "오늘", "전일", "어제", "최신", "지금"],
+        "open_month_uses_current": True,
+    },
+}
+
+# 가맹점주·점주도 가맹점 이름으로 찾는 문맥이다. 별칭이 컬럼 이름뿐이라 브랜드
+# 이름을 값으로 부른 질문("빽다방 가맹점주")이 이 속성에 걸리지 않았다.
+MERCHANT_SEARCH_NAME_ATTRIBUTE = "merchant_search_name"
+MERCHANT_SEARCH_NAME_ALIASES = ("가맹점주", "점주", "가맹점 브랜드")
+
+
 # 10-8-2. 해외 가맹점 매출은 가맹점 월실적이 컬럼으로 들고 있다.
 MERCHANT_MONTHLY_TABLE = "tmdaa5e11"
 # 테이블의 semantic_cautions 는 프롬프트에 렌더되지 않는다(_table_details). 지표
@@ -2690,6 +2769,75 @@ def apply_corporate_card_ownership_axis(schema: dict) -> int:
     return added + 1
 
 
+def apply_merchant_closure_semantics(schema: dict) -> int:
+    """Let 폐업 questions reach 휴폐업여부 and the two tables that hold it."""
+    attributes = schema.get("semantic_attributes")
+    if not isinstance(attributes, list):
+        raise SystemExit("semantic_attributes 없음")
+    if any(item.get("name") == MERCHANT_CLOSURE_ATTRIBUTE["name"] for item in attributes):
+        raise SystemExit(f"이미 있는 속성: {MERCHANT_CLOSURE_ATTRIBUTE['name']}")
+
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    for mapping in MERCHANT_CLOSURE_ATTRIBUTE["source_mappings"]:
+        table = tables.get(str(mapping["table"]))
+        if table is None:
+            raise SystemExit(f"테이블 없음: {mapping['table']}")
+        for name in mapping["columns"]:
+            if _table_column(table, name) is None:
+                raise SystemExit(f"{mapping['table']} 에 {name} 컬럼이 없다")
+
+    added = 0
+    # 컬럼 동의어도 함께 넓힌다. 속성이 안 걸리는 표현으로 물어도 컬럼은 올라와야 한다.
+    for table in schema.get("tables", []):
+        column = _table_column(table, MERCHANT_CLOSURE_COLUMN)
+        if column is None:
+            continue
+        synonyms = column.setdefault("synonyms", [])
+        for surface in MERCHANT_CLOSURE_SYNONYMS:
+            if surface in synonyms:
+                continue
+            synonyms.append(surface)
+            added += 1
+    if not added:
+        raise SystemExit(f"{MERCHANT_CLOSURE_COLUMN} 에 이미 폐업 표면형이 다 있다")
+
+    anchor = next(
+        (
+            position
+            for position, item in enumerate(attributes)
+            if item.get("name") == MERCHANT_SEARCH_NAME_ATTRIBUTE
+        ),
+        len(attributes) - 1,
+    )
+    attributes.insert(anchor + 1, deepcopy(MERCHANT_CLOSURE_ATTRIBUTE))
+    return added + 1
+
+
+def apply_merchant_search_name_owner_forms(schema: dict) -> int:
+    """Match the merchant search name when the question says 가맹점주 or a brand."""
+    attribute = next(
+        (
+            item
+            for item in schema.get("semantic_attributes") or []
+            if item.get("name") == MERCHANT_SEARCH_NAME_ATTRIBUTE
+        ),
+        None,
+    )
+    if attribute is None:
+        raise SystemExit(f"속성 없음: {MERCHANT_SEARCH_NAME_ATTRIBUTE}")
+    aliases = attribute.get("aliases")
+    if not isinstance(aliases, list):
+        raise SystemExit(f"{MERCHANT_SEARCH_NAME_ATTRIBUTE} aliases 없음")
+
+    added = 0
+    for surface in MERCHANT_SEARCH_NAME_ALIASES:
+        if surface in aliases:
+            raise SystemExit(f"{MERCHANT_SEARCH_NAME_ATTRIBUTE} 에 {surface} 가 이미 있다")
+        aliases.append(surface)
+        added += 1
+    return added
+
+
 def apply_overseas_merchant_sales_metrics(schema: dict) -> int:
     """Read 해외 가맹점 매출 from the merchant monthly performance columns."""
     added = 0
@@ -2975,6 +3123,8 @@ def main() -> None:
     merchant_postal_count = apply_merchant_postal_code_surface_forms(schema)
     card_level_count = apply_card_level_corporate_card_count(schema)
     card_ownership_count = apply_corporate_card_ownership_axis(schema)
+    closure_count = apply_merchant_closure_semantics(schema)
+    search_name_count = apply_merchant_search_name_owner_forms(schema)
     overseas_merchant_count = apply_overseas_merchant_sales_metrics(schema)
     slip_count_filter_count = apply_corporate_slip_count_filters(schema)
     merchant_fee_count = apply_merchant_fee_revenue_metric(schema)
@@ -3062,6 +3212,8 @@ def main() -> None:
     print(f"  merchant postal code  : {merchant_postal_count} entries")
     print(f"  card-level card count : {card_level_count} entries")
     print(f"  card ownership axis   : {card_ownership_count} entries")
+    print(f"  merchant closure      : {closure_count} entries")
+    print(f"  merchant search name  : {search_name_count} aliases")
     print(f"  overseas merchant sales: {overseas_merchant_count} entries")
     print(f"  corporate slip filters: {slip_count_filter_count} entries")
     print(f"  merchant fee revenue  : {merchant_fee_count} entries")

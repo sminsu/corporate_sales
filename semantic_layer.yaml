@@ -7921,6 +7921,8 @@ tables:
     value_semantics_provenance: athena_reference_assumption
     synonyms:
     - 휴폐업
+    - 폐업처리
+    - 휴업
   measures:
   - name: 유효기업신용카드수
     data_type: BIGINT
@@ -15698,6 +15700,8 @@ tables:
     value_semantics_provenance: athena_reference_assumption
     synonyms:
     - 휴폐업
+    - 폐업처리
+    - 휴업
   measures:
   - name: 유효기업신용카드수
     data_type: BIGINT
@@ -16893,7 +16897,7 @@ semantic_attributes:
   korean_name: 가맹점·브랜드 검색명
   domains: [merchant_sales, corporate_sales_targeting, credit_risk]
   business_definition: 사용자가 말한 상호·가맹점·브랜드 명칭을 물리 테이블에서 찾기 위한 공통 검색 속성
-  aliases: [가맹점명, 브랜드명, 상호명, 매장명, 점포명]
+  aliases: [가맹점명, 브랜드명, 상호명, 매장명, 점포명, 가맹점주, 점주, 가맹점 브랜드]
   parameter_name: 가맹점명
   default_match: contains
   case_insensitive: true
@@ -16907,6 +16911,62 @@ semantic_attributes:
   semantic_cautions:
   - 여러 검색 컬럼은 OR로 연결한 뒤 괄호로 묶어 기간·상태·카드 조건이 OR 전체에 적용되게 한다.
   - 브랜드명 컬럼이 없는 테이블에서는 가맹점명·한글가맹점명만 사용하고 존재하지 않는 브랜드명 컬럼을 만들지 않는다.
+- name: merchant_closure
+  korean_name: 가맹점 휴폐업 상태
+  domains:
+  - merchant_sales
+  - corporate_sales_targeting
+  business_definition: 사업자가 폐업 상태인지. 가맹점은 국세청 사업자등록상태, 기업고객은 자산건전성 기준으로 각자 컬럼을 가진다
+  aliases:
+  - 폐업
+  - 폐업처리
+  - 휴폐업
+  - 폐업한 가맹점
+  - 문 닫은
+  - 문닫은
+  parameter_name: 휴폐업상태
+  filter_expression: COALESCE("휴폐업여부", '0') <> '0'
+  source_mappings:
+  - entity: merchant_daily_enrichment
+    table: tbdaaus01
+    columns:
+    - 휴폐업여부
+    role: current_merchant_closure
+  - entity: merchant_monthly_enrichment
+    table: tmdaaus01
+    columns:
+    - 휴폐업여부
+    role: monthly_merchant_closure
+  - entity: corporate_customer_daily
+    table: tbdaa1d12
+    columns:
+    - 폐업여부
+    role: current_corporate_closure
+  - entity: corporate_customer_no_usage_snapshot
+    table: tmdaa1d12
+    columns:
+    - 폐업여부
+    role: monthly_corporate_closure
+  semantic_cautions:
+  - 휴폐업여부는 국세청 사업자등록상태다. KB 가맹점 계약 해지(가맹점해지년월일)와 다른 개념이므로 섞지 않는다.
+  - 정상('0')만 확인된 값이므로 폐업은 COALESCE("휴폐업여부", '0') <> '0' 으로 판정한다. 다른 코드값을 지어내지 않는다.
+  - 가맹점의 휴폐업여부를 가진 원천은 가맹점 일별요약(tbdaaus01)과 월요약(tmdaaus01) 둘뿐이다. 가맹점 월스냅샷(tmdaa5d01)·월실적(tmdaa5e11)에는 없다.
+  - 질문의 주체가 가맹점·점주면 휴폐업여부(tbdaaus01·tmdaaus01), 기업·사업자·법인고객이면 폐업여부(tbdaa1d12·tmdaa1d12)를 쓴다. 두 컬럼은 기준도 값 규약도 달라 한 질문에서 섞지 않는다.
+  - 기업고객의 폐업여부는 '1' 이 폐업이다. 가맹점의 휴폐업여부는 '0' 이 정상이므로 부호가 반대다.
+  - 폐업 시점을 물으면 실제 폐업 신고일이 없으므로 휴폐업 상태가 처음 관측된 기준년월일을 쓴다.
+  source_selection:
+    default_role_prefix: current_
+    period_role_prefix: monthly_
+    current_terms:
+    - 현재
+    - 현재기준
+    - 현재 시점
+    - 오늘
+    - 전일
+    - 어제
+    - 최신
+    - 지금
+    open_month_uses_current: true
 - name: merchant_identifier
   korean_name: 가맹점 식별자
   domains: [merchant_sales, corporate_sales_targeting]
