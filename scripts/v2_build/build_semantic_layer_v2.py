@@ -231,12 +231,22 @@ def apply_column_metadata(schema: dict, codebooks: dict[str, dict]) -> dict:
                         for value in book.get("values", [])
                         if value.get("status") == "active"
                     }
+                    # 라벨 하나로는 질문의 표면형을 다 못 받는다. 코드북이 별칭을
+                    # 달아 둔 코드는 별칭도 컬럼에 실어야 프롬프트 컬럼 선택이
+                    # "일시불 매출" 을 '1'(일반) 로 잇는다.
+                    aliases = {
+                        str(value["code"]): [str(item) for item in value["aliases"]]
+                        for value in book.get("values", [])
+                        if value.get("status") == "active" and value.get("aliases")
+                    }
                     if active:
                         column["value_semantics"] = active
                         column["value_semantics_provenance"] = book.get(
                             "provenance", "user_provided_business_codebook"
                         )
                         column["codebook_ref"] = str(book.get("column"))
+                        if aliases:
+                            column["value_aliases"] = aliases
                         stats["codebooks_applied"] += 1
                         stats["codebook_columns"].add(name)
 
@@ -2320,6 +2330,32 @@ CORPORATE_CARD_COUNT_METRIC = {
     "aggregation_behavior": "additive_at_declared_grain",
 }
 
+# 10-8-1-1. 소유 형태 축(개별·공용)도 같은 속성이 읽는다.
+# 질문은 컬럼 이름을 띄어 쓴다("기업개별카드 수"). 선언 이름은 붙어 있어서
+# (유효기업개별카드수) 구문 매칭이 걸리지 않고, 두 컬럼은 프롬프트 컬럼 예산 밖으로
+# 밀렸다. 모델이 볼 수 있는 카드 수 컬럼이 신용·체크 둘뿐이라 "유효한 기업공용카드
+# 수" 가 공용 컬럼 없이 답을 쓰게 된다. 속성의 값 라벨이 곧 컬럼 근거이므로
+# (_matched_attribute_columns) 네 번째 갈래를 만들지 않고 여기에 값을 더한다.
+CORPORATE_CARD_OWNERSHIP_COLUMNS = ("유효기업개별카드수", "유효기업공용카드수")
+CORPORATE_CARD_OWNERSHIP_VALUES = {
+    "individual": {
+        "label": "기업 개별카드",
+        "aliases": ["기업개별카드", "법인개별카드", "개별카드", "기업 개별 카드"],
+        "filter_expression": 'COALESCE("유효기업개별카드수", 0) > 0',
+    },
+    "shared": {
+        "label": "기업 공용카드",
+        "aliases": ["기업공용카드", "법인공용카드", "공용카드", "기업 공용 카드"],
+        "filter_expression": 'COALESCE("유효기업공용카드수", 0) > 0',
+    },
+}
+CORPORATE_CARD_OWNERSHIP_CAUTION = (
+    "카드 종류를 물으면 유효기업신용카드수·유효기업체크카드수를, 소유 형태를 물으면 "
+    "유효기업개별카드수·유효기업공용카드수를 읽는다. 네 컬럼 모두 기업고객당 좌수라 "
+    "고객×월 최신 1건으로 줄인 뒤 SUM 한다."
+)
+
+
 # 10-8-2. 해외 가맹점 매출은 가맹점 월실적이 컬럼으로 들고 있다.
 MERCHANT_MONTHLY_TABLE = "tmdaa5e11"
 # 테이블의 semantic_cautions 는 프롬프트에 렌더되지 않는다(_table_details). 지표
@@ -2607,6 +2643,53 @@ def apply_card_level_corporate_card_count(schema: dict) -> int:
     return 3  # 원천 선언, 축 정책, 지표 신설
 
 
+def apply_corporate_card_ownership_axis(schema: dict) -> int:
+    """Let 개별·공용 questions read their own column instead of the 신용·체크 pair."""
+    attribute = next(
+        (
+            item
+            for item in schema.get("semantic_attributes") or []
+            if item.get("name") == "corporate_card_holding"
+        ),
+        None,
+    )
+    if attribute is None:
+        raise SystemExit("corporate_card_holding 속성 없음")
+    values = attribute.get("value_semantics")
+    if not isinstance(values, dict):
+        raise SystemExit("corporate_card_holding value_semantics 없음")
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+
+    added = 0
+    for key, value in CORPORATE_CARD_OWNERSHIP_VALUES.items():
+        if key in values:
+            raise SystemExit(f"corporate_card_holding 에 {key} 값이 이미 있다")
+        values[key] = deepcopy(value)
+        added += 1
+
+    for mapping in attribute.get("source_mappings") or []:
+        # 카드 한 장이 한 행인 원천은 소유 형태를 카드소유자구분코드로 가른다.
+        if str(mapping.get("role") or "") == CARD_LEVEL_CARD_HOLDING_ROLE:
+            continue
+        table = tables.get(str(mapping.get("table") or ""))
+        if table is None:
+            raise SystemExit(f"테이블 없음: {mapping.get('table')}")
+        columns = mapping.setdefault("columns", [])
+        for name in CORPORATE_CARD_OWNERSHIP_COLUMNS:
+            if _table_column(table, name) is None:
+                raise SystemExit(f"{table.get('name')} 에 {name} 컬럼이 없다")
+            if name in columns:
+                raise SystemExit(f"{table.get('name')} 원천에 {name} 이 이미 있다")
+            columns.append(name)
+            added += 1
+
+    cautions = attribute.setdefault("semantic_cautions", [])
+    if CORPORATE_CARD_OWNERSHIP_CAUTION in cautions:
+        raise SystemExit("소유 형태 주의사항이 이미 있다")
+    cautions.append(CORPORATE_CARD_OWNERSHIP_CAUTION)
+    return added + 1
+
+
 def apply_overseas_merchant_sales_metrics(schema: dict) -> int:
     """Read 해외 가맹점 매출 from the merchant monthly performance columns."""
     added = 0
@@ -2723,6 +2806,70 @@ def apply_recent_period_average_comparison(schema: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 10-9. 가맹점 거래정지 여부는 'Y'/'N' 이 아니라 '0'/'1' 이다
+#
+# tbdaadt01."가맹점거래정지여부" 는 '0' 정상영업, '1' 거래정지다(사용자 제공).
+# 코드북이 이미 같은 이름의 컬럼 여섯 곳에 value_semantics 로 붙여 두는데, v1 용어
+# "활성가맹점" 의 canonical/sql_hint 가 = 'N' 이라고 반대로 적혀 있었다. 용어는
+# 질문에 '활성·정상·영업중' 이 들어오면 프롬프트 맨 앞 용어 블록으로 올라가므로,
+# 뒤쪽 컬럼 상세의 value_semantics 를 이기고 모델이 'N' 을 쓰게 만든다.
+# ---------------------------------------------------------------------------
+MERCHANT_SUSPENSION_COLUMN = "가맹점거래정지여부"
+MERCHANT_SUSPENSION_VALUES = {"0": "정상영업", "1": "거래정지"}
+# 질문이 '0' 쪽을 부르는 말. v1 동의어는 거래정지 쪽 표면형만 갖고 있어서
+# "정상영업 중인 가맹점 수" 는 컬럼이 프롬프트 예산에 아예 못 들었다. 용어가
+# 컬럼 이름을 불러도 테이블 상세에 그 컬럼이 없으면 모델이 쓸 수 없다.
+MERCHANT_SUSPENSION_SYNONYMS = ("정상영업", "영업중", "정상가맹점", "활성가맹점")
+MERCHANT_SUSPENSION_GLOSSARY = {
+    "term": "활성가맹점",
+    "canonical": "가맹점거래정지여부 = '0' 인 가맹점",
+    "description": (
+        "거래정지 상태가 아닌(정상영업 중인) 가맹점. 가맹점거래정지여부는 "
+        "'0' 정상영업, '1' 거래정지 두 값만 가진다."
+    ),
+    "aliases": ["정상가맹점", "거래중가맹점", "영업중가맹점", "정상영업가맹점", "정상영업"],
+    "sql_hint": (
+        "활성 조건은 (\"가맹점거래정지여부\" = '0' OR \"가맹점거래정지여부\" IS NULL), "
+        "거래정지 조건은 \"가맹점거래정지여부\" = '1' 이다. 'Y'/'N' 은 이 컬럼의 값이 아니다."
+    ),
+}
+
+
+def apply_merchant_suspension_flag_semantics(schema: dict) -> int:
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    term = MERCHANT_SUSPENSION_GLOSSARY["term"]
+    entry = next((item for item in glossary if item.get("term") == term), None)
+    if entry is None:
+        raise SystemExit(f"용어 없음: {term}")
+    for key, value in MERCHANT_SUSPENSION_GLOSSARY.items():
+        if key != "term":
+            entry[key] = deepcopy(value)
+
+    # 코드북이 빠지면 용어만 '0' 을 말하고 컬럼 상세는 아무 말도 하지 않는 상태가 된다.
+    tables = []
+    for table in schema.get("tables", []):
+        for section in COLUMN_SECTIONS:
+            for column in table.get(section) or []:
+                if str(column.get("name") or "") != MERCHANT_SUSPENSION_COLUMN:
+                    continue
+                if column.get("value_semantics") != MERCHANT_SUSPENSION_VALUES:
+                    raise SystemExit(
+                        f"{table.get('name')}.{MERCHANT_SUSPENSION_COLUMN}: "
+                        f"value_semantics 가 {MERCHANT_SUSPENSION_VALUES} 가 아니다"
+                    )
+                synonyms = column.setdefault("synonyms", [])
+                for surface in MERCHANT_SUSPENSION_SYNONYMS:
+                    if surface not in synonyms:
+                        synonyms.append(surface)
+                tables.append(str(table.get("name") or ""))
+    if "tbdaadt01" not in tables:
+        raise SystemExit(f"tbdaadt01 에 {MERCHANT_SUSPENSION_COLUMN} 코드북이 붙지 않았다")
+    return len(tables)
+
+
+# ---------------------------------------------------------------------------
 # 11~12. SQL 생성 계약
 # ---------------------------------------------------------------------------
 def apply_sql_contract(schema: dict) -> dict:
@@ -2827,11 +2974,13 @@ def main() -> None:
     card_usage_count = apply_card_usage_amount_and_corporate_count(schema)
     merchant_postal_count = apply_merchant_postal_code_surface_forms(schema)
     card_level_count = apply_card_level_corporate_card_count(schema)
+    card_ownership_count = apply_corporate_card_ownership_axis(schema)
     overseas_merchant_count = apply_overseas_merchant_sales_metrics(schema)
     slip_count_filter_count = apply_corporate_slip_count_filters(schema)
     merchant_fee_count = apply_merchant_fee_revenue_metric(schema)
     member_identity_count = apply_member_master_identity_scope(schema)
     recent_period_count = apply_recent_period_average_comparison(schema)
+    merchant_suspension_count = apply_merchant_suspension_flag_semantics(schema)
     contract_stats = apply_sql_contract(schema)
 
     metadata = schema.get("semantic_layer_metadata")
@@ -2864,11 +3013,13 @@ def main() -> None:
             "법인카드 이용금액에 사용자 표면형을 달아 카드 월실적(tmdaa3e16)으로 돌리고, 이용 기업수를 전표(tbdaabt30) 기업고객식별자를 세는 지표·용어로 신설했다.",
             "가맹점 우편번호를 주소 속성의 별칭으로 세우고, 마스터의 접두사 없는 우편번호에 가맹점우편번호 표면형을 달아 전표 사본 대신 마스터를 보게 했다.",
             "기업카드 좌수를 카드 속성 축으로 쪼갤 때는 회원카드기본(tbdaaat05) 한 곳에서 세도록 유효 기업카드 보유 속성에 카드 단위 원천과 축 정책을 선언했다.",
+            "유효 기업카드 수를 카드 종류(신용·체크)와 소유 형태(개별·공용) 두 축으로 선언해, 개별·공용을 물어도 그 컬럼이 프롬프트에 남게 했다.",
             "해외 가맹점 매출 건수·금액을 가맹점 월실적(tmdaa5e11) 지표로 신설하고, 해외 전표·가맹점 월스냅샷에 그 사실을 주의사항으로 붙였다.",
             "기업 매출건수의 코드 필터(카드매출유형구분코드 일반·할부·리볼빙, 회원·가맹점 소속회사 당사)를 지표 required_filters 로 못 박았다.",
             "가맹점 수수료 금액을 tmdaa5e11 가맹점수입수수료 지표로 신설하고, 전표당 수수료와 수수료율은 그대로 두었다.",
             "최근 3·6개월 실적은 tmdaa5e11 누적 컬럼 한 행에서 읽고 평균은 개월 수로 나누도록 질의 참조와 용어를 추가했다.",
             "회원 마스터(tbdaaat03)의 테이블 동의어에서 낱말 '회원' 을 걷어냈다. 모집단을 가리키는 말이 테이블을 지목하지 않는다.",
+            "가맹점거래정지여부를 '0' 정상영업·'1' 거래정지로 통일했다. 활성가맹점 용어가 반대로 말하던 'N' 을 걷어냈다.",
             "실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.",
         ]
 
@@ -2910,11 +3061,13 @@ def main() -> None:
     print(f"  card usage/count      : {card_usage_count} entries")
     print(f"  merchant postal code  : {merchant_postal_count} entries")
     print(f"  card-level card count : {card_level_count} entries")
+    print(f"  card ownership axis   : {card_ownership_count} entries")
     print(f"  overseas merchant sales: {overseas_merchant_count} entries")
     print(f"  corporate slip filters: {slip_count_filter_count} entries")
     print(f"  merchant fee revenue  : {merchant_fee_count} entries")
     print(f"  member master identity: {member_identity_count} entries")
     print(f"  recent period average : {recent_period_count} entries")
+    print(f"  merchant suspension   : {merchant_suspension_count} columns")
     print(f"  contract list sizes  : {contract_stats['before']} -> {contract_stats['after']}")
 
 

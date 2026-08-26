@@ -79,7 +79,10 @@ CHAT_PROVIDED_CODEBOOKS: list[dict] = [
         "column": "카드매출유형구분코드",
         "source_tables": ["tbdaabt30"],
         "values": [
-            ("1", "일반"),
+            # 원천 라벨은 '일반' 인데 현업과 질문은 '일시불' 이라고 부른다.
+            # tbdaabt30."매출전표번호" 채번규칙 설명도 매출유형구분 1을
+            # "일시불전표" 로 적고 있다. 별칭을 붙여 두 표현을 같은 코드로 잇는다.
+            ("1", "일반", ["일시불"]),
             ("2", "할부"),
             ("3", "현금서비스"),
             ("4", "리볼빙"),
@@ -113,11 +116,13 @@ CHAT_PROVIDED_CODEBOOKS: list[dict] = [
     },
     {
         # 여부 컬럼이라 코드가 두 개뿐이지만, 0 쪽을 적어 두지 않으면 모델이
-        # 'Y'/'N' 이나 '정상' 같은 값을 지어낸다.
+        # 'Y'/'N' 이나 '정상' 같은 값을 지어낸다. 0 의 라벨은 사용자가 부르는
+        # 말 그대로 "정상영업" 이다. "거래정지 아님" 이라고 적어 두면 질문의
+        # '정상영업 중인 가맹점' 과 글자가 겹치지 않는다.
         "column": "가맹점거래정지여부",
         "source_tables": ["tbdaadt01"],
         "values": [
-            ("0", "거래정지 아님"),
+            ("0", "정상영업"),
             ("1", "거래정지"),
         ],
     },
@@ -151,6 +156,19 @@ CHAT_PROVIDED_CODEBOOKS: list[dict] = [
     },
 ]
 
+# xlsx 코드북이 이미 있는 컬럼에 현업 표현만 얹는다. 라벨을 고치면 원천과 어긋나므로
+# 별칭으로 붙인다. 상품중분류의 라벨은 카드 상품명("기업정부구매카드")인데 질문은
+# 매출을 신용·체크·직불로 가른다. 신용에 CP52 가 들어가는 것은 사용자가 지정한
+# 구분이다(2026-08-25: CP51·CP52 신용 / CP53 체크 / CP54 직불).
+CHAT_PROVIDED_VALUE_ALIASES: dict[str, dict[str, list[str]]] = {
+    "상품중분류구분코드": {
+        "CP51": ["기업신용", "신용카드"],
+        "CP52": ["기업신용", "신용카드"],
+        "CP53": ["기업체크", "체크카드"],
+        "CP54": ["기업직불", "직불카드"],
+    },
+}
+
 CHAT_SOURCE = "chat/2026-08-21 사용자 제공 코드 목록"
 
 
@@ -167,8 +185,13 @@ def chat_provided_books() -> dict[str, dict]:
             "source_files": [CHAT_SOURCE],
             "provenance": "user_provided_business_codebook",
             "values": [
-                {"code": CodeText(code), "label": label, "status": "active"}
-                for code, label in entry["values"]
+                {
+                    "code": CodeText(code),
+                    "label": label,
+                    **({"aliases": list(rest[0])} if rest else {}),
+                    "status": "active",
+                }
+                for code, label, *rest in entry["values"]
             ],
         }
         if entry.get("notes"):
@@ -283,6 +306,16 @@ def build(source_dir: Path) -> dict:
     if collision:
         raise SystemExit(f"xlsx 코드북과 겹치는 대화 제공 코드북: {collision}")
     codebooks.update(chat_books)
+
+    for column, aliases_by_code in CHAT_PROVIDED_VALUE_ALIASES.items():
+        book = codebooks.get(column)
+        if not book:
+            raise SystemExit(f"별칭을 붙일 코드북이 없다: {column}")
+        values_by_code = {str(value["code"]): value for value in book["values"]}
+        for code, aliases in aliases_by_code.items():
+            if code not in values_by_code:
+                raise SystemExit(f"{column}: 코드북에 없는 코드에 별칭을 붙였다 - {code}")
+            values_by_code[code]["aliases"] = list(aliases)
 
     document = {
         "column_codebooks_metadata": {

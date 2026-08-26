@@ -79,6 +79,17 @@ PREVIOUS_DAY_MERCHANT_QUERIES = (
     "marketing_industry_card_portfolio",
 )
 
+# 가맹점거래정지여부는 '0' 정상영업, '1' 거래정지다(사용자 제공 코드북). v1 예시가
+# COALESCE(..., 'N') <> 'Y' 라고 적어 두었는데, 참고 SQL 예시는 프롬프트에 그대로
+# 들어가므로 모델이 이 값을 베낀다. 코드북과 같은 값으로 맞춘다.
+MERCHANT_SUSPENSION_PREDICATE_FIXES: tuple[tuple[str, str, str], ...] = (
+    (
+        "region_top_enterprise_merchants",
+        "COALESCE(가맹점거래정지여부, 'N') <> 'Y'",
+        "COALESCE(가맹점거래정지여부, '0') = '0'",
+    ),
+)
+
 _PREVIOUS_DAY_EXPRESSION = (
     "DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')"
 )
@@ -264,7 +275,7 @@ def _fix_merchant_risk_monthly_load(query: dict) -> None:
 def apply_fixes(document: dict) -> dict:
     queries = document.get("verified_queries") or []
     by_name = {str(query.get("name")): query for query in queries}
-    stats = {"tables_fixed": [], "casts_fixed": [], "cadence_fixed": []}
+    stats = {"tables_fixed": [], "casts_fixed": [], "cadence_fixed": [], "codebook_fixed": []}
 
     for name, wrong, right in TABLE_FIXES:
         query = _query(by_name, name)
@@ -311,6 +322,15 @@ def apply_fixes(document: dict) -> dict:
         _apply_previous_day_merchant_fix(_query(by_name, name))
         stats["cadence_fixed"].append(f"{name}: tbdaaus01 한국 시간 전일")
 
+    for name, wrong, right in MERCHANT_SUSPENSION_PREDICATE_FIXES:
+        query = _query(by_name, name)
+        sql = str(query.get("sql") or "")
+        if wrong in sql:
+            query["sql"] = sql.replace(wrong, right)
+        elif right not in sql:
+            raise SystemExit(f"{name}: 가맹점거래정지여부 조건을 찾지 못했다")
+        stats["codebook_fixed"].append(f"{name}: {wrong} -> {right}")
+
     return stats
 
 
@@ -353,6 +373,9 @@ def main() -> None:
     print(f"postgres cast fixes ({len(stats['casts_fixed'])}): {', '.join(stats['casts_fixed'])}")
     print(f"cadence fixes ({len(stats['cadence_fixed'])}):")
     for line in stats["cadence_fixed"]:
+        print(f"  {line}")
+    print(f"codebook fixes ({len(stats['codebook_fixed'])}):")
+    for line in stats["codebook_fixed"]:
         print(f"  {line}")
 
     if warnings:

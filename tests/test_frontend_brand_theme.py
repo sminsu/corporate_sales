@@ -31,9 +31,9 @@ def test_frontend_uses_requested_branding_without_sidebar_logo() -> None:
 
     assert 'class="brand"' not in source
     assert "kb-logo" not in sidebar
-    assert "<h1>기업영업지원 에이전트</h1>" not in source
-    assert "<h2>기업영업지원 에이전트</h2>" in source
-    assert "<title>기업영업지원 에이전트</title>" in source
+    assert "<h1>기업영업 에이전트</h1>" not in source
+    assert "<h2>기업영업 에이전트</h2>" in source
+    assert "<title>기업영업 에이전트</title>" in source
 
 
 def test_frontend_shows_memory_notice_and_resizable_sidebar() -> None:

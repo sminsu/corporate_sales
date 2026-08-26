@@ -31,6 +31,7 @@ if str(BASE_DIR) not in sys.path:
 import text2sql_agent as agent  # noqa: E402
 import webapp_compatible_api as webapp_api  # noqa: E402
 from text2sql_agent import config as agent_config  # noqa: E402
+from text2sql_agent.db import loaded_period_range  # noqa: E402
 from text2sql_agent.followup_ops import build_chart_spec, plan_followup  # noqa: E402
 from text2sql_agent.managed_scope import (  # noqa: E402
     MANAGED_SCOPE_PARAMETER,
@@ -3092,6 +3093,32 @@ def table_catalog():
         "semantic_layer_version": str(metadata.get("version") or ""),
         "tables": tables,
     }
+
+
+# 적재 정책표는 주기만 알 뿐 어디까지 들어왔는지는 모른다. 사용자가 "언제부터
+# 언제까지 물어볼 수 있나"를 알려면 데이터에서 MIN/MAX 를 읽어야 한다. 테이블마다
+# 한 건씩 조회하므로 카탈로그 목록(/api/tables)을 막지 않도록 경로를 나누고,
+# 동시 조회 수를 제한한다. 값 자체는 db.loaded_period_range 가 1시간 캐시한다.
+_PERIOD_RANGE_CONCURRENCY = 6
+
+
+@app.get("/api/tables/periods")
+async def table_period_ranges():
+    limit = asyncio.Semaphore(_PERIOD_RANGE_CONCURRENCY)
+
+    async def read(name: str) -> tuple[str, dict[str, str] | None]:
+        async with limit:
+            bounds = await asyncio.to_thread(loaded_period_range, name)
+        return name, {"min": bounds[0], "max": bounds[1]} if bounds else None
+
+    names = []
+    for table in SCHEMA.get("tables", []):
+        if not _is_semantic_table_visible(table):
+            continue
+        name = str(table.get("name") or "").strip()
+        if name and accumulation_policy_for(name):
+            names.append(name)
+    return {"periods": dict(await asyncio.gather(*(read(name) for name in names)))}
 
 
 @app.post("/api/managed-company-scope/parse")
