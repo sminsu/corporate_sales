@@ -309,8 +309,15 @@ def prose_reason(text: str) -> str:
 # ---------------------------------------------------------------------------
 # 정적 감사
 # ---------------------------------------------------------------------------
-def _strip_strings_and_comments(sql: str) -> str:
-    """리터럴·주석 안의 키워드가 오탐을 만들지 않게 공백으로 지운다."""
+def _strip_strings_and_comments(sql: str, literal_fill: str = " ") -> str:
+    """리터럴·주석 안의 키워드가 오탐을 만들지 않게 공백으로 지운다.
+
+    literal_fill 은 문자열 리터럴을 지운 자리를 채울 한 글자다. 기본값 공백은
+    위치를 보존하면서 토큰을 없앤다. 문장이 절 중간에서 끝났는지 보는 검사만
+    공백 대신 자리표를 쓴다 — 마지막 리터럴이 공백이 되면 기간 조건으로 끝나는
+    SQL 이 AND 로 끝난 것처럼 보이기 때문이다. 주석은 어느 쪽이든 공백으로
+    지운다. 주석 앞에서 잘린 SQL("... AND -- 메모")을 놓치지 않기 위해서다.
+    """
     out: list[str] = []
     index = 0
     length = len(sql)
@@ -325,7 +332,7 @@ def _strip_strings_and_comments(sql: str) -> str:
                         continue
                     break
                 end += 1
-            out.append(" " * (min(end, length - 1) - index + 1))
+            out.append(literal_fill * (min(end, length - 1) - index + 1))
             index = end + 1
         elif sql.startswith("--", index):
             end = sql.find("\n", index)
@@ -419,7 +426,11 @@ def audit_sql(sql: str) -> list[str]:
             "괄호가 맞지 않는다. SQL이 중간에 끊겼는지 확인하고 CTE·GROUP BY·ORDER BY까지 끝까지 완성해라."
         )
 
-    if re.search(r"(?<![0-9A-Za-z_])(SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|AND|OR|,)\s*$", scrubbed.strip(), re.IGNORECASE):
+    # 기간 조건으로 끝나는 SQL("... BETWEEN '20260701' AND '20260731'")은 마지막
+    # 리터럴이 공백으로 지워지면 문장이 AND 로 끝난 것처럼 보인다. 멀쩡한 SQL 이
+    # "절 중간에서 끝났다" 로 반려돼, 모델이 고칠 것이 없는 채로 재시도만 돌았다.
+    tail = _strip_strings_and_comments(text, literal_fill="0").strip()
+    if re.search(r"(?<![0-9A-Za-z_])(SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|AND|OR|,)\s*$", tail, re.IGNORECASE):
         issues.append("SQL이 절 중간에서 끝났다. 끊긴 부분부터 완성해서 전체 SQL을 다시 반환해라.")
 
     return issues
