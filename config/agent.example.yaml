@@ -16,12 +16,6 @@ embedding:
   model: bge-m3
   timeout: 60
 
-retrieval:
-  store:
-    provider: postgres
-    dsn_env: KBCARD_POSTGRES_DSN
-    pool_max_size: 10
-
 logger:
   level: INFO
   formatter: pretty

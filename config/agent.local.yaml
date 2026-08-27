@@ -16,12 +16,6 @@ embedding:
   base_url: http://10.81.21.105:18220
   model: bge-m3
 
-retrieval:
-  store:
-    provider: postgres
-    dsn_env: KBCARD_POSTGRES_DSN
-    pool_max_size: 10
-
 logger:
   level: INFO
   formatter: pretty
