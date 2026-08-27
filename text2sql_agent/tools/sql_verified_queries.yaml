@@ -394,7 +394,7 @@ verified_queries:
         AND (
           '{기업명}' = '__ALL__'
           OR REGEXP_REPLACE(LOWER(COALESCE(a."기업명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{기업명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{기업명}', '%')), '\s+', '') ESCAPE '\'
         )
     ),
     monthly AS (
@@ -498,6 +498,7 @@ verified_queries:
         ) AS rn
       FROM card_system.tmdaaus01 a
       WHERE a."기준년월" = '{기준년월}'
+        AND a."가맹점상태구분코드" = '1'
     ),
     merchant_month AS (
       SELECT
@@ -604,7 +605,7 @@ verified_queries:
         AND (
           '{기업명}' = '__ALL__'
           OR REGEXP_REPLACE(LOWER(COALESCE(a."기업명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{기업명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{기업명}', '%')), '\s+', '') ESCAPE '\'
         )
     ),
     current_snapshot AS (
@@ -857,6 +858,7 @@ verified_queries:
       FROM card_system.tmdaaus01 a
       CROSS JOIN params p
       WHERE a."기준년월" = p."기준년월"
+        AND a."가맹점상태구분코드" = '1'
     ),
     merchant_current AS (
       SELECT
@@ -1397,7 +1399,7 @@ verified_queries:
       COUNT(DISTINCT m."가맹점번호") AS "가맹점수"
     FROM card_system.tbdaadt01 m
     WHERE LOWER(COALESCE(m."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
-      AND m."가맹점상태구분코드" = '{정상가맹점상태코드}'
+      AND m."가맹점상태구분코드" = '1'
   parameters:
     가맹점명:
       type: like_string
@@ -1406,11 +1408,6 @@ verified_queries:
       default: 도미노
       sample_values:
       - 도미노
-    정상가맹점상태코드:
-      type: string
-      description: 참고질의가 가정한 정상 가맹점 상태 코드. 운영 코드북 확인 후 재설정 가능
-      required: false
-      default: '1'
       sample_values:
       - '1'
   tags:
@@ -1498,6 +1495,7 @@ verified_queries:
       FROM card_system.tbdaaus01 a
       WHERE a."기준년월일" BETWEEN CONCAT('{기준년월}', '01') AND CONCAT('{기준년월}', '31')
         AND a."기준년월일" <= DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
+        AND a."가맹점상태구분코드" = '1'
     )
     SELECT DISTINCT
       r."기업고객식별자"
@@ -1557,6 +1555,7 @@ verified_queries:
       COUNT(DISTINCT a."대표고객식별자") AS "기업카드소지가맹점주수"
     FROM card_system.tbdaaus01 a
     WHERE a."기준년월일" = DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
+      AND a."가맹점상태구분코드" = '1'
       AND (
         LOWER(COALESCE(a."가맹점명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
         OR LOWER(COALESCE(a."브랜드명", '')) LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
@@ -1604,7 +1603,7 @@ verified_queries:
     FROM card_system.tbdaadt01 m
     WHERE LOWER(COALESCE(m."가맹점명", ''))
       LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
-      AND m."가맹점상태구분코드" = '{정상가맹점상태코드}'
+      AND m."가맹점상태구분코드" = '1'
     ORDER BY m."가맹점명", m."가맹점번호"
     LIMIT {limit}
   parameters:
@@ -1615,11 +1614,6 @@ verified_queries:
       default: 마초스테이크하우스
       sample_values:
       - 마초스테이크하우스
-    정상가맹점상태코드:
-      type: string
-      description: 참고질의가 가정한 정상 가맹점 상태 코드. 운영 코드북 확인 후 재설정 가능
-      required: false
-      default: '1'
       sample_values:
       - '1'
     limit:
@@ -1689,6 +1683,7 @@ verified_queries:
       OR LOWER(COALESCE(m."한글가맹점명", ''))
         LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
     )
+      AND m."가맹점상태구분코드" = '1'
     ORDER BY m."가맹점명", m."가맹점번호"
     LIMIT {limit}
   parameters:
@@ -1721,6 +1716,7 @@ verified_queries:
         LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
     )
       AND m."현금카드결제기관구분코드" = '{결제금융기관코드}'
+      AND m."가맹점상태구분코드" = '1'
   parameters:
     가맹점명:
       type: like_string
@@ -1746,6 +1742,7 @@ verified_queries:
         m."기업고객식별자"
       FROM card_system.tmdaa5d01 m
       WHERE m."기준년월" = '{기준년월}'
+        AND m."가맹점상태구분코드" = '1'
         AND (
           LOWER(COALESCE(m."가맹점명", ''))
             LIKE LOWER(CONCAT('%', '{가맹점명}', '%')) ESCAPE '\'
@@ -2004,6 +2001,7 @@ verified_queries:
       SUM(가맹점일시불매출건수 + 가맹점할부매출건수) AS 총매출건수,
       SUM(가맹점수입수수료) AS 수수료수입
     FROM card_system.tmdaa5e11
+    WHERE 가맹점상태구분코드 = '1'
     GROUP BY 기준년월
     ORDER BY 기준년월
   tags:
@@ -2025,6 +2023,7 @@ verified_queries:
         ELSE NULL
       END AS 전년대비성장률
     FROM card_system.tmdaa5e11
+    WHERE 가맹점상태구분코드 = '1'
     GROUP BY 가맹점번호, 가맹점명
     HAVING SUM(전년가맹점신용판매매출금액) > 0
     ORDER BY 전년대비성장률 DESC
@@ -2062,6 +2061,7 @@ verified_queries:
     FROM card_system.tmdaa5e11 a
     JOIN card_system.tbdaadb17 b
       ON a.가맹점업종코드 = b.가맹점업종코드
+    WHERE a.가맹점상태구분코드 = '1'
     GROUP BY b.업종대분류코드명, b.가맹점업종명
     ORDER BY 수수료수입합계 DESC
   tags:
@@ -2112,6 +2112,7 @@ verified_queries:
         AND a.기준년월   = c.기준년월
     WHERE
         a.가맹점업종코드 IN ({업종코드목록})
+        AND a.가맹점상태구분코드 = '1'
         AND a.가맹점거래정지상태구분코드 IN ('1', '2')
         AND a.가맹점사업주체구분코드 = '1'
         AND b.고객식별자 IS NULL
@@ -2199,6 +2200,7 @@ verified_queries:
     JOIN card_system.tbdaadb17 b
       ON a.가맹점업종코드 = b.가맹점업종코드
     WHERE a.기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+      AND a.가맹점상태구분코드 = '1'
     GROUP BY a.가맹점번호, a.가맹점명, b.가맹점업종명, b.업종대분류코드명
     ORDER BY 총매출금액 DESC
     LIMIT {limit}
@@ -2375,6 +2377,7 @@ verified_queries:
         + COALESCE(a."가맹점할부매출금액", 0) AS "월별매출금액"
     FROM card_system.tmdaa5e11 a
     WHERE a."가맹점번호" = '{가맹점번호}'
+      AND a."가맹점상태구분코드" = '1'
     ORDER BY a."기준년월"
   parameters:
     가맹점번호:
@@ -2407,6 +2410,7 @@ verified_queries:
     FROM card_system.tmdaa5e11 a
     WHERE a."가맹점명" LIKE '%{가맹점명}%'
       AND a."기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
+      AND a."가맹점상태구분코드" = '1'
     GROUP BY a."기준년월"
     ORDER BY a."기준년월"
   parameters:
@@ -2432,6 +2436,70 @@ verified_queries:
   - 월별
   - 시계열
   - 검색
+  - 파라미터
+- name: merchant_sales_by_region_comparison
+  question: 특정 가맹점의 광역시도별 매출 증감내역을 보여줘
+  description: |
+    가맹점명·브랜드 검색어에 부분일치하는 가맹점의 매출을 광역시도(한글시도명)로 묶어, 조회 기간과 전년 동기의 매출·증감액·증감률을 나란히 조회합니다.
+    시도명은 가맹점 월말요약(tmdaaus01)에만 있으므로 가맹점 월실적(tmdaa5e11)과 기준년월·가맹점번호로 조인합니다.
+    비교 기준은 전년 동기 고정입니다. 시군구·동까지 쪼개거나 지역을 다른 축과 교차하는 질문은 이 템플릿이 아니라 자동 SQL 생성 경로를 사용합니다.
+  sql: |
+    WITH region_sales AS (
+      SELECT
+        COALESCE(b."한글시도명", '미상') AS "광역시도",
+        COUNT(DISTINCT a."가맹점번호") AS "가맹점수",
+        SUM(CASE WHEN a."기준년월" BETWEEN '{기간_시작}' AND '{기간_종료}'
+                 THEN COALESCE(a."가맹점일시불매출금액", 0) + COALESCE(a."가맹점할부매출금액", 0)
+                 ELSE 0 END) AS "조회기간매출금액",
+        SUM(CASE WHEN a."기준년월" BETWEEN CAST(CAST('{기간_시작}' AS INTEGER) - 100 AS VARCHAR)
+                                       AND CAST(CAST('{기간_종료}' AS INTEGER) - 100 AS VARCHAR)
+                 THEN COALESCE(a."가맹점일시불매출금액", 0) + COALESCE(a."가맹점할부매출금액", 0)
+                 ELSE 0 END) AS "전년동기매출금액"
+      FROM card_system.tmdaa5e11 a
+      JOIN card_system.tmdaaus01 b
+        ON b."기준년월" = a."기준년월"
+       AND b."가맹점번호" = a."가맹점번호"
+      WHERE a."가맹점명" LIKE '%{가맹점명}%'
+        AND a."가맹점상태구분코드" = '1'
+        AND a."기준년월" BETWEEN CAST(CAST('{기간_시작}' AS INTEGER) - 100 AS VARCHAR) AND '{기간_종료}'
+      GROUP BY COALESCE(b."한글시도명", '미상')
+    )
+    SELECT
+      "광역시도",
+      "가맹점수",
+      "전년동기매출금액",
+      "조회기간매출금액",
+      "조회기간매출금액" - "전년동기매출금액" AS "증감금액",
+      CASE WHEN "전년동기매출금액" = 0 THEN NULL
+           ELSE ROUND(("조회기간매출금액" - "전년동기매출금액") * 100.0 / "전년동기매출금액", 1)
+      END AS "증감률"
+    FROM region_sales
+    ORDER BY "조회기간매출금액" DESC
+  parameters:
+    가맹점명:
+      type: string
+      description: 가맹점명 (부분일치 검색)
+      required: true
+      sample_values:
+      - 도미노피자
+      - 스타벅스
+      - CU
+    기간_시작:
+      type: string
+      description: 조회 기간 시작 기준년월 (YYYYMM). 비교 기준은 이 값의 전년 동월이 자동으로 쓰인다
+      required: true
+    기간_종료:
+      type: string
+      description: 조회 기간 종료 기준년월 (YYYYMM)
+      required: true
+  tags:
+  - 가맹점
+  - 지역
+  - 광역시도
+  - 시도별
+  - 매출
+  - 증감
+  - 전년대비
   - 파라미터
 - name: corporate_credit_risk_summary
   question: 기업 계열별 여신 리스크 현황을 보여줘
@@ -2975,13 +3043,13 @@ verified_queries:
         )
         AND (
           REGEXP_REPLACE(LOWER(COALESCE(p."한글상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
           OR REGEXP_REPLACE(LOWER(COALESCE(p."대표카드상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
           OR REGEXP_REPLACE(LOWER(COALESCE(p."고객안내상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
           OR REGEXP_REPLACE(LOWER(COALESCE(p."통장장표인자상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
         )
     )
     SELECT
@@ -3067,13 +3135,13 @@ verified_queries:
           BETWEEN CONCAT('{기간_시작}', '01') AND CONCAT('{기간_종료}', '31')
         AND (
           REGEXP_REPLACE(LOWER(COALESCE(p."한글상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
           OR REGEXP_REPLACE(LOWER(COALESCE(p."대표카드상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
           OR REGEXP_REPLACE(LOWER(COALESCE(p."고객안내상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
           OR REGEXP_REPLACE(LOWER(COALESCE(p."통장장표인자상품명", '')), '\s+', '')
-            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '')
+            LIKE REGEXP_REPLACE(LOWER(CONCAT('%', '{상품명}', '%')), '\s+', '') ESCAPE '\'
         )
     ),
     issuance_summary AS (
@@ -3177,8 +3245,8 @@ verified_queries:
       AVG(신용카드가맹점수수료율) AS 평균수수료율
     FROM card_system.tbdaaus01
     WHERE 기준년월일 = DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
+      AND 가맹점상태구분코드 = '1'
       AND COALESCE(가맹점거래정지여부, '0') = '0'
-      AND COALESCE(휴폐업여부, 'N') <> 'Y'
     GROUP BY 한글시도명, 한글시군구명
     ORDER BY 전월매입금액 DESC
     LIMIT 20
@@ -3199,6 +3267,7 @@ verified_queries:
       SUM(COALESCE(전월일시불매입금액, 0) + COALESCE(전월할부매입금액, 0)) AS 전월매입금액
     FROM card_system.tbdaaus01
     WHERE 기준년월일 = DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
+      AND 가맹점상태구분코드 = '1'
     GROUP BY 마케팅업종대분류구분명
     ORDER BY 전월매입금액 DESC
   tags:
@@ -3256,6 +3325,7 @@ verified_queries:
         SUM(COALESCE(전월일시불매입금액, 0) + COALESCE(전월할부매입금액, 0)) AS 전월매입금액
       FROM card_system.tmdaaus01
       WHERE 기준년월 BETWEEN '{기간_시작}' AND '{기간_종료}'
+        AND 가맹점상태구분코드 = '1'
       GROUP BY 기준년월, 기업고객식별자
     ), allowance_customer_month AS (
       SELECT
