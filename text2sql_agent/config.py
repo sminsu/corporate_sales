@@ -175,21 +175,20 @@ AGENT_ENVIRONMENT = _env("KBCARD_AGENT_ENV", default=(_AGENT.environment if _AGE
 AGENT_SERVICE_NAME = _env("KBCARD_SERVICE_NAME", default=((_AGENT.service_name if _AGENT else None) or AGENT_NAME))
 
 # ---------------------------------------------------------------------------
-# Database backend selection
+# Session store backend selection
 # ---------------------------------------------------------------------------
-# "postgres" (기본) 또는 "athena". execute_sql이 이 값으로 실행 백엔드를 분기한다.
-DB_BACKEND = _env("DB_BACKEND", default="postgres").strip().lower()
+# 질의 실행은 Athena 고정이다. PostgreSQL은 웹 세션/대화 로그 저장에만 쓰인다.
 SESSION_STORE_BACKEND = _env("WEBAPP_SESSION_STORE", "SESSION_STORE", default="auto").strip().lower()
 
 # ---------------------------------------------------------------------------
-# PostgreSQL connection
+# PostgreSQL connection (세션 저장/로깅 전용)
 # ---------------------------------------------------------------------------
 DB_DSN_ENV = _env("KBCARD_POSTGRES_DSN_ENV", "DB_DSN_ENV", default="KBCARD_POSTGRES_DSN")
 DB_DSN = _env("DATABASE_URL", "DB_DSN", "POSTGRES_DSN", DB_DSN_ENV, default="")
 DB_DSN_ERROR = ""
 DB_DSN_SOURCE = "environment" if DB_DSN else "components"
 _POSTGRES_SECRET: dict[str, str] = {}
-if not DB_DSN and (DB_BACKEND == "postgres" or SESSION_STORE_BACKEND == "postgres"):
+if not DB_DSN and SESSION_STORE_BACKEND == "postgres":
     secret_id = _env(
         "KBCARD_POSTGRES_SECRET_ID",
         default="keyscr-aihub-dev-ane2-agentifo",
@@ -232,7 +231,7 @@ DB_PASSWORD = _env(
 DB_POOL_MAX = int(_env("DB_POOL_MAX", default="10"))
 
 # ---------------------------------------------------------------------------
-# Amazon Athena connection (DB_BACKEND=athena 일 때 사용)
+# Amazon Athena connection (질의 실행 백엔드)
 # ---------------------------------------------------------------------------
 # region/S3 staging/workgroup/database는 환경변수로 받는다. 인증은 표준 AWS 자격증명
 # 체인(환경변수/AWS_PROFILE/IAM 역할)을 그대로 사용하므로 키를 코드/설정에 두지 않는다.
@@ -250,12 +249,11 @@ ATHENA_ENDPOINT_URL = _env("ATHENA_ENDPOINT_URL", default="")
 # ---------------------------------------------------------------------------
 # SQL schema/namespace qualifier (테이블 prefix)
 # ---------------------------------------------------------------------------
-# 모든 테이블 참조에 붙는 스키마 한정자. PostgreSQL은 schema로 해석된다.
-# Athena는 pyathena connection의 schema_name(ATHENA_DATABASE)을 이미 사용하므로 기본적으로
-# SQL에는 prefix를 붙이지 않는다. Athena에서 database-qualified table을 강제하고 싶을 때만
-# DB_SCHEMA를 명시한다. prefix를 완전히 빼려면 DB_SCHEMA=none(또는 "-")로 둔다.
-_DEFAULT_SCHEMA = "" if DB_BACKEND == "athena" else "card_system"
-DB_SCHEMA = _env("DB_SCHEMA", "DB_TABLE_SCHEMA", default=_DEFAULT_SCHEMA).strip()
+# 모든 테이블 참조에 붙는 스키마 한정자. Athena는 pyathena connection의
+# schema_name(ATHENA_DATABASE)을 이미 사용하므로 기본적으로 SQL에는 prefix를 붙이지
+# 않는다. database-qualified table을 강제하고 싶을 때만 DB_SCHEMA를 명시한다.
+# prefix를 완전히 빼려면 DB_SCHEMA=none(또는 "-")로 둔다.
+DB_SCHEMA = _env("DB_SCHEMA", "DB_TABLE_SCHEMA", default="").strip()
 if DB_SCHEMA.lower() in ("none", "-", "null"):
     DB_SCHEMA = ""
 # SQL에 쓰는 prefix 문자열 (스키마가 비면 prefix 없음). 예: "card_system." 또는 "".

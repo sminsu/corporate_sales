@@ -64,17 +64,14 @@ def test_json_parser_ignores_think_block_with_example_object() -> None:
     assert workflow._parse_llm_json(raw) == {"tool": "RIGHT", "params": {}}
 
 
-def test_postgres_query_error_rolls_back_and_closes_cursor() -> None:
+def test_athena_query_error_closes_cursor() -> None:
     class FailingCursor:
         def __init__(self) -> None:
-            self.execute_count = 0
             self.closed = False
             self.description = None
 
         def execute(self, _: str) -> None:
-            self.execute_count += 1
-            if self.execute_count == 2:
-                raise RuntimeError("bad query")
+            raise RuntimeError("bad query")
 
         def close(self) -> None:
             self.closed = True
@@ -82,34 +79,17 @@ def test_postgres_query_error_rolls_back_and_closes_cursor() -> None:
     class FakeConnection:
         def __init__(self) -> None:
             self.cursor_value = FailingCursor()
-            self.rolled_back = False
-
-        def set_session(self, **_: object) -> None:
-            return None
 
         def cursor(self) -> FailingCursor:
             return self.cursor_value
 
-        def rollback(self) -> None:
-            self.rolled_back = True
-
     connection = FakeConnection()
-    returned: list[FakeConnection] = []
 
-    def record_return(conn: FakeConnection, *, close: bool = False) -> None:
-        assert close is False
-        returned.append(conn)
-
-    with (
-        patch.object(db, "get_db_connection", return_value=connection),
-        patch.object(db, "_return_connection", side_effect=record_return),
-    ):
+    with patch.object(db, "_get_athena_connection", return_value=connection):
         with pytest.raises(RuntimeError, match="bad query"):
-            db._execute_postgres("SELECT broken_column FROM known_table")
+            db._execute_athena("SELECT broken_column FROM known_table")
 
-    assert connection.rolled_back, "failed transactions must be rolled back before pool reuse"
     assert connection.cursor_value.closed, "cursor must be closed on the exception path"
-    assert returned == [connection]
 
 
 def test_schema_guard_ignores_dangerous_words_inside_literals_and_identifiers() -> None:

@@ -14,7 +14,7 @@
 | API 계층 | 요청·헤더 검증, 세션 소유권 확인, Agent 실행, SSE 변환, 결과 저장 |
 | Agent 계층 | 질문 분류, 도메인 라우팅, Capability 선택, SQL 생성·검증·실행, 답변 생성 |
 | 지식 계층 | Semantic Layer, Verified Query, Tool registry, Safe Join, 업무 메트릭·용어 |
-| 업무 데이터 계층 | PostgreSQL 또는 Amazon Athena를 통한 읽기 전용 조회 |
+| 업무 데이터 계층 | Amazon Athena를 통한 읽기 전용 조회 |
 | 상태 계층 | PostgreSQL Session Store, 선택적 Redis cache, 개발용 memory store |
 | 전달·운영 계층 | 후속 질문, 차트, Word/Excel/TXT export, 구조화 로그, health check |
 
@@ -60,7 +60,6 @@ flowchart LR
     subgraph BUSINESS["업무 조회 계층"]
         DB["Read-only DB Adapter"]
         ATHENA["Amazon Athena<br/>Glue · S3 · IAM"]
-        BIZPG["업무 PostgreSQL"]
     end
 
     subgraph STATE["대화·결과 상태 계층"]
@@ -97,7 +96,6 @@ flowchart LR
     VQ --> DB
     GRAPH --> DB
     DB --> ATHENA
-    DB --> BIZPG
 
     API <--> STORE
     STORE --> SESSIONPG
@@ -122,7 +120,7 @@ flowchart LR
 | LangGraph | 19개 node와 조건부 edge로 기본 Agent 실행 | `text2sql_agent/workflow.py` |
 | Semantic Layer | 테이블·컬럼·메트릭·도메인·업무 계약·허용 JOIN의 SSOT | `semantic_layer.yaml`, `text2sql_agent/schema.py` |
 | Capability | 완결형 계산 Tool, 결정론적 SQL Tool, Verified Query, 생성 SQL | `text2sql_agent/tools/` |
-| DB adapter | 단일 read-only query 검증, PostgreSQL/Athena 실행, 행·시간 제한 | `text2sql_agent/db.py` |
+| DB adapter | 단일 read-only query 검증, Athena 실행, 행·시간 제한 | `text2sql_agent/db.py` |
 | Session Store | 세션, 메시지, continuation, 결과, 파일 token, 저장 쿼리 | `text2sql_agent/session_store.py` |
 | Follow-up | 기존 결과 로컬 처리와 SQL 재조회 사이의 선택 | `text2sql_agent/followup_ops.py`, `web_service.py` |
 | Export | 저장 SQL 재실행, 로컬 변환 재적용, Word/Excel/TXT 생성 | `text2sql_agent/exports.py`, `web_service.py` |
@@ -295,7 +293,7 @@ Verified Query를 실패 후 생성 SQL로 바꾸지 않는 이유는, 검증된
 - 가까운 SQL example
 - 이전 Query Frame, 실패 SQL, 검증·DB 오류
 - 사용자가 추가로 준 파라미터
-- PostgreSQL 또는 Athena/Trino 방언 규칙
+- Athena/Trino 방언 규칙
 
 세부 프롬프트별 입력은 [prompt-context-flow.md](./prompt-context-flow.md)를 참고한다. 단, 수량 정보는 본 문서 작성 시점의 현재 코드가 우선한다.
 
@@ -311,7 +309,6 @@ SQL은 두 겹으로 방어한다.
 2. DB 실행 직전 validation
    - 단일 `SELECT/WITH`만 허용
    - 다중 statement와 DML·DDL·위험 keyword 차단
-   - PostgreSQL은 read-only session과 statement timeout 적용
 
 일반 생성 SQL은 검증 오류와 DB 오류가 같은 `retry_count`를 사용하며 최대 3회 범위에서 오류를 반영해 다시 생성한다. 직접 SQL과 Verified Query는 자동 재작성하지 않는다.
 
@@ -465,7 +462,7 @@ flowchart LR
     UV --> APP["FastAPI + Static UI + Agent"]
     APP --> CW["stdout JSONL → CloudWatch"]
     APP --> LLM["LLM / Embedding endpoint"]
-    APP --> DB["Athena 또는 PostgreSQL"]
+    APP --> DB["Amazon Athena"]
     APP --> SPG["Session PostgreSQL"]
 ```
 

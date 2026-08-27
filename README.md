@@ -1,8 +1,9 @@
 # Text2SQL Webservice v4
 
-`v4`는 `kbcard-agent-common`의 LLM/embedding 클라이언트를 사용하고, PostgreSQL 또는
-Amazon Athena를 읽기 전용으로 조회하는 사내 NL2SQL 서비스입니다. 배포 의존성은
-`requirements.docker.txt`와 `wheels/`에 고정되어 있습니다.
+`v4`는 `kbcard-agent-common`의 LLM/embedding 클라이언트를 사용하고, Amazon Athena를
+읽기 전용으로 조회하는 사내 NL2SQL 서비스입니다. PostgreSQL은 웹 세션/대화 이력
+저장에만 사용합니다. 배포 의존성은 `requirements.docker.txt`와 `wheels/`에 고정되어
+있습니다.
 
 이제 에이전트의 공식 진입점은 `text2sql_agent` 패키지입니다. 웹서비스도
 `import text2sql_agent as agent`로 직접 패키지를 사용하므로, 오래된 `app_vllm_v10.py`
@@ -23,11 +24,11 @@ flowchart TD
     WF --> VQ["tools/sql_verified_queries.yaml<br/>verified query 선택"]
     VQ --> SQLB["tools/sql_builders.py<br/>verified SQL 생성"]
     TOOLS --> BAD["tools/bad_debt.py<br/>대손비용률/Excel 생성"]
-    WF --> DB["db.py<br/>PostgreSQL SELECT 실행"]
+    WF --> DB["db.py<br/>Athena SELECT 실행"]
     WF --> EXPORT["exports.py<br/>Word/Excel/TXT 저장"]
 
     SCHEMA --> YAML["semantic_layer.yaml"]
-    DB --> PG["PostgreSQL<br/>card_system schema"]
+    DB --> ATHENA["Amazon Athena<br/>card_system database"]
     BAD --> OUT["output/"]
     EXPORT --> REPORTS["reports/"]
 ```
@@ -53,7 +54,7 @@ corporate-sales/
     config.py                   # 환경 변수와 기본 경로 설정
     common_services.py          # common SDK logging/trace adapter
     llm.py                      # vLLM chat/embedding API 호출
-    db.py                       # PostgreSQL 연결과 안전한 SELECT 실행
+    db.py                       # Athena 연결과 안전한 SELECT 실행
     schema.py                   # schema 로딩, prompt context 생성, SQL 검증
     state.py                    # LangGraph state 타입 정의
     workflow.py                 # LangGraph 노드, 라우팅, 그래프 구성
@@ -78,7 +79,7 @@ corporate-sales/
 - `text2sql_agent/workflow.py`: 질문 분류, 도메인 라우팅, capability 선택, verified query 매칭, SQL 생성/검증/실행, 답변 생성을 LangGraph로 연결합니다.
 - `text2sql_agent/schema.py`: `semantic_layer.yaml`을 읽고 테이블/메트릭/용어집/조인 그래프를 prompt context로 가공합니다.
 - `text2sql_agent/tools/`: 대손비용률 Python Tool과 외부 verified query 파일을 관리합니다.
-- `text2sql_agent/db.py`: 위험한 SQL 명령을 차단하고 읽기 전용 조회를 수행합니다. `DB_BACKEND`에 따라 PostgreSQL 또는 Amazon Athena(pyathena)로 실행되며, 검증 가드는 백엔드 공통입니다.
+- `text2sql_agent/db.py`: 위험한 SQL 명령을 차단하고 Amazon Athena(pyathena)에서 읽기 전용 조회를 수행합니다.
 - `text2sql_agent/exports.py`: 조회 결과를 Word, Excel, TXT 파일로 저장합니다.
 
 ## Tool과 verified query
@@ -184,13 +185,10 @@ common SDK 문서 기준의 권장 방식은 `.env`에는 config 경로와 secre
 
 ```bash
 KBCARD_CONFIG_PATH=config/agent.example.yaml
-# Amazon Bedrock OpenAI 호환 gpt-oss를 쓸 때의 인증 토큰 (Amazon Bedrock API key).
-AWS_BEARER_TOKEN_BEDROCK=...
-# 로컬 vLLM을 쓸 때만 필요 (Bedrock 경로에서는 사용 안 함).
+# model registry의 api_key_env가 참조하는 LLM 인증 키 (로컬 vLLM은 EMPTY).
 LLM_API_KEY=EMPTY
 
 # 업무 데이터 조회는 Athena
-DB_BACKEND=athena
 ATHENA_REGION=ap-northeast-2
 ATHENA_WORKGROUP=primary
 ATHENA_DATABASE=card_system
@@ -217,9 +215,6 @@ WEBAPP_RESULT_RETENTION_DAYS=7
 WEBAPP_FILE_RETENTION_DAYS=7
 WEBAPP_SESSION_RETENTION_DAYS=60
 ```
-
-`AWS_BEARER_TOKEN_BEDROCK`에는 Amazon Bedrock API key를 넣어야 합니다. Claude Code/Anthropic용 bearer token을
-넣으면 AWS가 `Invalid API Key format`으로 거절합니다.
 
 ### 로깅
 
@@ -268,18 +263,13 @@ Redis는 선택 사항이며 `WEBAPP_REDIS_URL`을 지정하면 result/file toke
 실제 로그인 환경에서는 HTML을 서빙하기 전에 `window.TEXT2SQL_USER_ID`에 사내 사용자 ID를 주입하거나,
 API Gateway/ALB 인증 계층에서 `X-User-ID`를 신뢰 가능한 값으로 덮어쓰도록 구성하세요.
 
-### 데이터베이스 백엔드 (PostgreSQL / Amazon Athena)
+### 데이터베이스 백엔드 (Amazon Athena)
 
-SQL 실행 백엔드는 `DB_BACKEND` 환경변수로 고릅니다 (`postgres` 기본, `athena` 선택).
-호출부(`execute_sql`)는 그대로이고 `db.py` 내부에서만 분기하므로 코드 변경 없이 전환됩니다.
+업무 SQL 실행 백엔드는 Amazon Athena(pyathena DB-API) 하나입니다. PostgreSQL은
+웹 세션/대화 이력 저장(`session_store.py`)에만 사용하며 업무 조회에는 쓰지 않습니다.
 
 ```bash
-# 기본: PostgreSQL
-DB_BACKEND=postgres
-KBCARD_POSTGRES_DSN="host=localhost port=5432 dbname=postgres user=postgres password="
-
-# 전환: Amazon Athena (pyathena DB-API)
-DB_BACKEND=athena
+# Amazon Athena (pyathena DB-API)
 ATHENA_REGION=ap-northeast-2
 ATHENA_S3_STAGING_DIR=s3://your-athena-results-bucket/path/   # 결과 저장 위치 (워크그룹에 있으면 생략 가능)
 ATHENA_WORKGROUP=primary
@@ -312,32 +302,28 @@ Athena 인증은 코드/설정에 키를 두지 않고 **표준 AWS 자격증명
   완전 폐쇄망이면 **S3·STS용 VPC 엔드포인트도 별도로** 있어야 정상 동작합니다 (Athena 엔드포인트만으로는 부족).
 - 결과 위치는 `ATHENA_S3_STAGING_DIR` 또는 워크그룹 결과 위치 중 하나만 있으면 됩니다.
 
-- 하드코딩된 verified query SQL(`sql_builders.py`)과 대손비용률 SQL(`bad_debt.py`)은 양쪽 DB에서 동작하도록 ANSI 표준으로
+- 하드코딩된 verified query SQL(`sql_builders.py`)과 대손비용률 SQL(`bad_debt.py`)은 ANSI 표준으로
   작성되어 있습니다 (`CAST(... AS DOUBLE/INTEGER)`, `LOWER() LIKE LOWER()`, `SUBSTR`).
-- LLM이 새로 생성하는 SQL은 `DB_BACKEND`에 따라 프롬프트가 PostgreSQL/Trino 방언을 자동 안내합니다.
+- LLM이 새로 생성하는 SQL은 프롬프트가 Trino/Presto(Athena) 방언 규칙을 안내합니다.
 
 #### 테이블 스키마 prefix (`DB_SCHEMA`)
 
-테이블 참조에 붙는 스키마 한정자는 `DB_SCHEMA`로 설정합니다. PostgreSQL에서는 schema로
-해석됩니다. Athena는 pyathena connection의 `schema_name=ATHENA_DATABASE`를 이미 사용하므로,
-기본적으로 SQL에는 database prefix를 붙이지 않습니다.
+테이블 참조에 붙는 database 한정자는 `DB_SCHEMA`로 설정합니다. Athena는 pyathena
+connection의 `schema_name=ATHENA_DATABASE`를 이미 사용하므로, 기본값(미설정)은
+SQL에 database prefix를 붙이지 않습니다.
 
-- 미설정 시 기본값: `postgres`면 `card_system`, `athena`면 prefix 없음.
 - `DB_SCHEMA`는 verified query SQL · SQL 검증(`schema.py`) · 생성 프롬프트 · schema YAML의
   `physical_table`/verified-query SQL에 **일괄 적용**됩니다 (YAML 원본은 `card_system.`으로
   두고 로드 시 메모리에서 동적 치환).
+- 오프라인 테스트는 fixture 문자열과의 비교를 위해 `tests/conftest.py`에서
+  `DB_SCHEMA=card_system`으로 고정합니다.
 
 ```bash
-# Athena 기본 권장: ATHENA_DATABASE로 접속하고 SQL은 테이블명만 사용
-DB_BACKEND=athena
+# 기본 권장: ATHENA_DATABASE로 접속하고 SQL은 테이블명만 사용
 ATHENA_DATABASE=kbcard_db
 
 # database-qualified table을 반드시 써야 하는 환경에서만 명시
 DB_SCHEMA=kbcard_db
-
-# PostgreSQL에서 prefix 없이 테이블명만 쓰려면
-DB_BACKEND=postgres
-DB_SCHEMA=none
 ```
 
 #### Athena 한글 컬럼명
@@ -345,8 +331,8 @@ DB_SCHEMA=none
 Athena(Trino/Presto)는 한글 컬럼명을 일반 identifier로 파싱하지 못하므로
 `기준년월`처럼 쓰면 `mismatched input '기'` 오류가 날 수 있습니다. Athena에서는
 `"기준년월"`, `a."가맹점명"`, `AS "총매출금액"`처럼 double quote로 감싼
-delimited identifier를 사용해야 합니다. 이 앱은 `DB_BACKEND=athena`일 때 실행 직전에
-한글/비ASCII 식별자를 자동으로 quote합니다. 문자열 값(`'202512'`, `'%한빛%'`)은 그대로 둡니다.
+delimited identifier를 사용해야 합니다. 이 앱은 실행 직전에 한글/비ASCII 식별자를
+자동으로 quote합니다. 문자열 값(`'202512'`, `'%한빛%'`)은 그대로 둡니다.
 
 #### Athena 날짜 파티션 메타
 
@@ -426,8 +412,8 @@ agent:
 
 llm:
   model_registry_path: models.local.yaml
-  # 기본은 Bedrock OpenAI 호환 gpt-oss-120b. 가벼운 20b나 로컬 vLLM(local-chat)으로 교체 가능.
-  default_model: "openai.gpt-oss-120b-1:0"
+  # 기본은 사내 vLLM gpt-oss-120b. 가벼운 모델이나 로컬 vLLM(local-chat)으로 교체 가능.
+  default_model: "gpt-oss:120b"
   temperature: 0
   max_tokens: 4096
   timeout: 120
@@ -445,25 +431,15 @@ embedding:
 
 ```yaml
 models:
-  # Amazon Bedrock OpenAI 호환 runtime (gpt-oss).
+  # 사내 vLLM OpenAI 호환 runtime (gpt-oss).
   # 공통 모듈(KBCardOpenAI)이 base_url+endpoint_path로 호출하고,
   # api_key_env에서 읽은 토큰을 Authorization: Bearer 로 전송한다.
-  # 기본은 120b. 작은 20b는 Tool 선택을 자주 놓쳐(예: 대손비용률) 120b를 표준으로 둔다.
-  "openai.gpt-oss-120b-1:0":
-    provider: bedrock
-    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
-    endpoint_path: /openai/v1/chat/completions
-    api_key_env: AWS_BEARER_TOKEN_BEDROCK
-    timeout: 120
-    capabilities:
-      streaming: false
-
-  # 더 작고 빠른 폴백 모델.
-  "openai.gpt-oss-20b-1:0":
-    provider: bedrock
-    base_url: https://bedrock-runtime.us-east-1.amazonaws.com
-    endpoint_path: /openai/v1/chat/completions
-    api_key_env: AWS_BEARER_TOKEN_BEDROCK
+  # 기본은 120b. 작은 모델은 Tool 선택을 자주 놓쳐(예: 대손비용률) 120b를 표준으로 둔다.
+  "gpt-oss:120b":
+    provider: vllm
+    base_url: http://10.75.221.91:13086
+    endpoint_path: /api/v2/openai/chat/completions
+    api_key_env: LLM_API_KEY
     timeout: 120
     capabilities:
       streaming: false

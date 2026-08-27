@@ -1,9 +1,9 @@
-"""Read-only SQL execution with a pluggable backend (PostgreSQL or Amazon Athena).
+"""Read-only SQL execution against Amazon Athena.
 
 The rest of the app depends on a single function, ``execute_sql``, which returns
-``(columns, rows, error)``. The validation guards (read-only SELECT/WITH only) are
-shared across backends; only the actual execution differs and is selected by the
-``DB_BACKEND`` config ("postgres" or "athena").
+``(columns, rows, error)``. Validation guards (read-only SELECT/WITH only) run
+before execution; PostgreSQL is used only for web session storage/logging, never
+for query execution (see session_store.py).
 """
 
 import re
@@ -21,17 +21,8 @@ from .config import (
     ATHENA_REGION,
     ATHENA_S3_STAGING_DIR,
     ATHENA_WORKGROUP,
-    DB_BACKEND,
-    DB_DSN,
-    DB_DSN_ERROR,
-    DB_HOST,
-    DB_NAME,
-    DB_PASSWORD,
-    DB_POOL_MAX,
-    DB_PORT,
     DB_SCHEMA,
     DB_SCHEMA_PREFIX,
-    DB_USER,
     MAX_QUERY_ROW_LIMIT,
 )
 from .time_policy import accumulation_policy_for
@@ -393,97 +384,10 @@ def _normalize_athena_ilike(sql: str) -> str:
 
 
 def prepare_sql_for_backend(sql: str) -> str:
-    """Apply backend-specific SQL normalization before validation/execution."""
+    """Apply Athena-specific SQL normalization before validation/execution."""
     sql = _normalize_common_sql_typos(sql)
-    if DB_BACKEND == "athena":
-        sql = _normalize_athena_ilike(sql)
-        return _quote_athena_non_ascii_identifiers(sql)
-    return sql
-
-
-# ---------------------------------------------------------------------------
-# PostgreSQL backend
-# ---------------------------------------------------------------------------
-_pool = None
-
-
-def _get_pool():
-    global _pool
-    import psycopg2.pool  # 지연 import: athena 전용 배포에서 psycopg2 미설치를 허용.
-
-    if _pool is None or _pool.closed:
-        if DB_DSN_ERROR:
-            raise RuntimeError("PostgreSQL 접속 정보를 Secrets Manager에서 불러오지 못했습니다.")
-        if DB_DSN:
-            _pool = psycopg2.pool.ThreadedConnectionPool(1, DB_POOL_MAX, DB_DSN)
-        else:
-            _pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=1,
-                maxconn=DB_POOL_MAX,
-                host=DB_HOST,
-                port=DB_PORT,
-                dbname=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD,
-            )
-    return _pool
-
-
-def get_db_connection():
-    return _get_pool().getconn()
-
-
-def _return_connection(conn, *, close: bool = False):
-    try:
-        _get_pool().putconn(conn, close=close)
-    except TypeError:
-        # Small test doubles and older pool implementations may not expose the
-        # keyword.  A broken connection must never be returned for reuse.
-        if close:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        else:
-            _get_pool().putconn(conn)
-    except Exception:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-
-def _execute_postgres(
-    sql: str,
-    max_rows: int = _MAX_ROWS,
-    statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
-) -> tuple[list[str], list[tuple]]:
-    conn = None
-    cur = None
-    discard_connection = False
-    try:
-        conn = get_db_connection()
-        conn.set_session(readonly=True)
-        cur = conn.cursor()
-        cur.execute(f"SET statement_timeout = {statement_timeout_ms}")
-        cur.execute(sql)
-        columns = [desc[0] for desc in cur.description] if cur.description else []
-        rows = cur.fetchmany(max_rows) if cur.description else []
-        return columns, rows
-    finally:
-        if cur is not None:
-            try:
-                cur.close()
-            except Exception:
-                discard_connection = True
-        if conn is not None:
-            # End both successful SELECT transactions and failed/aborted ones
-            # before returning the connection to the shared pool.
-            try:
-                conn.rollback()
-            except Exception:
-                discard_connection = True
-            _return_connection(conn, close=discard_connection)
+    sql = _normalize_athena_ilike(sql)
+    return _quote_athena_non_ascii_identifiers(sql)
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +405,7 @@ def _get_athena_connection():
     if _athena_conn is not None:
         return _athena_conn
 
-    from pyathena import connect  # 지연 import: postgres 전용 배포에서 pyathena 미설치 허용.
+    from pyathena import connect  # 지연 import: SQL 실행 없는 오프라인 테스트에서 미설치 허용.
 
     # 결과 위치는 (a) s3_staging_dir 직접 지정 또는 (b) 워크그룹의 managed/지정 결과 위치
     # 둘 중 하나가 있어야 한다. 둘 다 없으면 쿼리가 실패하므로 미리 막는다.
@@ -554,12 +458,11 @@ def _execute_backend(
     max_rows: int = _MAX_ROWS,
     statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
 ) -> tuple[list[str], list[tuple]]:
-    executor = _execute_athena if DB_BACKEND == "athena" else _execute_postgres
     if max_rows == _MAX_ROWS and statement_timeout_ms == _STATEMENT_TIMEOUT_MS:
-        return executor(sql)
+        return _execute_athena(sql)
     if statement_timeout_ms == _STATEMENT_TIMEOUT_MS:
-        return executor(sql, max_rows)
-    return executor(sql, max_rows, statement_timeout_ms)
+        return _execute_athena(sql, max_rows)
+    return _execute_athena(sql, max_rows, statement_timeout_ms)
 
 
 def _bounded_result_sql(sql: str, max_rows: int) -> str:
@@ -703,7 +606,6 @@ def _log_db_query(
     max_rows: int = _MAX_ROWS,
     statement_timeout_ms: int = _STATEMENT_TIMEOUT_MS,
 ) -> None:
-    is_athena = DB_BACKEND == "athena"
     emit_module_event(
         module="db",
         event_type="db_query",
@@ -711,9 +613,9 @@ def _log_db_query(
         latency_ms=int((time.monotonic() - started) * 1000),
         action="read",
         target={
-            "system": "athena" if is_athena else "postgres",
+            "system": "athena",
             "schema": DB_SCHEMA,
-            "database": ATHENA_DATABASE if is_athena else DB_NAME,
+            "database": ATHENA_DATABASE,
         },
         data_scope={
             "query_type": "select",
@@ -721,7 +623,7 @@ def _log_db_query(
             "sql_logged": False,
             "pii_masked": True,
         },
-        store_provider="athena" if is_athena else "postgres",
+        store_provider="athena",
         metadata={
             "query_type": "select",
             "result_count": result_count,

@@ -6,7 +6,7 @@ from functools import lru_cache
 
 import yaml
 
-from ..config import DB_BACKEND, DEFAULT_QUERY_ROW_LIMIT, MAX_QUERY_ROW_LIMIT, SCHEMA_PATH
+from ..config import DEFAULT_QUERY_ROW_LIMIT, MAX_QUERY_ROW_LIMIT, SCHEMA_PATH
 from ..managed_scope import render_athena_business_number_values
 from ..row_constraints import apply_outer_limit
 from ..time_policy import kst_today, previous_day_ymd
@@ -540,7 +540,7 @@ def _partition_key_expr(key: dict, alias: str = "") -> str:
     name = str(key.get("name") or "").strip()
     if not name:
         return ""
-    expr = f'"{name}"' if DB_BACKEND == "athena" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) else name
+    expr = f'"{name}"'
     return f"{alias}.{expr}" if alias else expr
 
 
@@ -567,10 +567,10 @@ def _athena_partition_conds(
 ) -> list[str]:
     """Return Athena partition predicates for a table and period.
 
-    The helper is intentionally no-op outside Athena or when the semantic schema
-    does not define ``athena_partition`` for the table. Month-level periods add
-    year/month predicates. Day-level keys add the day predicate only when the
-    input period is day-specific.
+    The helper is intentionally no-op when the semantic schema does not define
+    ``athena_partition`` for the table. Month-level periods add year/month
+    predicates. Day-level keys add the day predicate only when the input period
+    is day-specific.
     """
     try:
         return _athena_partition_conds_inner(table_name, start=start, end=end, alias=alias)
@@ -585,9 +585,6 @@ def _athena_partition_conds_inner(
     end: object = "",
     alias: str = "",
 ) -> list[str]:
-    if DB_BACKEND != "athena":
-        return []
-
     partition = _athena_partition_index().get(str(table_name).lower())
     if not partition:
         return []

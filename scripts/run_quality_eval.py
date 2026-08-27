@@ -197,8 +197,7 @@ def run_contract_evaluations(
                 return ["value"], [(1,)]
 
             with (
-                patch.object(db, "DB_BACKEND", "postgres"),
-                patch.object(db, "_execute_postgres", fake_execute),
+                patch.object(db, "_execute_athena", fake_execute),
                 patch.object(db, "_log_db_query"),
             ):
                 _, _, error = db.execute_sql(case["sql"])

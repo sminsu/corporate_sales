@@ -33,7 +33,7 @@ _SNAPSHOT_CODE = r"""
 import json
 import os
 
-from text2sql_agent.config import DB_BACKEND, DB_SCHEMA, SCHEMA_PATH
+from text2sql_agent import config
 from text2sql_agent.tools.bad_debt import BAD_DEBT_QUERIES, _build_bad_debt_sql
 
 params = json.loads(os.environ["BAD_DEBT_COMPARE_PARAMS"])
@@ -44,9 +44,10 @@ queries = {
 print(json.dumps(
     {
         "metadata": {
-            "backend": DB_BACKEND,
-            "db_schema": DB_SCHEMA,
-            "semantic_schema": str(SCHEMA_PATH),
+            # 옛 reference 프로젝트는 DB_BACKEND 분기가 남아 있으므로 있으면 읽는다.
+            "backend": getattr(config, "DB_BACKEND", "athena"),
+            "db_schema": config.DB_SCHEMA,
+            "semantic_schema": str(config.SCHEMA_PATH),
         },
         "queries": queries,
     },
@@ -119,8 +120,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         default="athena",
-        choices=("athena", "postgres"),
-        help="비교 실행 백엔드 (기본값: athena)",
+        choices=("athena",),
+        help="비교 실행 백엔드 (reference 프로젝트에 DB_BACKEND로 전달)",
     )
     parser.add_argument(
         "--db-schema",

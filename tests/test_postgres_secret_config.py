@@ -6,13 +6,14 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from text2sql_agent import db
+from text2sql_agent import config as agent_config
+from text2sql_agent import session_store
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_athena_with_postgres_sessions_loads_connection_fields_from_secret(tmp_path: Path) -> None:
+def test_postgres_session_store_loads_connection_fields_from_secret(tmp_path: Path) -> None:
     fake_boto3 = tmp_path / "boto3.py"
     fake_boto3.write_text(
         """
@@ -33,7 +34,6 @@ class session:
     )
     env = {
         **os.environ,
-        "DB_BACKEND": "athena",
         "WEBAPP_SESSION_STORE": "postgres",
         "PYTHONPATH": f"{tmp_path}{os.pathsep}{ROOT}",
     }
@@ -61,23 +61,36 @@ class session:
     assert result.stdout.strip() == "db.example|5433|sales|app|True|secrets_manager|False"
 
 
-def test_postgres_pool_uses_individual_connection_fields() -> None:
+def test_session_pool_uses_individual_connection_fields() -> None:
+    dsn_names = {
+        name: ""
+        for name in (
+            "WEBAPP_POSTGRES_DSN",
+            "SESSION_POSTGRES_DSN",
+            "DATABASE_URL",
+            "DB_DSN",
+            "POSTGRES_DSN",
+            "KBCARD_POSTGRES_DSN",
+            "WEBAPP_DB_POOL_MAX",
+            "DB_POOL_MAX",
+        )
+    }
+    store = session_store.PostgresSessionStore()
     with (
-        patch.object(db, "_pool", None),
-        patch.object(db, "DB_DSN", ""),
-        patch.object(db, "DB_DSN_ERROR", ""),
-        patch.object(db, "DB_HOST", "db.example"),
-        patch.object(db, "DB_PORT", 5433),
-        patch.object(db, "DB_NAME", "sales"),
-        patch.object(db, "DB_USER", "app"),
-        patch.object(db, "DB_PASSWORD", "secret"),
+        patch.dict(os.environ, dsn_names),
+        patch.object(agent_config, "DB_DSN_ERROR", ""),
+        patch.object(agent_config, "DB_HOST", "db.example"),
+        patch.object(agent_config, "DB_PORT", 5433),
+        patch.object(agent_config, "DB_NAME", "sales"),
+        patch.object(agent_config, "DB_USER", "app"),
+        patch.object(agent_config, "DB_PASSWORD", "secret"),
         patch("psycopg2.pool.ThreadedConnectionPool") as pool_class,
     ):
-        db._get_pool()
+        store._get_pool()
 
     pool_class.assert_called_once_with(
         minconn=1,
-        maxconn=db.DB_POOL_MAX,
+        maxconn=agent_config.DB_POOL_MAX,
         host="db.example",
         port=5433,
         dbname="sales",

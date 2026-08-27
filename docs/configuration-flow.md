@@ -1,7 +1,7 @@
 # Configuration Flow
 
 이 문서는 이 서비스가 `kbcard-agent-common` 예제 방식의 설정을 읽고 LLM, embedding,
-PostgreSQL 쪽으로 넘기는 흐름만 정리합니다.
+Amazon Athena(업무 조회)·PostgreSQL(세션 저장) 쪽으로 넘기는 흐름만 정리합니다.
 
 ## 전체 흐름
 
@@ -15,7 +15,9 @@ flowchart TD
     ConfigPy --> LLM["text2sql_agent/llm.py"]
     ConfigPy --> DB["text2sql_agent/db.py"]
     LLM --> CommonLLM["KBCardOpenAI / EmbeddingClient"]
-    DB --> Postgres["PostgreSQL"]
+    DB --> Athena["Amazon Athena"]
+    ConfigPy --> Store["text2sql_agent/session_store.py"]
+    Store --> Postgres["PostgreSQL (세션 저장)"]
 ```
 
 설정의 중심은 `text2sql_agent/config.py`입니다. import 시점에 `.env`, `.env.local`,
@@ -29,7 +31,7 @@ common YAML, 환경 변수를 읽어서 기존 서비스 코드가 쓰는 `VLLM_
 
 - `KBCARD_CONFIG_PATH`: common agent YAML 경로입니다.
 - `LLM_API_KEY`: 로컬 vLLM처럼 인증이 없을 때 `EMPTY`로 둡니다.
-- `KBCARD_POSTGRES_DSN`: PostgreSQL DSN secret입니다.
+- `KBCARD_POSTGRES_DSN`: 세션 저장용 PostgreSQL DSN secret입니다.
 
 ### `config/agent.example.yaml`
 

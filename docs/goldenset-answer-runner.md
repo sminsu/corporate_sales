@@ -8,7 +8,6 @@
 (환경변수 / `AWS_PROFILE` / EC2·ECS IAM 역할)을 그대로 쓰고, 접속 설정은 서비스와 같은 환경변수를 읽는다.
 
 ```bash
-DB_BACKEND=athena
 ATHENA_REGION=ap-northeast-2
 ATHENA_DATABASE=card_system
 ATHENA_WORKGROUP=primary

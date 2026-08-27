@@ -12,7 +12,6 @@ import sqlparse
 from langgraph.graph import END, StateGraph
 
 from .config import (
-    DB_BACKEND,
     DB_SCHEMA_PREFIX,
     DEFAULT_QUERY_ROW_LIMIT,
     DISPLAY_ROW_LIMIT,
@@ -6407,7 +6406,7 @@ def _corporate_scope_rule(selected_tables: list[str]) -> str:
 
 def _sql_dialect_name() -> str:
     """LLM 프롬프트에 명시할 SQL 방언 이름."""
-    return "Trino/Presto (Amazon Athena)" if DB_BACKEND == "athena" else "PostgreSQL"
+    return "Trino/Presto (Amazon Athena)"
 
 
 def _schema_prefix_rule() -> str:
@@ -6418,19 +6417,17 @@ def _schema_prefix_rule() -> str:
 
 
 def _sql_dialect_rules() -> str:
-    """백엔드별 SQL 작성 주의사항. Athena(Trino)는 PostgreSQL과 방언이 다르다."""
-    if DB_BACKEND == "athena":
-        return (
-            "18. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
-            "    - 타입 캐스트는 CAST(expr AS type)만 사용 (PostgreSQL의 expr::type 금지).\n"
-            "    - 실수 나눗셈은 CAST(... AS DOUBLE), 정수는 CAST(... AS INTEGER).\n"
-            "    - 대소문자 무시 이름 검색은 기본적으로 LOWER(col) LIKE LOWER('%값%') 사용 (ILIKE 금지). 이름 고정·이름만·정확 일치를 명시한 경우만 %를 제거.\n"
-            "    - 문자열 부분추출은 SUBSTR(col, start, length) 사용 (LEFT/RIGHT 대신).\n"
-            "    - 날짜/문자 함수는 Trino 표준만 사용 (TO_CHAR, DATE_TRUNC 등 PG 전용 함수 금지).\n"
-            "    - 한글/비ASCII 컬럼명과 alias는 반드시 double quote로 감싸기 (예: \"기준년월\", a.\"가맹점명\", AS \"총매출금액\").\n"
-            "    - 테이블 상세에 athena_partition이 있으면 업무 날짜 조건(예: \"기준년월\" = '202512')과 함께 파티션 조건도 반드시 추가 (예: \"year\" = '2025' AND \"month\" = '12')."
-        )
-    return ""
+    """Athena(Trino) SQL 작성 주의사항."""
+    return (
+        "18. 이 쿼리는 Amazon Athena(Trino/Presto)에서 실행됩니다. 다음 방언 규칙을 지키세요:\n"
+        "    - 타입 캐스트는 CAST(expr AS type)만 사용 (PostgreSQL의 expr::type 금지).\n"
+        "    - 실수 나눗셈은 CAST(... AS DOUBLE), 정수는 CAST(... AS INTEGER).\n"
+        "    - 대소문자 무시 이름 검색은 기본적으로 LOWER(col) LIKE LOWER('%값%') 사용 (ILIKE 금지). 이름 고정·이름만·정확 일치를 명시한 경우만 %를 제거.\n"
+        "    - 문자열 부분추출은 SUBSTR(col, start, length) 사용 (LEFT/RIGHT 대신).\n"
+        "    - 날짜/문자 함수는 Trino 표준만 사용 (TO_CHAR, DATE_TRUNC 등 PG 전용 함수 금지).\n"
+        "    - 한글/비ASCII 컬럼명과 alias는 반드시 double quote로 감싸기 (예: \"기준년월\", a.\"가맹점명\", AS \"총매출금액\").\n"
+        "    - 테이블 상세에 athena_partition이 있으면 업무 날짜 조건(예: \"기준년월\" = '202512')과 함께 파티션 조건도 반드시 추가 (예: \"year\" = '2025' AND \"month\" = '12')."
+    )
 
 
 def _multiturn_sql_context(state: Text2SQLState | dict) -> str:
