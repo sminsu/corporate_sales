@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -235,7 +236,7 @@ def test_verified_management_query_precedes_broader_forced_tool() -> None:
     assert selected["selected_tool"] == ""
 
 
-def test_answer_model_prompt_masks_scope_identifiers_in_question_sql_and_rows() -> None:
+def test_answer_model_prompt_passes_question_sql_and_rows_through_unmasked() -> None:
     captured: dict[str, str] = {}
 
     def fake_llm(prompt: str, **_: object) -> str:
@@ -245,7 +246,7 @@ def test_answer_model_prompt_masks_scope_identifiers_in_question_sql_and_rows() 
     state = workflow._new_initial_state("123-45-67890 관리기업의 연체를 알려줘")
     state.update(
         {
-            "final_sql": 'WITH managed_scope ("사업자등록번호") AS (VALUES (\'1234567890\')) SELECT 1',
+            "final_sql": 'WITH managed_scope ("사업자등록번호") AS (VALUES (\'9876543210\')) SELECT 1',
             "query_columns": ["사업자등록번호", "기업명"],
             "query_rows": [("1234567890", "테스트기업")],
         }
@@ -254,6 +255,32 @@ def test_answer_model_prompt_masks_scope_identifiers_in_question_sql_and_rows() 
         result = workflow.generate_answer(state)
 
     assert result["answer"]
-    assert "1234567890" not in captured["prompt"]
-    assert "123-45-67890" not in captured["prompt"]
-    assert "[사업자등록번호]" in captured["prompt"]
+    # 질문·SQL·결과 행 어디에도 마스킹을 걸지 않는다.
+    assert "123-45-67890" in captured["prompt"]
+    assert "9876543210" in captured["prompt"]
+    assert "1234567890 | 테스트기업" in captured["prompt"]
+    assert "[사업자등록번호]" not in captured["prompt"]
+
+
+def test_answer_model_prompt_keeps_amounts_and_zero_values_in_result_rows() -> None:
+    captured: dict[str, str] = {}
+
+    def fake_llm(prompt: str, **_: object) -> str:
+        captured["prompt"] = prompt
+        return "이용금액 요약입니다."
+
+    state = workflow._new_initial_state("기업별 이용금액과 취소금액을 알려줘")
+    state.update(
+        {
+            "final_sql": "SELECT company, amount, cancelled FROM sample",
+            "query_columns": ["기업명", "이용금액", "취소금액"],
+            # 10자리 금액은 사업자등록번호와 자릿수가 같고, 0 은 "값 없음"이 아니다.
+            "query_rows": [("테스트기업", Decimal("1234567890"), Decimal("0"))],
+        }
+    )
+    with patch.object(workflow, "_call_llm", side_effect=fake_llm):
+        workflow.generate_answer(state)
+
+    assert "1234567890" in captured["prompt"]
+    assert "[사업자등록번호]" not in captured["prompt"]
+    assert "테스트기업 | 1234567890 | 0" in captured["prompt"]

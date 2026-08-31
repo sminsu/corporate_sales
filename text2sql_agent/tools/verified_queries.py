@@ -8,7 +8,7 @@ from typing import Callable
 
 import yaml
 
-from ..config import DB_SCHEMA, DB_SCHEMA_PREFIX
+from ..config import DB_SCHEMA, DB_SCHEMA_PREFIX, DEFAULT_QUERY_ROW_LIMIT
 from .sql_builders import (
     _vq_sql_가맹점매출순위,
     _vq_sql_가맹점카드소지현황,
@@ -45,7 +45,7 @@ _BUILDER_SPECS: dict[str, tuple[BuilderFn, dict, tuple[tuple[str, str], ...]]] =
     ),
     "merchant_card_possession_performance": (
         _vq_sql_가맹점카드소지현황,
-        {"기준년월": "209901", "카드만료기준일": "20990131", "limit": 100},
+        {"기준년월": "209901", "카드만료기준일": "20990131", "limit": DEFAULT_QUERY_ROW_LIMIT},
         (("20990131", "{카드만료기준일}"), ("209901", "{기준년월}")),
     ),
     "credit_utilization": (
@@ -107,6 +107,9 @@ def load_external_verified_queries(path: str | None = None) -> list[dict]:
         if not isinstance(entry, dict):
             continue
         normalized = dict(entry)
+        limit = (normalized.get("parameters") or {}).get("limit")
+        if isinstance(limit, dict) and str(limit.get("default")) == "100":
+            limit["default"] = str(DEFAULT_QUERY_ROW_LIMIT)
         builder_name = normalized.pop("sql_builder", "")
         if builder_name and not normalized.get("sql"):
             normalized["sql"] = _sql_from_builder(str(builder_name))

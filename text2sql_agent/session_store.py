@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+
+from text2sql_agent.pii_masker import mask_pii
+from text2sql_agent.time_policy import KST
 
 
 class SessionOwnershipError(Exception):
@@ -60,14 +62,21 @@ def _jsonable(value: Any) -> Any:
 
 def _iso(value: Any) -> str:
     if isinstance(value, datetime):
+        # 서버가 UTC로 돌아도 화면과 DB에는 한국시간으로 남긴다.
+        if value.tzinfo is not None:
+            value = value.astimezone(KST)
         return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
     return str(value or "")
 
 
+def _now() -> datetime:
+    return datetime.now(KST)
+
+
 def _now_iso() -> str:
-    return datetime.now().isoformat()
+    return _now().isoformat()
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -93,13 +102,19 @@ def _session_postgres_schema() -> str:
     return schema
 
 
+def _to_naive_kst(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(KST).replace(tzinfo=None)
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
+        return _to_naive_kst(value)
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+        return _to_naive_kst(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except ValueError:
         return None
 
@@ -108,7 +123,7 @@ def _is_expired(value: Any, retention_days: int) -> bool:
     if retention_days <= 0:
         return False
     parsed = _parse_datetime(value)
-    return bool(parsed and parsed < datetime.now() - timedelta(days=retention_days))
+    return bool(parsed and parsed < _now().replace(tzinfo=None) - timedelta(days=retention_days))
 
 
 class RetentionPolicy:
@@ -194,6 +209,7 @@ class RedisJsonCache:
 
 class InMemorySessionStore:
     kind = "memory"
+    delete_enabled = True
 
     def __init__(self, policy: RetentionPolicy | None = None) -> None:
         self.policy = policy or RetentionPolicy()
@@ -427,9 +443,8 @@ class PostgresSessionStore:
         self.policy = policy or RetentionPolicy()
         self.cache = RedisJsonCache()
         self.schema = _session_postgres_schema()
+        self.delete_enabled = _env("WEBAPP_POSTGRES_DELETE_ENABLED", default="false").strip().lower() in {"1", "true", "yes", "on"}
         self._pool = None
-        self._schema_ready = False
-        self._schema_lock = threading.Lock()
 
     def close(self) -> None:
         if self._pool is not None:
@@ -449,6 +464,8 @@ class PostgresSessionStore:
         from . import config as agent_config
 
         if self._pool is None or self._pool.closed:
+            if agent_config.DB_DSN_ERROR:
+                raise RuntimeError("PostgreSQL 접속 정보를 Secrets Manager에서 불러오지 못했습니다.")
             dsn = _env("WEBAPP_POSTGRES_DSN", "SESSION_POSTGRES_DSN", "DATABASE_URL", "DB_DSN", "POSTGRES_DSN", "KBCARD_POSTGRES_DSN")
             maxconn = int(_env("WEBAPP_DB_POOL_MAX", "DB_POOL_MAX", default=str(agent_config.DB_POOL_MAX)))
             if dsn:
@@ -468,10 +485,12 @@ class PostgresSessionStore:
     def _conn(self):
         conn = self._get_pool().getconn()
         try:
-            if self.schema:
-                from psycopg2 import sql
+            from psycopg2 import sql
 
-                with conn.cursor() as cur:
+            with conn.cursor() as cur:
+                # DB 서버가 UTC여도 now()와 컬럼 default가 한국시간으로 기록되게 한다.
+                cur.execute("SET TIME ZONE 'Asia/Seoul'")
+                if self.schema:
                     cur.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(self.schema)))
                     cur.execute("SELECT current_schema()")
                     current_schema = cur.fetchone()[0]
@@ -493,90 +512,9 @@ class PostgresSessionStore:
         except Exception:
             pass
 
-    def _ensure_schema(self) -> None:
-        if self._schema_ready:
-            return
-        with self._schema_lock:
-            if self._schema_ready:
-                return
-            conn = self._conn()
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS webapp_sessions (
-                        id TEXT PRIMARY KEY,
-                        conversation_id BIGSERIAL UNIQUE,
-                        user_id TEXT NOT NULL,
-                        agent_name TEXT NOT NULL DEFAULT 'corporate_sales',
-                        title TEXT NOT NULL DEFAULT '새 대화',
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        last_result_id TEXT NOT NULL DEFAULT '',
-                        pending_continuation JSONB
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_webapp_sessions_user_updated
-                        ON webapp_sessions (user_id, updated_at DESC);
-
-                    CREATE TABLE IF NOT EXISTS webapp_messages (
-                        id BIGSERIAL PRIMARY KEY,
-                        session_id TEXT NOT NULL REFERENCES webapp_sessions(id) ON DELETE CASCADE,
-                        user_id TEXT NOT NULL,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        message_id BIGINT,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_webapp_messages_session_id
-                        ON webapp_messages (session_id, id);
-
-                    CREATE TABLE IF NOT EXISTS webapp_results (
-                        result_id TEXT PRIMARY KEY,
-                        session_id TEXT NOT NULL REFERENCES webapp_sessions(id) ON DELETE CASCADE,
-                        user_id TEXT NOT NULL,
-                        payload JSONB NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_webapp_results_user_id
-                        ON webapp_results (user_id, created_at DESC);
-
-                    CREATE TABLE IF NOT EXISTS webapp_files (
-                        token TEXT PRIMARY KEY,
-                        path TEXT NOT NULL,
-                        session_id TEXT REFERENCES webapp_sessions(id) ON DELETE SET NULL,
-                        user_id TEXT,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_webapp_files_user_id
-                        ON webapp_files (user_id, created_at DESC);
-
-                    CREATE TABLE IF NOT EXISTS webapp_saved_queries (
-                        id TEXT PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        agent_name TEXT NOT NULL DEFAULT 'corporate_sales',
-                        name TEXT NOT NULL,
-                        description TEXT NOT NULL DEFAULT '',
-                        query_template TEXT NOT NULL,
-                        parameters JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        defaults JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_webapp_saved_queries_user_updated
-                        ON webapp_saved_queries (user_id, agent_name, updated_at DESC);
-                    """
-                )
-                cur.close()
-                conn.commit()
-                self._schema_ready = True
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                self._put(conn)
-
     def _delete_expired_rows(self, cur) -> None:
+        if not self.delete_enabled:
+            return
         if self.policy.result_retention_days > 0:
             cur.execute(
                 "DELETE FROM webapp_results WHERE created_at < now() - (%s * INTERVAL '1 day')",
@@ -594,7 +532,7 @@ class PostgresSessionStore:
             )
 
     def _prune_sessions_for_user(self, cur, user_id: str) -> None:
-        if self.policy.max_sessions_per_user <= 0:
+        if not self.delete_enabled or self.policy.max_sessions_per_user <= 0:
             return
         cur.execute(
             """
@@ -613,7 +551,7 @@ class PostgresSessionStore:
         )
 
     def _prune_messages_for_session(self, cur, session_id: str) -> None:
-        if self.policy.max_messages_per_session <= 0:
+        if not self.delete_enabled or self.policy.max_messages_per_session <= 0:
             return
         cur.execute(
             """
@@ -675,7 +613,8 @@ class PostgresSessionStore:
         }
 
     def delete_session(self, session_id: str, user_id: str) -> bool:
-        self._ensure_schema()
+        if not self.delete_enabled:
+            return False
         conn = self._conn()
         try:
             cur = conn.cursor()
@@ -691,7 +630,8 @@ class PostgresSessionStore:
             self._put(conn)
 
     def prune_empty_sessions(self, user_id: str, agent_name: str | None = None) -> int:
-        self._ensure_schema()
+        if not self.delete_enabled:
+            return 0
         conn = self._conn()
         try:
             cur = conn.cursor()
@@ -740,7 +680,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def get_or_create_session(self, session_id: str | None, user_id: str, agent_name: str) -> dict[str, Any]:
-        self._ensure_schema()
         resolved_id = session_id or f"sess_{os.urandom(16).hex()}"
         conn = self._conn()
         try:
@@ -766,7 +705,7 @@ class PostgresSessionStore:
                 )
                 messages = [self._row_to_message(dict(message_row)) for message_row in cur.fetchall()]
                 conn.commit()
-                row["updated_at"] = datetime.now()
+                row["updated_at"] = _now()
                 row["message_count"] = len(messages)
                 return self._row_to_session(dict(row), messages)
 
@@ -789,7 +728,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def get_session(self, session_id: str, user_id: str) -> dict[str, Any] | None:
-        self._ensure_schema()
         conn = self._conn()
         try:
             from psycopg2.extras import RealDictCursor
@@ -824,7 +762,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def list_sessions(self, user_id: str, agent_name: str | None = None) -> list[dict[str, Any]]:
-        self._ensure_schema()
         conn = self._conn()
         try:
             from psycopg2.extras import RealDictCursor
@@ -862,12 +799,17 @@ class PostgresSessionStore:
             self._put(conn)
 
     def append_message(self, session: dict[str, Any], message: dict[str, Any]) -> None:
-        self._ensure_schema()
         payload = {k: _jsonable(v) for k, v in message.items() if k not in {"role", "content", "text", "created_at"} and v is not None}
         created_at = message.get("created_at") or _now_iso()
+        try:
+            stored_content = mask_pii(message.get("content", ""))
+        except Exception:
+            # 마스커가 죽어도 대화 저장까지 막지는 않는다.
+            stored_content = message.get("content", "")
+        # 제목은 마스킹한 본문에서 잘라야 40자에서 끊긴 번호가 그대로 남지 않는다.
         title = session.get("title", "새 대화")
-        if message.get("role") == "user" and title == "새 대화" and message.get("content"):
-            title = str(message.get("content", ""))[:40]
+        if message.get("role") == "user" and title == "새 대화" and stored_content:
+            title = stored_content[:40]
 
         conn = self._conn()
         try:
@@ -883,7 +825,7 @@ class PostgresSessionStore:
                     session["id"],
                     session["user_id"],
                     message.get("role", ""),
-                    message.get("content", ""),
+                    stored_content,
                     Json(payload),
                     message.get("message_id"),
                     created_at,
@@ -920,7 +862,6 @@ class PostgresSessionStore:
         last_result_id: str | None = None,
         pending_continuation: dict[str, Any] | None | object = ...,
     ) -> None:
-        self._ensure_schema()
         if last_result_id is not None:
             session["last_result_id"] = last_result_id
         if pending_continuation is not ...:
@@ -956,7 +897,6 @@ class PostgresSessionStore:
         session["updated_at"] = _now_iso()
 
     def save_result(self, result_id: str, session: dict[str, Any], payload: dict[str, Any]) -> None:
-        self._ensure_schema()
         record = {"user_id": session.get("user_id"), "session_id": session.get("id"), "payload": _jsonable(payload), "created_at": _now_iso()}
         conn = self._conn()
         try:
@@ -988,7 +928,6 @@ class PostgresSessionStore:
                 return None
             return dict(cached.get("payload") or {})
 
-        self._ensure_schema()
         conn = self._conn()
         try:
             from psycopg2.extras import RealDictCursor
@@ -1013,7 +952,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def save_file(self, token: str, path: str, session: dict[str, Any] | None = None, user_id: str | None = None) -> None:
-        self._ensure_schema()
         resolved_user_id = user_id or (session or {}).get("user_id")
         session_id = (session or {}).get("id")
         conn = self._conn()
@@ -1044,7 +982,6 @@ class PostgresSessionStore:
                 return None
             return str(cached["path"])
 
-        self._ensure_schema()
         conn = self._conn()
         try:
             cur = conn.cursor()
@@ -1061,7 +998,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def list_saved_queries(self, user_id: str, agent_name: str | None = None) -> list[dict[str, Any]]:
-        self._ensure_schema()
         conn = self._conn()
         try:
             from psycopg2.extras import RealDictCursor
@@ -1094,7 +1030,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def get_saved_query(self, query_id: str, user_id: str) -> dict[str, Any] | None:
-        self._ensure_schema()
         conn = self._conn()
         try:
             from psycopg2.extras import RealDictCursor
@@ -1107,7 +1042,6 @@ class PostgresSessionStore:
             self._put(conn)
 
     def save_saved_query(self, user_id: str, agent_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_schema()
         query_id = str(payload.get("id") or f"sq_{os.urandom(16).hex()}")
         conn = self._conn()
         try:
@@ -1154,7 +1088,8 @@ class PostgresSessionStore:
             self._put(conn)
 
     def delete_saved_query(self, query_id: str, user_id: str) -> bool:
-        self._ensure_schema()
+        if not self.delete_enabled:
+            return False
         conn = self._conn()
         try:
             cur = conn.cursor()

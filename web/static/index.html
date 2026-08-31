@@ -1,147 +1,192 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="자연어 질문으로 기업영업 데이터를 조회하고 후속 분석하는 업무용 Text2SQL 화면" />
-    <meta name="theme-color" content="#0e1117" />
-    <title>KB카드 기업영업 에이전트 · Text2SQL Console</title>
+    <meta name="description" content="자연어 질문으로 기업영업 및 프랜차이즈 데이터를 조회하고 후속 분석하는 업무용 에이전트" />
+    <meta name="theme-color" content="#fbfaf7" />
     <script>
       (() => {
-        try {
-          const storedTheme = localStorage.getItem("text2sql:console:theme");
-          if (storedTheme === "light") document.documentElement.dataset.theme = "light";
-        } catch (_) {
-          /* Ignore storage errors and keep the default dark theme. */
+        const path = window.location.pathname;
+        const lastSegment = path.split("/").at(-1) || "";
+        if (path !== "/" && !path.endsWith("/") && !lastSegment.includes(".")) {
+          const base = document.createElement("base");
+          base.href = `${path}/`;
+          document.head.appendChild(base);
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260720" />
+    <title>기업영업 에이전트</title>
+    <script>
+      (() => {
+        try {if(
+          ["K000895", "K100286", "K108641", "K110632", "K113703", "K113794", "K114289","K114681","K115725","K116650","K116980","K118485",
+            "K118849","K120879","K123371","K503417", "K120883","K120329","K116865","112745","K115141","K001117","K120501","K122939"].includes(localStorage.getItem("loginID"))) return;
+        } catch (_) {
+          /* Storage access failure is treated as unauthorized. */
+        }
+        window.location.replace("access-denied.html");
+      })();
+    </script>
+    <script>
+      (() => {
+        try {
+          const storedTheme = localStorage.getItem("text2sql:console:theme:v2");
+          if (storedTheme === "dark") {
+            delete document.documentElement.dataset.theme;
+          }
+        } catch (_) {
+          /* Ignore storage errors and keep the default light theme. */
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <a class="skip-link" href="#questionInput">질문 입력으로 건너뛰기</a>
-    <div class="app" id="app">
+    <div class="app inspector-collapsed" id="app">
       <!-- ░░ LEFT RAIL ░░ -->
-      <aside class="rail" aria-label="대화 및 보고서 메뉴">
-        <div class="brand">
-          <div class="brand-mark">KB</div>
-          <div class="brand-text">
-            <h1>Text2SQL</h1>
-            <p id="serviceStatus"><span class="dot"></span>연결 확인 중</p>
-          </div>
+      <aside class="rail" aria-label="대화 메뉴">
+        <div class="rail-controls">
+          <button id="railToggleBtn" class="rail-icon-button" type="button" aria-controls="railMenu" aria-expanded="true" aria-label="왼쪽 패널 접기" title="왼쪽 패널 접기">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 5.5c2.8-.8 5.6-.4 8.5 1.2v12c-2.9-1.6-5.7-2-8.5-1.2z"></path>
+              <path d="M20.5 5.5c-2.8-.8-5.6-.4-8.5 1.2v12c2.9-1.6 5.7-2 8.5-1.2z"></path>
+            </svg>
+          </button>
         </div>
 
-        <button id="newSessionBtn" class="new-session" type="button">
-          <span class="plus">+</span> 새 대화 시작
-        </button>
+        <div class="rail-bottom">
+          <button id="newSessionBtn" class="rail-icon-button rail-new-session" type="button" aria-label="새 대화" title="새 대화">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 4.5h14v13H9l-4 3z"></path>
+              <path d="M12 8v6M9 11h6"></path>
+            </svg>
+            <span>새 대화</span>
+          </button>
+        </div>
 
-        <button id="mobileMenuBtn" class="mobile-menu-btn" type="button" aria-controls="railMenu" aria-expanded="false">
-          세션·보고서 메뉴
-        </button>
-
-        <nav id="railMenu" class="rail-scroll" aria-label="대화 세션, 저장 쿼리 및 보고서">
+        <nav id="railMenu" class="rail-scroll" aria-label="대화 목록과 데이터 도구">
           <section class="rail-section">
-            <div class="section-label">세션</div>
             <div id="sessionList" class="session-list"></div>
           </section>
 
-          <section class="rail-section">
-            <div class="section-label">저장 쿼리</div>
-            <button id="saveQueryBtn" class="new-session" type="button">
-              <span class="plus">+</span> 현재 질문 저장
-            </button>
-            <div id="savedQueryList" class="saved-query-list"></div>
-          </section>
+          <details class="rail-tools">
+            <summary>데이터 도구</summary>
+            <div class="rail-tools-content">
+              <section class="rail-section">
+                <div class="section-label">저장 쿼리</div>
+                <button id="saveQueryBtn" class="new-session" type="button">
+                  <span class="plus">+</span> 현재 질문 저장
+                </button>
+                <div id="savedQueryList" class="saved-query-list"></div>
+              </section>
 
-          <section class="rail-section">
-            <div class="section-label">보고서 내보내기</div>
-            <div class="export-grid">
-              <button data-export="all" type="button" disabled>전체</button>
-              <button data-export="word" type="button" disabled>Word</button>
-              <button data-export="excel" type="button" disabled>Excel</button>
-              <button data-export="text" type="button" disabled>TXT</button>
+              <section class="rail-section">
+                <div class="section-label">보고서 내보내기</div>
+                <div class="export-grid">
+                  <button data-export="all" type="button" disabled>전체</button>
+                  <button data-export="word" type="button" disabled>Word</button>
+                  <button data-export="excel" type="button" disabled>Excel</button>
+                  <button data-export="text" type="button" disabled>TXT</button>
+                </div>
+                <div id="exportStatus" class="export-progress hidden" role="status" aria-live="polite">
+                  <div class="export-progress-head">
+                    <span id="exportProgressTitle" class="export-progress-title"></span>
+                    <span id="exportProgressTime" class="export-progress-time"></span>
+                  </div>
+                  <div class="export-progress-track"><div class="export-progress-fill"></div></div>
+                  <p id="exportProgressNote" class="export-progress-note"></p>
+                </div>
+                <div id="downloadList" class="download-list"></div>
+              </section>
             </div>
-            <div id="downloadList" class="download-list"></div>
-          </section>
+          </details>
         </nav>
 
-        <div class="rail-foot">common_athena · corporate-sales-agent</div>
+        <div
+          id="railResizeHandle"
+          class="rail-resize-handle"
+          role="separator"
+          aria-label="왼쪽 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin="220"
+          aria-valuemax="420"
+          aria-valuenow="272"
+          tabindex="0"
+        ></div>
       </aside>
 
       <!-- ░░ CENTER THREAD ░░ -->
       <main class="thread" id="mainContent" aria-busy="false">
         <header class="topbar">
           <div class="topbar-title">
-            <div class="crumb">KB카드 기업영업 에이전트</div>
-            <h2>SQL 실행 · 요약 · 보고서</h2>
+            <h2>기업영업 에이전트</h2>
+            <p class="conversation-note"><span aria-hidden="true">✦</span> 긴 대화 시 이전 내용을 기억하지 못할 수 있어요. 필요한 정보는 다시 말씀해 주세요.</p>
           </div>
           <div class="topbar-actions">
-            <button id="themeToggle" class="ghost-btn theme-toggle" type="button" aria-pressed="false">밝게</button>
-            <button id="clearBtn" class="ghost-btn" type="button" title="현재 대화 비우기">비우기</button>
-            <button id="inspectorToggle" class="ghost-btn icon-only" type="button" title="상세 패널 숨기기" aria-label="상세 패널 숨기기" aria-controls="inspector" aria-expanded="true">⛶</button>
+            <button class="ghost-btn" type="button" data-user-guide aria-haspopup="dialog" aria-controls="userGuideDialog">이용가이드</button>
+            <button id="themeToggle" class="ghost-btn theme-toggle topbar-secondary" type="button" aria-pressed="true">어둡게</button>
+            <button id="clearBtn" class="ghost-btn topbar-secondary" type="button" title="현재 대화 비우기">비우기</button>
+            <button id="inspectorToggle" class="ghost-btn" type="button" title="상세 패널 열기" aria-label="상세 패널 열기" aria-controls="inspector" aria-expanded="false">상세</button>
           </div>
         </header>
 
         <div class="thread-body">
-          <!-- 진행 상태 -->
-          <section id="progressPanel" class="progress-panel hidden" role="status" aria-live="polite" aria-atomic="false">
-            <div class="progress-head">
-              <div class="progress-head-text">
-                <span class="kicker">진행 중</span>
-                <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
-                <p id="progressQuestion" class="progress-question"></p>
-              </div>
-              <div class="progress-actions">
-                <span id="elapsedTime" class="elapsed">0초</span>
-                <button id="cancelRequestBtn" class="cancel-request" type="button">요청 취소</button>
-              </div>
-            </div>
-            <div class="progress-bar"><span id="progressFill"></span></div>
-            <ol id="progressSteps" class="progress-steps"></ol>
-          </section>
-
-          <!-- 오류 -->
-          <section id="errorPanel" class="error-panel hidden" role="alert" aria-live="assertive">
-            <div class="error-icon">!</div>
-            <div class="error-text">
-              <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
-              <p id="errorMessage"></p>
-              <div class="error-actions">
-                <button id="retryBtn" type="button">다시 시도</button>
-                <button id="editQuestionBtn" type="button">질문 수정</button>
-              </div>
-            </div>
-          </section>
-
           <!-- 빈 상태 -->
           <section id="emptyState" class="empty-state">
             <div class="hero">
-              <div class="hero-title">
-                <span class="kicker">Text2SQL Workspace</span>
-                <h3>무엇을 분석할까요?</h3>
-                <p>기간·대상·지표·정렬 기준을 한 문장에 적으면 작은 모델도 더 정확하게 조회할 수 있습니다.</p>
+              <div class="hero-badge" aria-hidden="true">
+                <img src="kb-logo-transparent.png" alt="" />
               </div>
-              <div class="command-line">
-                <strong>›</strong>
-                <span>2025년 월별 법인카드 이용금액 추이를 보여줘</span>
+              <div class="hero-title">
+                <h3>기업영업 관련된 질문을 해주세요</h3>
+                <p>필요한 기간, 대상, 지표를 자연스럽게 질문하면 데이터를 조회하고 핵심만 정리해 드립니다.</p>
+                <button id="userGuideBtn" class="user-guide-trigger" type="button" data-user-guide aria-haspopup="dialog" aria-controls="userGuideDialog">
+                  <span aria-hidden="true">?</span>
+                  사용자 이용가이드
+                </button>
               </div>
               <div id="heroExamples" class="starter-grid" aria-label="예시 질문"></div>
-              <div class="question-recipe" aria-label="정확한 질문 작성법">
-                <span><strong>1</strong> 기간</span>
-                <span><strong>2</strong> 대상</span>
-                <span><strong>3</strong> 지표</span>
-                <span><strong>4</strong> 집계·상위 N개</span>
-              </div>
             </div>
           </section>
 
           <!-- 결과 스트림 -->
           <section id="resultPanel" class="result hidden">
-            <div class="result-kicker">
+            <div class="result-kicker hidden">
               <span id="sourceLabel" class="source-pill"></span>
               <div id="resultBadges" class="badges"></div>
             </div>
             <div id="answerBox" class="answer-stream" aria-label="질문과 분석 답변"></div>
+            <section id="progressPanel" class="progress-panel hidden" role="status" aria-live="polite" aria-atomic="false">
+              <div class="progress-head">
+                <div class="progress-head-text">
+                  <span id="progressModeLabel" class="progress-mode-label">질문 처리 중</span>
+                  <h3 id="progressTitle">질문을 분석하고 있습니다.</h3>
+                </div>
+                <div class="progress-actions">
+                  <span id="elapsedTime" class="elapsed">0초</span>
+                  <button id="cancelRequestBtn" class="cancel-request" type="button">요청 취소</button>
+                </div>
+              </div>
+              <div class="progress-bar"><span id="progressFill"></span></div>
+              <ol id="progressSteps" class="progress-steps"></ol>
+            </section>
+            <form id="inlineParamForm" class="inline-param-form hidden" aria-labelledby="inlineParamTitle">
+              <div class="inline-param-head">
+                <div>
+                  <span class="kicker">추가 입력</span>
+                  <h3 id="inlineParamTitle">조회 조건을 확인해주세요.</h3>
+                </div>
+                <span class="inline-param-status">수정 가능</span>
+              </div>
+              <p>제안된 기본값을 그대로 사용하거나 수정한 뒤 계속 진행하세요.</p>
+              <div id="inlineParamFields" class="param-grid"></div>
+              <div class="param-actions inline-param-actions">
+                <small>비어 있는 필수 값은 직접 입력해야 합니다.</small>
+                <button type="submit">계속</button>
+              </div>
+            </form>
             <section id="chartBox" class="chart-box hidden" aria-labelledby="chartTitle">
               <div class="chart-head">
                 <div><span class="kicker">기존 결과 Plot</span><h3 id="chartTitle"></h3></div>
@@ -157,31 +202,42 @@
                 <span class="kicker">이어질 분석</span>
                 <strong>이 결과로 더 깊이 들여다보기</strong>
               </div>
-              <p class="followup-help">아래 질문은 현재 표와 앞선 대화 맥락을 이어받습니다. 새로운 기간·대상을 조회하려면 하단의 ‘새 조회’를 선택하세요.</p>
+              <p class="followup-help">아래 질문을 선택하거나 하단 입력창에서 현재 결과를 더 분석해보세요.</p>
               <div id="suggestionList" class="suggestion-list"></div>
-              <div class="followup-row">
-                <label class="sr-only" for="followupInput">현재 결과에 대한 후속 질문</label>
-                <input id="followupInput" autocomplete="off" maxlength="1000" placeholder="예: 이 중 전월 대비 증가율이 가장 큰 기업 5개만 보여줘" />
-                <button id="followupBtn" type="button">질문</button>
+            </div>
+          </section>
+
+          <!-- 오류 -->
+          <section id="errorPanel" class="error-panel hidden" role="alert" aria-live="assertive">
+            <div class="error-icon">!</div>
+            <div class="error-text">
+              <h3 id="errorTitle">요청을 처리하지 못했습니다.</h3>
+              <p id="errorMessage"></p>
+              <div id="errorDiagnostics" class="error-diagnostics hidden">
+                <dl class="error-diagnostic-grid">
+                  <div><dt>실패 단계</dt><dd id="errorFailureStage">—</dd></div>
+                  <div><dt>시도 횟수</dt><dd id="errorRetryCount">—</dd></div>
+                  <div><dt>분석 도메인</dt><dd id="errorSelectedDomain">—</dd></div>
+                  <div><dt>선택 테이블</dt><dd id="errorSelectedTables">—</dd></div>
+                </dl>
+                <div class="error-analysis">
+                  <span>실패 원인 분석</span>
+                  <strong id="errorFailureReason"></strong>
+                  <p id="errorFailureSuggestion"></p>
+                  <p id="errorValidationSummary" class="error-validation-summary hidden"></p>
+                </div>
+                <details class="failed-sql" open>
+                  <summary>실패한 SQL</summary>
+                  <pre id="failedSqlBox">확인할 SQL이 없습니다.</pre>
+                </details>
+              </div>
+              <div class="error-actions">
+                <button id="retryBtn" type="button">다시 시도</button>
+                <button id="editQuestionBtn" type="button">질문 수정</button>
               </div>
             </div>
           </section>
         </div>
-
-        <!-- 파라미터 모달 -->
-        <section id="paramPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="paramTitle">
-          <div class="param-card">
-            <div class="param-card-head">
-              <div>
-                <span class="kicker">추가 입력</span>
-                <h3 id="paramTitle">필수 값 입력</h3>
-              </div>
-              <button id="cancelParamsBtn" class="icon-btn" type="button" title="닫기" aria-label="닫기">×</button>
-            </div>
-            <p class="param-help">부족한 값만 알려주면 같은 질문을 이어서 실행합니다.</p>
-            <form id="paramForm" class="param-form"></form>
-          </div>
-        </section>
 
         <!-- 저장 쿼리 실행 모달 -->
         <section id="savedQueryPanel" class="param-panel hidden" role="dialog" aria-modal="true" aria-labelledby="savedQueryTitle">
@@ -200,49 +256,21 @@
 
         <!-- 입력 컴포저 -->
         <section id="queryPanel" class="composer">
-          <div id="contextStrip" class="context-strip hidden" role="status">
-            <div class="context-strip-copy">
-              <span class="context-label">이어받을 맥락</span>
-              <strong id="contextStripTitle">직전 조회 결과</strong>
-              <small id="contextStripMeta"></small>
-            </div>
-            <button id="clearContextBtn" type="button">새 조회로 전환</button>
-          </div>
-          <div id="promptSuggestions" class="prompt-suggestions hidden">
-            <div class="prompt-suggestions-head">
-              <span id="promptSuggestionsTitle">예시 질문</span>
-              <button id="hideSuggestionsBtn" type="button" title="예시 질문 닫기" aria-label="예시 질문 닫기">×</button>
-            </div>
-            <div id="examples" class="example-list prompt-example-list"></div>
-          </div>
-          <div id="promptCoach" class="prompt-coach" aria-live="polite">
-            <span id="promptCoachMessage">기간·대상·지표·집계 기준을 포함하면 정확도가 높아집니다.</span>
-            <div class="coach-checks" aria-label="질문에 포함된 조건">
-              <span data-coach-check="period">기간</span>
-              <span data-coach-check="target">대상</span>
-              <span data-coach-check="metric">지표</span>
-              <span data-coach-check="shape">집계/범위</span>
-            </div>
+          <div id="composerContext" class="composer-context hidden">
+            <span id="composerContextLabel" class="composer-context-label"></span>
+            <button id="newQueryBtn" class="composer-context-toggle" type="button"></button>
           </div>
           <div class="composer-bar">
             <span class="composer-marker" aria-hidden="true">›</span>
             <label class="sr-only" for="questionInput">데이터 조회 질문</label>
-            <textarea id="questionInput" rows="1" maxlength="2000" aria-describedby="promptCoachMessage composerHint" placeholder="예: 2025년 월별 법인카드 이용금액과 전월 대비 증감률을 보여줘"></textarea>
-            <button id="submitBtn" type="button">조회</button>
-          </div>
-          <div class="composer-foot">
-            <div class="seg" role="group" aria-label="질문 처리 방식">
-              <button class="seg-btn active" data-query-mode="new" type="button">새 조회</button>
-              <button class="seg-btn" data-query-mode="followup" type="button" disabled>이어서 분석</button>
-            </div>
-            <span class="composer-hint" id="composerHint">Enter 전송 · Shift+Enter 줄바꿈</span>
+            <textarea id="questionInput" rows="1" maxlength="2000" placeholder="주민등록번호 등 고객 민감 정보를 입력하지 않도록 주의해 주세요."></textarea>
           </div>
         </section>
       </main>
 
       <!-- ░░ RIGHT INSPECTOR ░░ -->
       <aside class="inspector" id="inspector">
-        <button id="inspectorClose" class="inspector-mobile-close" type="button" aria-label="상세 패널 닫기">×</button>
+        <button id="inspectorClose" class="inspector-close" type="button" aria-label="상세 패널 닫기" title="상세 패널 닫기">×</button>
         <div class="inspector-tabs" role="tablist" aria-label="조회 상세 정보">
           <button id="tab-button-context" class="tab active" data-tab="context" type="button" role="tab" aria-controls="tab-context" aria-selected="true">개요</button>
           <button id="tab-button-data" class="tab" data-tab="data" type="button" role="tab" aria-controls="tab-data" aria-selected="false">데이터</button>
@@ -274,6 +302,176 @@
       </aside>
     </div>
 
+    <dialog id="userGuideDialog" class="user-guide-dialog" aria-labelledby="userGuideTitle">
+      <div class="user-guide-shell">
+        <header class="user-guide-head">
+          <h2 id="userGuideTitle">사용자 이용가이드</h2>
+          <form method="dialog">
+            <button class="user-guide-close" type="submit" aria-label="사용자 이용가이드 닫기">×</button>
+          </form>
+        </header>
+
+        <div class="user-guide-content">
+          <section>
+            <h3>업무 질문 예시</h3>
+            <div class="user-guide-examples">
+              <article>
+                <h4>기업영업지원 질의</h4>
+                <p class="guide-example-scope">기업영업에 관련된 질의만 진행합니다. 카드 관련 문의나 개인영업 및 개인정보에 관한 질의에는 답변할 수 없습니다.</p>
+                <ul>
+                  <li>한도소진율이 90% 이상인 기업 리스트 100개만 만들어줘.</li>
+                  <li>KB카드 기업카드 보유회원 중에 2026년 7월 기준으로 6개월 무실적인 기업 회원 명단을 알려줘.</li>
+                </ul>
+              </article>
+              <article>
+                <h4>가맹점 · 프랜차이즈 관련 질의</h4>
+                <p class="guide-example-scope">가맹점이나 프랜차이즈 관련 질의에 대해 답변합니다.</p>
+                <ul>
+                  <li>2026년 4월 꾸석지(가맹점이름)의 대손비용률 분석해줘.</li>
+                  <li>빽다방(가맹점이름) 가맹점주 중에 2026년 5월 기준으로 폐업처리된 건 몇 개야?</li>
+                </ul>
+              </article>
+            </div>
+            <article class="user-guide-tip">
+              <h4>답변 범위를 벗어난 질문</h4>
+              <p>위 두 가지에 해당하지 않는 질문에는 <strong>&ldquo;이 에이전트가 답변할 수 있는 범위가 아닙니다&rdquo;</strong>라고 답하고, 대신 어떤 질문을 하면 되는지 예시를 안내합니다. 개인영업 &middot; 개인고객과 개인정보, 카드 상품 안내나 분실 &middot; 재발급 같은 고객센터 문의, 그 밖의 일반 대화는 다루지 않습니다.</p>
+            </article>
+          </section>
+
+          <section>
+            <h3>좋은 질문을 하는 방법</h3>
+            <article class="user-guide-tip">
+              <h4>기간 · 대상 · 지표를 함께 적기</h4>
+              <div class="user-guide-comparison">
+                <div class="guide-before">
+                  <strong>이런 질문 대신</strong>
+                  <p>법인카드 이용금액 알려줘.</p>
+                </div>
+                <div class="guide-after">
+                  <strong>이렇게 질문하세요</strong>
+                  <p>2025년 1월부터 6월까지 업종별 법인카드 이용금액 합계를 보여줘.</p>
+                </div>
+              </div>
+            </article>
+            <article class="user-guide-tip">
+              <h4>비교 기준을 구체적으로 적기</h4>
+              <div class="user-guide-comparison">
+                <div class="guide-before">
+                  <strong>이런 질문 대신</strong>
+                  <p>매출이 많이 늘어난 곳 알려줘.</p>
+                </div>
+                <div class="guide-after">
+                  <strong>이렇게 질문하세요</strong>
+                  <p>2025년 12월 매출액이 전월 대비 가장 많이 증가한 업종 상위 10개를 보여줘.</p>
+                </div>
+              </div>
+            </article>
+            <article class="user-guide-tip">
+              <h4>한 번에 하나씩 묻기</h4>
+              <p>첫 결과를 확인한 뒤 후속 질문으로 기간, 대상 또는 지표를 바꾸면 더 정확하게 분석할 수 있습니다.</p>
+            </article>
+          </section>
+
+          <section>
+            <h3>안내사항</h3>
+            <article class="user-guide-tip">
+              <h4>상세 데이터와 SQL은 오른쪽 상세 패널에서</h4>
+              <p>답변의 근거가 된 조회 데이터와 실행 SQL은 화면 오른쪽 위 <strong>상세</strong> 버튼을 누르면 볼 수 있습니다. <strong>데이터</strong> 탭에서 조회된 표를, <strong>SQL</strong> 탭에서 실제로 실행된 쿼리문을 확인하세요.</p>
+              <figure class="guide-figure">
+                <svg viewBox="0 0 320 136" role="img" aria-label="화면 오른쪽 위 상세 버튼을 누르면 데이터 탭과 SQL 탭이 열리는 위치를 표시한 화면 구성도">
+                  <rect x="0.75" y="0.75" width="318.5" height="134.5" rx="7" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+                  <rect x="8" y="8" width="48" height="120" rx="5" fill="var(--panel-2)" opacity="0.55" />
+                  <rect x="14" y="16" width="36" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="14" y="26" width="28" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="14" y="36" width="32" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="62" y="8" width="128" height="120" rx="5" fill="var(--panel-2)" opacity="0.45" />
+                  <rect x="68" y="36" width="90" height="6" rx="3" fill="var(--line)" />
+                  <rect x="68" y="48" width="110" height="6" rx="3" fill="var(--line)" />
+                  <rect x="68" y="60" width="78" height="6" rx="3" fill="var(--line)" />
+                  <rect x="150" y="13" width="34" height="14" rx="7" fill="var(--accent)" />
+                  <text x="167" y="22.5" text-anchor="middle" font-size="8" font-weight="700" fill="var(--brand-on)">상세</text>
+                  <path d="M186 20 h7 m-2.5 -2.5 l2.5 2.5 l-2.5 2.5" stroke="var(--accent)" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+                  <rect x="196" y="8" width="116" height="120" rx="5" fill="var(--accent-soft-bg)" stroke="var(--accent)" stroke-width="1.5" />
+                  <rect x="202" y="14" width="25" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="214.5" y="23.5" text-anchor="middle" font-size="7" fill="var(--muted)">개요</text>
+                  <rect x="229" y="14" width="28" height="14" rx="4" fill="var(--accent)" />
+                  <text x="243" y="23.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">데이터</text>
+                  <rect x="259" y="14" width="24" height="14" rx="4" fill="var(--accent)" />
+                  <text x="271" y="23.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">SQL</text>
+                  <rect x="285" y="14" width="21" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="295.5" y="23.5" text-anchor="middle" font-size="7" fill="var(--muted)">이력</text>
+                  <rect x="202" y="36" width="104" height="10" rx="3" fill="var(--panel-2)" />
+                  <rect x="202" y="50" width="104" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="60" width="88" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="70" width="96" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="80" width="76" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="202" y="94" width="104" height="28" rx="4" fill="var(--panel-2)" />
+                  <rect x="208" y="101" width="58" height="4" rx="2" fill="var(--line)" />
+                  <rect x="208" y="110" width="80" height="4" rx="2" fill="var(--line)" />
+                </svg>
+                <figcaption>오른쪽 위 <strong>상세</strong> → <strong>데이터</strong> · <strong>SQL</strong> 탭</figcaption>
+              </figure>
+            </article>
+            <article class="user-guide-tip">
+              <h4>전체 데이터는 보고서 내보내기로 받으세요</h4>
+              <p>화면의 <strong>데이터</strong> 탭은 최대 100건까지만 미리보기로 보여줍니다.</p>
+              <p>전체 데이터가 필요하면 왼쪽 아래 <strong>데이터 도구 → 보고서 내보내기</strong>에서 <strong>Excel</strong> 또는 <strong>TXT</strong>를 누르세요. 미리보기 100건이 아니라 조회된 전체 행을 파일로 내려받습니다. (Word 보고서는 표를 200건까지만 담으므로 전체 데이터는 Excel · TXT를 이용해 주세요.)</p>
+              <figure class="guide-figure">
+                <svg viewBox="0 0 320 136" role="img" aria-label="왼쪽 아래 데이터 도구 안의 보고서 내보내기에서 Excel과 TXT 버튼 위치를 표시한 화면 구성도">
+                  <rect x="0.75" y="0.75" width="318.5" height="134.5" rx="7" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+                  <rect x="8" y="8" width="100" height="120" rx="5" fill="var(--accent-soft-bg)" stroke="var(--accent)" stroke-width="1.5" />
+                  <rect x="15" y="15" width="86" height="8" rx="3" fill="var(--panel-2)" />
+                  <rect x="15" y="27" width="68" height="8" rx="3" fill="var(--panel-2)" />
+                  <rect x="15" y="43" width="86" height="15" rx="4" fill="var(--panel-2)" />
+                  <text x="21" y="53.5" font-size="8" font-weight="700" fill="var(--text)">▾ 데이터 도구</text>
+                  <text x="21" y="68" font-size="7" fill="var(--muted)">저장 쿼리</text>
+                  <text x="21" y="82" font-size="7" font-weight="700" fill="var(--text)">보고서 내보내기</text>
+                  <rect x="17" y="88" width="40" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="37" y="97.5" text-anchor="middle" font-size="7" fill="var(--muted)">전체</text>
+                  <rect x="60" y="88" width="40" height="14" rx="4" fill="var(--panel-2)" />
+                  <text x="80" y="97.5" text-anchor="middle" font-size="7" fill="var(--muted)">Word</text>
+                  <rect x="17" y="105" width="40" height="14" rx="4" fill="var(--accent)" />
+                  <text x="37" y="114.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">Excel</text>
+                  <rect x="60" y="105" width="40" height="14" rx="4" fill="var(--accent)" />
+                  <text x="80" y="114.5" text-anchor="middle" font-size="7" font-weight="700" fill="var(--brand-on)">TXT</text>
+                  <rect x="114" y="8" width="122" height="120" rx="5" fill="var(--panel-2)" opacity="0.45" />
+                  <rect x="120" y="36" width="88" height="6" rx="3" fill="var(--line)" />
+                  <rect x="120" y="48" width="104" height="6" rx="3" fill="var(--line)" />
+                  <rect x="120" y="60" width="72" height="6" rx="3" fill="var(--line)" />
+                  <rect x="242" y="8" width="70" height="120" rx="5" fill="var(--panel-2)" opacity="0.45" />
+                  <rect x="248" y="16" width="58" height="8" rx="3" fill="var(--line)" />
+                  <rect x="248" y="30" width="58" height="5" rx="2.5" fill="var(--line)" />
+                  <rect x="248" y="40" width="46" height="5" rx="2.5" fill="var(--line)" />
+                </svg>
+                <figcaption>왼쪽 아래 <strong>데이터 도구</strong> → 보고서 내보내기 → <strong>Excel</strong> · <strong>TXT</strong></figcaption>
+              </figure>
+            </article>
+          </section>
+
+          <section id="tableCatalogPanel" class="guide-table-catalog" aria-labelledby="tableCatalogTitle">
+            <h3 id="tableCatalogTitle">사용 테이블</h3>
+            <div class="table-catalog-head">
+              <strong id="tableCatalogMeta" role="status" aria-live="polite">사용 테이블을 불러오세요.</strong>
+              <label class="sr-only" for="tableCatalogSearch">사용 테이블 검색</label>
+              <input id="tableCatalogSearch" type="search" autocomplete="off" placeholder="테이블명 검색" />
+            </div>
+            <div id="tableCatalogList" class="table-catalog-list">
+              <div class="inspector-empty">Semantic Layer에 등록된 사용 테이블을 표시합니다.</div>
+            </div>
+          </section>
+
+          <aside class="user-guide-notice">
+            <strong>질문 전 확인해주세요</strong>
+            <p>기업명과 브랜드명은 정확히 입력하고, 주민등록번호 등 고객 민감 정보는 입력하지 마세요.</p>
+          </aside>
+        </div>
+
+        <form class="user-guide-actions" method="dialog">
+          <button type="submit">확인</button>
+        </form>
+      </div>
+    </dialog>
+
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <script>
 const state = {
@@ -281,9 +479,9 @@ const state = {
   continuation: null,
   lastResultId: null,
   canFollowup: false,
+  newQueryOverride: false,
   pendingQuestion: "",
   conversation: [],
-  queryMode: "new",
   isBusy: false,
   llmReady: null,
   llmDetail: "",
@@ -294,9 +492,14 @@ const state = {
   lastResultSummary: null,
   lastResultData: null,
   lastChart: null,
-  exampleQuestions: [],
   recommendedQuestions: [],
   failedRequest: null,
+  tableCatalog: [],
+  tableCatalogLoaded: false,
+  tablePeriods: {},
+  tablePeriodsLoaded: false,
+  tablePeriodsLoading: false,
+  sessionDeleteEnabled: false,
 };
 
 const WEBAPP_AGENT_NAME = "corporate_sales";
@@ -307,6 +510,8 @@ const PREFIXLESS_API_HOSTS = new Set(configuredPrefixlessHosts.map((host) => hos
 const CORPORATE_SALES_SEGMENT = "/corporate-sales";
 const API_BASE = String(window.TEXT2SQL_API_BASE || "").replace(/\/$/, "");
 const WEBAPP_USER_ID = (() => {
+  const loginId = String(localStorage.getItem("loginID") || "").trim();
+  if (loginId) return loginId;
   const configured = String(window.TEXT2SQL_USER_ID || "").trim();
   if (configured) return configured;
   const key = "text2sql:console:user-id";
@@ -318,6 +523,7 @@ const WEBAPP_USER_ID = (() => {
   }
   return stored;
 })();
+const HIDDEN_SESSION_IDS_KEY = `text2sql:console:hidden-sessions:${WEBAPP_USER_ID}`;
 const WEBAPP_QUERY_STREAM_PATH = `api/v1/agent/${encodeURIComponent(WEBAPP_AGENT_NAME)}/query/stream`;
 const DEFAULT_EXAMPLES = [
   "2025년 월별 법인카드 이용금액 합계와 전월 대비 증감률을 보여줘",
@@ -350,16 +556,17 @@ const apiUrl = (path) => {
 
 function currentDateParts() {
   const now = new Date();
-  return { year: now.getFullYear(), month: String(now.getMonth() + 1).padStart(2, "0") };
+  return {
+    year: now.getFullYear(),
+    month: String(now.getMonth() + 1).padStart(2, "0"),
+    day: String(now.getDate()).padStart(2, "0"),
+  };
 }
 
-function currentYm() {
-  const { year, month } = currentDateParts();
-  return `${year}${month}`;
-}
-
-function currentYear() {
-  return String(currentDateParts().year);
+function currentYm(monthOffset = 0) {
+  const now = new Date();
+  const target = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  return `${target.getFullYear()}${String(target.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function currentYmKorean() {
@@ -370,8 +577,6 @@ function currentYmKorean() {
 const appEl = $("#app");
 const queryPanel = $("#queryPanel");
 const questionInput = $("#questionInput");
-const submitBtn = $("#submitBtn");
-const modeButtons = $$("[data-query-mode]");
 const themeToggle = $("#themeToggle");
 const clearBtn = $("#clearBtn");
 const newSessionBtn = $("#newSessionBtn");
@@ -381,9 +586,6 @@ const inspector = $("#inspector");
 const inspectorClose = $("#inspectorClose");
 const sessionList = $("#sessionList");
 const savedQueryList = $("#savedQueryList");
-const paramPanel = $("#paramPanel");
-const paramForm = $("#paramForm");
-const cancelParamsBtn = $("#cancelParamsBtn");
 const savedQueryPanel = $("#savedQueryPanel");
 const savedQueryForm = $("#savedQueryForm");
 const savedQueryTitle = $("#savedQueryTitle");
@@ -404,6 +606,10 @@ const tableMeta = $("#tableMeta");
 const sourceLabel = $("#sourceLabel");
 const resultBadges = $("#resultBadges");
 const downloadList = $("#downloadList");
+const exportStatus = $("#exportStatus");
+const exportProgressTitle = $("#exportProgressTitle");
+const exportProgressTime = $("#exportProgressTime");
+const exportProgressNote = $("#exportProgressNote");
 const excelBox = $("#excelBox");
 const toast = $("#toast");
 const progressPanel = $("#progressPanel");
@@ -411,11 +617,23 @@ const progressTitle = $("#progressTitle");
 const progressSteps = $("#progressSteps");
 const progressFill = $("#progressFill");
 const elapsedTime = $("#elapsedTime");
-const progressQuestion = $("#progressQuestion");
+const progressModeLabel = $("#progressModeLabel");
 const cancelRequestBtn = $("#cancelRequestBtn");
+const inlineParamForm = $("#inlineParamForm");
+const inlineParamTitle = $("#inlineParamTitle");
+const inlineParamFields = $("#inlineParamFields");
 const errorPanel = $("#errorPanel");
 const errorTitle = $("#errorTitle");
 const errorMessage = $("#errorMessage");
+const errorDiagnostics = $("#errorDiagnostics");
+const errorFailureStage = $("#errorFailureStage");
+const errorRetryCount = $("#errorRetryCount");
+const errorSelectedDomain = $("#errorSelectedDomain");
+const errorSelectedTables = $("#errorSelectedTables");
+const errorFailureReason = $("#errorFailureReason");
+const errorFailureSuggestion = $("#errorFailureSuggestion");
+const errorValidationSummary = $("#errorValidationSummary");
+const failedSqlBox = $("#failedSqlBox");
 const retryBtn = $("#retryBtn");
 const editQuestionBtn = $("#editQuestionBtn");
 const resultMeta = $("#resultMeta");
@@ -423,26 +641,134 @@ const compactSummary = $("#compactSummary");
 const inspectorEmpty = $("#inspectorEmpty");
 const followupBox = $("#followupBox");
 const suggestionList = $("#suggestionList");
-const followupInput = $("#followupInput");
-const followupBtn = $("#followupBtn");
 const threadBody = $(".thread-body");
-const promptSuggestions = $("#promptSuggestions");
-const promptSuggestionsTitle = $("#promptSuggestionsTitle");
-const hideSuggestionsBtn = $("#hideSuggestionsBtn");
 const heroExamples = $("#heroExamples");
-const contextStrip = $("#contextStrip");
-const contextStripTitle = $("#contextStripTitle");
-const contextStripMeta = $("#contextStripMeta");
-const clearContextBtn = $("#clearContextBtn");
+const userGuideDialog = $("#userGuideDialog");
+const composerContext = $("#composerContext");
+const composerContextLabel = $("#composerContextLabel");
+const newQueryBtn = $("#newQueryBtn");
 const promptCoach = $("#promptCoach");
 const promptCoachMessage = $("#promptCoachMessage");
 const copyTableBtn = $("#copyTableBtn");
 const copySqlBtn = $("#copySqlBtn");
-const mobileMenuBtn = $("#mobileMenuBtn");
+const tableCatalogMeta = $("#tableCatalogMeta");
+const tableCatalogSearch = $("#tableCatalogSearch");
+const tableCatalogList = $("#tableCatalogList");
+const tableCatalogPanel = $("#tableCatalogPanel");
 const rail = $(".rail");
+const railToggleBtn = $("#railToggleBtn");
+const railResizeHandle = $("#railResizeHandle");
 const mainContent = $("#mainContent");
 
-const THEME_KEY = "text2sql:console:theme";
+const RAIL_WIDTH_KEY = "text2sql:console:rail-width:v1";
+const RAIL_COLLAPSED_KEY = "text2sql:console:rail-collapsed:v1";
+const compactRailMedia = window.matchMedia("(max-width: 820px)");
+function setRailWidth(width, persist = false) {
+  const nextWidth = Math.min(420, Math.max(220, Math.round(Number(width) || 272)));
+  appEl.style.setProperty("--rail-width", `${nextWidth}px`);
+  railResizeHandle?.setAttribute("aria-valuenow", String(nextWidth));
+  if (persist) {
+    try {
+      localStorage.setItem(RAIL_WIDTH_KEY, String(nextWidth));
+    } catch (_) {
+      /* Sidebar width preference is non-critical. */
+    }
+  }
+}
+
+try {
+  setRailWidth(localStorage.getItem(RAIL_WIDTH_KEY));
+} catch (_) {
+  setRailWidth(272);
+}
+
+let railResizeStartX = 0;
+let railResizeStartWidth = 272;
+
+railResizeHandle?.addEventListener("pointerdown", (event) => {
+  if (window.matchMedia("(max-width: 820px)").matches) return;
+  railResizeStartX = event.clientX;
+  railResizeStartWidth = rail.getBoundingClientRect().width;
+  railResizeHandle.setPointerCapture(event.pointerId);
+  document.body.classList.add("rail-resizing");
+});
+
+railResizeHandle?.addEventListener("pointermove", (event) => {
+  if (!railResizeHandle.hasPointerCapture(event.pointerId)) return;
+  setRailWidth(railResizeStartWidth + event.clientX - railResizeStartX);
+});
+
+railResizeHandle?.addEventListener("pointerup", (event) => {
+  if (!railResizeHandle.hasPointerCapture(event.pointerId)) return;
+  railResizeHandle.releasePointerCapture(event.pointerId);
+  document.body.classList.remove("rail-resizing");
+  setRailWidth(rail.getBoundingClientRect().width, true);
+});
+
+railResizeHandle?.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const currentWidth = rail.getBoundingClientRect().width;
+  const nextWidth = event.key === "Home"
+    ? 220
+    : event.key === "End"
+      ? 420
+      : currentWidth + (event.key === "ArrowLeft" ? -16 : 16);
+  setRailWidth(nextWidth, true);
+});
+
+let railCollapsedPreference = false;
+try {
+  railCollapsedPreference = localStorage.getItem(RAIL_COLLAPSED_KEY) === "true";
+} catch (_) {
+  railCollapsedPreference = false;
+}
+
+function syncRailToggleUi() {
+  const expanded = compactRailMedia.matches
+    ? rail.classList.contains("menu-open")
+    : !appEl.classList.contains("rail-collapsed");
+  railToggleBtn.setAttribute("aria-expanded", String(expanded));
+  railToggleBtn.setAttribute("aria-label", expanded ? "왼쪽 패널 접기" : "왼쪽 패널 펼치기");
+  railToggleBtn.title = expanded ? "왼쪽 패널 접기" : "왼쪽 패널 펼치기";
+}
+
+function setRailCollapsed(collapsed, persist = true) {
+  railCollapsedPreference = Boolean(collapsed);
+  appEl.classList.toggle("rail-collapsed", railCollapsedPreference);
+  if (persist) {
+    try {
+      localStorage.setItem(RAIL_COLLAPSED_KEY, String(railCollapsedPreference));
+    } catch (_) {
+      /* Sidebar state preference is non-critical. */
+    }
+  }
+  syncRailToggleUi();
+}
+
+function syncRailViewport() {
+  if (compactRailMedia.matches) {
+    appEl.classList.remove("rail-collapsed");
+  } else {
+    rail.classList.remove("menu-open");
+    appEl.classList.toggle("rail-collapsed", railCollapsedPreference);
+  }
+  syncRailToggleUi();
+}
+
+railToggleBtn.addEventListener("click", () => {
+  if (compactRailMedia.matches) {
+    rail.classList.toggle("menu-open");
+    syncRailToggleUi();
+    return;
+  }
+  setRailCollapsed(!appEl.classList.contains("rail-collapsed"));
+});
+
+compactRailMedia.addEventListener?.("change", syncRailViewport);
+syncRailViewport();
+
+const THEME_KEY = "text2sql:console:theme:v2";
 function getTheme() {
   return document.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
@@ -469,7 +795,6 @@ function setTheme(theme) {
 }
 
 setTheme(getTheme());
-let promptSuggestionsDismissed = false;
 
 const progressLabels = [
   ["요청 이해", "질문 의도와 업무 범위를 확인합니다."],
@@ -489,7 +814,9 @@ const progressGroupIndex = {
   aggregate_review: 2,
   response: 3,
   classify_question: 0,
+  refine_search_query: 0,
   route_domain: 0,
+  followup_context: 0,
   followup_route: 0,
   select_tool: 1,
   check_tool_params: 1,
@@ -497,6 +824,7 @@ const progressGroupIndex = {
   extract_and_apply_params: 1,
   analyze_question: 1,
   check_sql_gen_params: 1,
+  prepare_direct_sql: 2,
   execute_tool: 2,
   run_tool_query: 2,
   run_matched_query: 2,
@@ -511,7 +839,9 @@ const progressGroupIndex = {
 };
 const progressPhaseGroupIndex = {
   question_analysis: 0,
+  query_refinement: 0,
   domain_routing: 0,
+  followup_context: 0,
   followup_route: 0,
   tool_selection: 1,
   capability_selection: 1,
@@ -532,7 +862,6 @@ let activeProgressLabels = progressLabels;
 let progressTimer = null;
 let progressStartedAt = 0;
 let progressCurrentIndex = 0;
-let progressHideTimer = null;
 let modalReturnFocus = null;
 
 function showToast(message) {
@@ -722,10 +1051,13 @@ function webappHeaders() {
 }
 
 function conversationHistory(limit = 10) {
-  return state.conversation.slice(-limit).map((message) => ({
-    role: message.role,
-    content: message.text || "",
-  }));
+  return state.conversation
+    .filter((message) => message.status !== "pending")
+    .slice(-limit)
+    .map((message) => ({
+      role: message.role,
+      content: message.text || "",
+    }));
 }
 
 function webappQueryPayload(payload = {}) {
@@ -745,6 +1077,11 @@ function webappQueryPayload(payload = {}) {
 
 function canUseFollowupMode() {
   return Boolean(state.lastResultId && state.canFollowup && !state.continuation);
+}
+
+function looksLikeDirectSql(value) {
+  const text = String(value || "").trim().replace(/^```(?:sql|postgresql|trino|presto)?\s*/i, "");
+  return /^(SELECT|WITH)\b/i.test(text);
 }
 
 function beginActiveRequest(kind, question, restoreTarget = "composer") {
@@ -783,15 +1120,15 @@ function restoreCancelledDraft(request) {
   state.retryAction = null;
   state.failedRequest = null;
   if (request?.question) {
-    if (request.kind === "followup" && request.restoreTarget !== "composer") {
-      followupInput.value = request.question;
-    } else {
-      questionInput.value = request.question;
-      autoGrowInput();
-      updatePromptCoach();
-    }
+    questionInput.value = request.question;
+    autoGrowInput();
+    updatePromptCoach();
   }
   stopProgress();
+  if (state.conversation.at(-1)?.status === "pending") {
+    state.conversation.pop();
+    renderConversation();
+  }
   clearInlineError();
   if (state.conversation.length) {
     emptyState.classList.add("hidden");
@@ -803,70 +1140,41 @@ function restoreCancelledDraft(request) {
   showToast("요청을 취소했습니다. 질문을 수정해 다시 실행할 수 있습니다.");
 }
 
-function setQueryMode(mode) {
-  const previousMode = state.queryMode;
-  state.queryMode = mode === "followup" && canUseFollowupMode() ? "followup" : "new";
-  if (previousMode !== state.queryMode) resetPromptSuggestionsDismissal();
-  renderPromptSuggestionContent();
-  syncQueryModeUi();
+function renderComposerContext() {
+  if (!composerContext) return;
+  const followupMode = canUseFollowupMode();
+  composerContext.classList.toggle("hidden", !followupMode);
+  if (!followupMode) return;
+  composerContext.classList.toggle("new-query", state.newQueryOverride);
+  composerContextLabel.textContent = state.newQueryOverride
+    ? "이 질문은 이전 조건을 이어받지 않고 새로 조회합니다."
+    : "직전 결과의 대상·기간·조건을 이어받아 분석합니다.";
+  newQueryBtn.textContent = state.newQueryOverride ? "이어서 분석" : "새 질문으로";
+  newQueryBtn.disabled = state.isBusy;
 }
 
 function syncQueryModeUi() {
-  const followupAvailable = canUseFollowupMode();
-  if (!followupAvailable && state.queryMode === "followup") {
-    state.queryMode = "new";
-  }
-  modeButtons.forEach((button) => {
-    const mode = button.dataset.queryMode;
-    button.classList.toggle("active", mode === state.queryMode);
-    button.disabled = state.isBusy || (mode === "followup" && !followupAvailable);
-  });
+  queryPanel.classList.toggle("hidden", Boolean(state.continuation));
+  renderComposerContext();
   if (state.continuation) {
-    submitBtn.textContent = state.isBusy ? "처리 중" : "계속";
-    updateContextStrip();
     updatePromptCoach();
     return;
   }
-  submitBtn.textContent = state.isBusy ? "처리 중" : state.queryMode === "followup" ? "분석" : "조회";
   if (!queryPanel.classList.contains("awaiting-param")) {
-    questionInput.placeholder =
-      state.queryMode === "followup" && followupAvailable
-        ? "이전 결과를 바탕으로 이어서 물어보세요."
-        : "예: 2025년 월별 법인카드 이용금액과 전월 대비 증감률을 보여줘";
+    questionInput.placeholder = "주민등록번호 등 고객 민감 정보를 입력하지 않도록 주의해 주세요.";
   }
-  updateContextStrip();
   updatePromptCoach();
 }
 
 function setBusy(isBusy) {
   state.isBusy = isBusy;
-  submitBtn.disabled = isBusy;
   questionInput.readOnly = isBusy;
   newSessionBtn.disabled = isBusy;
   clearBtn.disabled = isBusy;
   saveQueryBtn.disabled = isBusy;
   $$(".suggestion").forEach((button) => { button.disabled = isBusy; });
+  Array.from(inlineParamForm.elements).forEach((element) => { element.disabled = isBusy; });
   syncQueryModeUi();
-}
-
-function setFollowupBusy(isBusy) {
-  followupBtn.disabled = isBusy;
-  followupInput.readOnly = isBusy;
-  followupBtn.textContent = isBusy ? "분석 중" : "질문";
-}
-
-function updateContextStrip() {
-  const showContext = state.queryMode === "followup" && canUseFollowupMode();
-  contextStrip?.classList.toggle("hidden", !showContext);
-  if (!showContext) return;
-  const summary = state.lastResultSummary || {};
-  contextStripTitle.textContent = summary.question || "직전 조회 결과";
-  const meta = [
-    Number.isFinite(summary.rowCount) ? `${summary.rowCount.toLocaleString("ko-KR")}건` : "",
-    summary.source || "",
-    `${state.conversation.filter((item) => item.role === "user").length}번째 질문까지`,
-  ].filter(Boolean);
-  contextStripMeta.textContent = meta.join(" · ");
 }
 
 function promptSignals(text) {
@@ -881,7 +1189,19 @@ function promptSignals(text) {
 
 function updatePromptCoach() {
   if (!promptCoach || !promptCoachMessage) return;
-  const followupMode = state.queryMode === "followup" && canUseFollowupMode();
+  if (state.continuation) {
+    const labels = (state.continuation.missing_params || [])
+      .map((param) => param.label || param.name)
+      .filter(Boolean)
+      .join(", ");
+    $$('[data-coach-check]').forEach((item) => item.classList.remove("found"));
+    promptCoach.classList.add("ready");
+    promptCoachMessage.textContent = labels
+      ? `분석을 계속하려면 ${labels} 값을 입력해주세요.`
+      : "분석을 계속하려면 요청된 값을 입력해주세요.";
+    return;
+  }
+  const followupMode = canUseFollowupMode();
   const signals = promptSignals(questionInput.value);
   if (followupMode) {
     signals.period = true;
@@ -894,11 +1214,11 @@ function updatePromptCoach() {
   promptCoach.classList.toggle("ready", found >= 3);
   if (!questionInput.value.trim()) {
     promptCoachMessage.textContent = followupMode
-      ? "직전 결과의 기간·대상을 이어받습니다. 비교, 필터 또는 상위 N개처럼 원하는 작업을 적어주세요."
-      : "기간·대상·지표·집계 기준을 포함하면 정확도가 높아집니다.";
+      ? "현재 결과에서 비교, 필터 또는 상위 N개처럼 원하는 분석을 적어주세요."
+      : "주민등록번호 등 고객 민감 정보를 입력하지 않도록 주의해 주세요.";
   } else if (found >= 3) {
     promptCoachMessage.textContent = followupMode
-      ? "직전 결과 맥락과 함께 분석할 준비가 되었습니다."
+      ? "현재 결과를 이어서 분석할 준비가 되었습니다."
       : "좋은 질문입니다. 조건을 구체적으로 인식할 수 있습니다.";
   } else {
     const missingLabels = { period: "기간", target: "대상", metric: "지표", shape: "집계/범위" };
@@ -914,13 +1234,109 @@ function isProgressEvent(eventName) {
 }
 
 function normalizeProgressEvent(progress) {
-  const data = progress?.data || {};
+  const data = { ...(progress || {}), ...(progress?.data || {}) };
   return {
-    step: progress?.step || progress?.text2sql_step || data.text2sql_step || data.step || "",
-    phase: progress?.phase || data.phase || "",
-    title: progress?.title || data.title || "",
-    message: progress?.message || data.message || "",
+    step: data.step || data.text2sql_step || "",
+    phase: data.phase || "",
+    title: data.title || "",
+    message: progress?.message || data.progress_message || data.message || "",
+    data,
   };
+}
+
+function progressContextLines(progress) {
+  const { step, data = {} } = progress;
+  const lines = [];
+  const selectedTables = Array.isArray(data.selected_tables) ? data.selected_tables.filter(Boolean) : [];
+  const missingParams = Array.isArray(data.missing_params) ? data.missing_params : [];
+
+  if (step === "classify_question" && data.question_type) {
+    const questionTypes = { need_sql: "데이터 조회", direct_sql: "직접 SQL", direct_answer: "일반 안내", reject: "지원 범위 확인" };
+    lines.push(`질문 유형: ${questionTypes[data.question_type] || data.question_type}`);
+  }
+
+  if (step === "route_domain" && data.selected_domain) {
+    lines.push(`선택 도메인: ${data.selected_domain}`);
+    const candidates = Array.isArray(data.domain_candidates) ? data.domain_candidates.slice(0, 3) : [];
+    if (candidates.length) {
+      const candidateText = candidates
+        .map((candidate) => {
+          const score = Number(candidate?.score);
+          return `${candidate?.domain || "-"}${Number.isFinite(score) ? ` ${score.toFixed(2)}` : ""}`;
+        })
+        .join(" · ");
+      lines.push(`라우팅 후보: ${candidateText}`);
+    }
+  }
+
+  if (step === "select_tool") {
+    if (data.selected_tool) {
+      lines.push(`실행 경로: 업무 Tool · ${data.selected_tool}`);
+    } else if (data.matched_query_name) {
+      lines.push(`실행 경로: 검증 쿼리 · ${data.matched_query_name}`);
+    } else {
+      lines.push("실행 경로: Tool·검증 쿼리·동적 SQL 후보 비교");
+    }
+  }
+
+  if (step === "match_verified_query") {
+    lines.push(
+      data.matched_query_name
+        ? `검증 쿼리 매칭: ${data.matched_query_name}`
+        : "검증 쿼리 미일치 · 질문 맞춤 SQL 생성 경로로 이동",
+    );
+  }
+
+  if (step === "analyze_question" && selectedTables.length) {
+    lines.push(`선택 테이블: ${selectedTables.join(", ")}`);
+  }
+
+  if (["check_tool_params", "check_sql_gen_params"].includes(step)) {
+    const labels = missingParams.map((param) => param?.label || param?.name || String(param)).filter(Boolean);
+    lines.push(labels.length ? `추가로 필요한 조건: ${labels.join(", ")}` : "필수 조회 조건 확인 완료");
+  }
+
+  if (step === "generate_sql") {
+    lines.push(
+      selectedTables.length
+        ? `SQL 생성 기준: ${selectedTables.length}개 테이블 · ${selectedTables.join(", ")}`
+        : "질문 조건에 맞는 읽기 전용 SQL 생성",
+    );
+  }
+
+  if (step === "validate_sql") {
+    lines.push("검증 항목: 읽기 전용 여부 · 허용 테이블/컬럼 · 실행 문법");
+  }
+
+  if (["run_query", "run_tool_query", "run_matched_query"].includes(step)) {
+    const rowCount = Number(data.row_count || 0);
+    const columnCount = Array.isArray(data.columns) ? data.columns.length : Number(data.column_count || 0);
+    lines.push(`조회 결과: ${rowCount.toLocaleString("ko-KR")}건 · ${columnCount.toLocaleString("ko-KR")}개 컬럼`);
+  }
+
+  if (step === "followup_route" && data.followup_mode) {
+    const mode = String(data.followup_mode);
+    const contextLabels = {
+      existing_result: "현재 결과를 이어서 처리",
+      refine_query: "이전 조건을 반영한 후속 조회",
+      new_query: "이전 조건과 분리된 새 조회",
+    };
+    const route = mode.startsWith("new_sql")
+      ? "새 데이터 조회"
+      : mode.startsWith("rewrite_sql")
+        ? "기존 SQL 조건 변경"
+        : mode.startsWith("transform")
+          ? "기존 결과 재가공"
+          : mode === "visualization"
+            ? "기존 결과 시각화"
+            : "기존 결과 설명·분석";
+    if (data.context_relation) {
+      lines.push(`대화 맥락 판단: ${contextLabels[data.context_relation] || data.context_relation}`);
+    }
+    lines.push(`후속 처리 경로: ${route}${data.requires_sql ? " · SQL 실행" : " · SQL 재실행 없음"}`);
+  }
+
+  return lines;
 }
 
 function progressIndexFor(step, phase = "") {
@@ -957,9 +1373,15 @@ function appendProgressDetail(item, progress, step) {
     detailItem.dataset.step = step;
     list.appendChild(detailItem);
   }
+  const contextLines = progressContextLines(progress);
   detailItem.innerHTML = `
     <span>${escapeHtml(progress.title || step)}</span>
     <small>${escapeHtml(progress.message || "")}</small>
+    ${
+      contextLines.length
+        ? `<div class="progress-context">${contextLines.map((line) => `<small>${escapeHtml(line)}</small>`).join("")}</div>`
+        : ""
+    }
   `;
   detailItem.classList.add("current");
   activateProgressItem(item);
@@ -1032,18 +1454,36 @@ function renderStreamProgress(eventName, data) {
   renderProgressEvent(data);
 }
 
-function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = progressLabels) {
+function appendPendingUserMessage(question) {
+  const text = String(question || "").trim();
+  if (!text) return;
+  const lastMessage = state.conversation.at(-1);
+  if (lastMessage?.role === "user" && (lastMessage.status === "pending" || lastMessage.text === text)) {
+    lastMessage.text = text;
+    lastMessage.status = "pending";
+  } else {
+    state.conversation.push({ role: "user", text, status: "pending" });
+  }
+  renderConversation();
+}
+
+function settlePendingUserMessage(question) {
+  const lastMessage = state.conversation.at(-1);
+  if (lastMessage?.role !== "user" || lastMessage.status !== "pending") return false;
+  lastMessage.text = String(question || lastMessage.text || "").trim();
+  delete lastMessage.status;
+  return true;
+}
+
+function startProgress(labels = [], fallbackLabels = progressLabels) {
   const seedLabels = Array.isArray(labels) && labels.length ? labels : fallbackLabels;
   activeProgressLabels = seedLabels;
   progressStartedAt = Date.now();
   progressCurrentIndex = 0;
-  window.clearTimeout(progressHideTimer);
-  progressHideTimer = null;
   elapsedTime.textContent = "0초";
   progressFill.style.width = "12%";
+  progressModeLabel.textContent = state.activeRequest?.kind === "followup" ? "후속 질문 처리 중" : "질문 처리 중";
   progressTitle.textContent = activeProgressLabels[0]?.[1] || "처리 중입니다.";
-  progressQuestion.textContent = state.pendingQuestion || "";
-  progressQuestion.classList.toggle("hidden", !progressQuestion.textContent);
   cancelRequestBtn.disabled = false;
   progressSteps.innerHTML = seedLabels
     .map(
@@ -1065,8 +1505,9 @@ function startProgress(labels = [], hideCurrentResult = true, fallbackLabels = p
   progressPanel.classList.remove("hidden");
   clearInlineError();
   emptyState.classList.add("hidden");
-  if (hideCurrentResult) resultPanel.classList.add("hidden");
-  paramPanel.classList.add("hidden");
+  resultPanel.classList.add("processing");
+  resultPanel.classList.remove("hidden");
+  appendPendingUserMessage(state.activeRequest?.question || state.pendingQuestion);
   setProgressStep(0);
   scrollThreadToBottom();
   window.clearInterval(progressTimer);
@@ -1087,28 +1528,36 @@ function finishProgress() {
   });
   progressTitle.textContent = "결과를 화면에 표시합니다.";
   cancelRequestBtn.disabled = true;
-  const elapsed = Date.now() - progressStartedAt;
-  const delay = Math.max(300, 1200 - elapsed);
-  window.clearTimeout(progressHideTimer);
-  progressHideTimer = window.setTimeout(() => {
-    progressPanel.classList.add("hidden");
-    progressHideTimer = null;
-  }, delay);
+  progressPanel.classList.add("hidden");
+  resultPanel.classList.remove("processing");
 }
 
 function stopProgress() {
   window.clearInterval(progressTimer);
   progressTimer = null;
-  window.clearTimeout(progressHideTimer);
-  progressHideTimer = null;
   progressPanel.classList.add("hidden");
+  resultPanel.classList.remove("processing");
   cancelRequestBtn.disabled = true;
+}
+
+function pauseProgressForParams() {
+  window.clearInterval(progressTimer);
+  progressTimer = null;
+  progressTitle.textContent = "추가 입력을 기다리고 있습니다.";
+  progressModeLabel.textContent = "추가 입력 대기";
+  cancelRequestBtn.disabled = true;
+  progressPanel.classList.remove("hidden");
+  resultPanel.classList.remove("processing");
 }
 
 function clearInlineError() {
   errorPanel.classList.add("hidden");
   errorTitle.textContent = "요청을 처리하지 못했습니다.";
   errorMessage.textContent = "";
+  errorDiagnostics.classList.add("hidden");
+  failedSqlBox.textContent = "확인할 SQL이 없습니다.";
+  errorValidationSummary.textContent = "";
+  errorValidationSummary.classList.add("hidden");
   retryBtn.classList.add("hidden");
   editQuestionBtn.classList.add("hidden");
 }
@@ -1123,26 +1572,10 @@ function setInspectorHasData(hasData) {
   inspectorEmpty?.classList.toggle("hidden", hasData);
 }
 
-function showPromptSuggestions() {
-  if (!promptSuggestions || state.isBusy || promptSuggestionsDismissed) return;
-  renderPromptSuggestionContent();
-  if ($("#examples")?.children.length) {
-    promptSuggestions.classList.remove("hidden");
-  }
-}
-
-function hidePromptSuggestions({ dismiss = false } = {}) {
-  if (dismiss) promptSuggestionsDismissed = true;
-  promptSuggestions?.classList.add("hidden");
-}
-
-function resetPromptSuggestionsDismissal() {
-  promptSuggestionsDismissed = false;
-}
-
 function resetResultPanels() {
   state.lastResultSummary = null;
   state.lastResultData = null;
+  resultPanel.classList.remove("processing");
   resultPanel.classList.add("hidden");
   emptyState.classList.remove("hidden");
   answerBox.innerHTML = "";
@@ -1152,6 +1585,7 @@ function resetResultPanels() {
   tableMeta.textContent = "조회 데이터가 없습니다.";
   compactSummary.innerHTML = "";
   compactSummary.classList.add("hidden");
+  renderChart(null);
   resultMeta.innerHTML = "";
   resultMeta.classList.add("hidden");
   sourceLabel.textContent = "";
@@ -1159,13 +1593,34 @@ function resetResultPanels() {
   excelBox.innerHTML = "";
   excelBox.classList.add("hidden");
   suggestionList.innerHTML = "";
-  followupInput.value = "";
   followupBox.classList.add("hidden");
   downloadList.innerHTML = "";
+  exportStatus.classList.add("hidden");
+  exportStatus.classList.remove("is-error");
   copyTableBtn.disabled = true;
   copySqlBtn.disabled = true;
   setInspectorHasData(false);
   setExportEnabled(false);
+  hideInlineParamForm();
+}
+
+function renderFailureDiagnostics(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== "object") {
+    errorDiagnostics.classList.add("hidden");
+    return;
+  }
+  const tables = Array.isArray(diagnostics.selected_tables) ? diagnostics.selected_tables : [];
+  errorFailureStage.textContent = diagnostics.stage_label || "SQL 처리";
+  errorRetryCount.textContent = diagnostics.retry_count ? `${diagnostics.retry_count}회` : "재시도 없음";
+  errorSelectedDomain.textContent = diagnostics.selected_domain || "미분류";
+  errorSelectedTables.textContent = tables.length ? tables.join(", ") : "선택 테이블 없음";
+  errorFailureReason.textContent = diagnostics.reason || "SQL 처리 중 오류가 발생했습니다.";
+  errorFailureSuggestion.textContent = diagnostics.suggestion || "SQL과 선택 테이블을 확인해 주세요.";
+  const validationSummary = String(diagnostics.validation_summary || "").trim();
+  errorValidationSummary.textContent = validationSummary ? `검증 결과: ${validationSummary}` : "";
+  errorValidationSummary.classList.toggle("hidden", !validationSummary);
+  failedSqlBox.textContent = diagnostics.sql || "확인할 SQL이 없습니다.";
+  errorDiagnostics.classList.remove("hidden");
 }
 
 function showInlineError(message, title = "요청을 처리하지 못했습니다.", options = {}) {
@@ -1174,6 +1629,7 @@ function showInlineError(message, title = "요청을 처리하지 못했습니�
   const safeMessage = String(message || "알 수 없는 오류가 발생했습니다.");
   errorTitle.textContent = title;
   errorMessage.textContent = safeMessage;
+  renderFailureDiagnostics(settings.diagnostics);
   errorPanel.classList.remove("hidden");
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
@@ -1198,12 +1654,13 @@ function showInlineError(message, title = "요청을 처리하지 못했습니�
     renderConversation();
     renderHistory({ question: pending, original_answer: safeMessage, analysis_history: [] });
   }
+  scrollThreadToBottom();
 }
 
 async function loadHealth() {
   const statusEl = $("#serviceStatus");
   const setStatus = (dotClass, text) => {
-    statusEl.innerHTML = `<span class="dot ${dotClass}"></span>${escapeHtml(text)}`;
+    if (statusEl) statusEl.innerHTML = `<span class="dot ${dotClass}"></span>${escapeHtml(text)}`;
   };
   try {
     const data = await api("health");
@@ -1231,14 +1688,6 @@ function llmUnavailableMessage() {
   return `모델 서버가 응답하지 않습니다. 잠시 후 다시 시도하거나 운영 담당자에게 문의해 주세요.${detail}`;
 }
 
-function chooseExample(item) {
-  questionInput.value = item;
-  autoGrowInput();
-  updatePromptCoach();
-  hidePromptSuggestions();
-  questionInput.focus();
-}
-
 function normalizedQuestions(items) {
   return Array.from(new Set(
     (Array.isArray(items) ? items : [])
@@ -1246,6 +1695,13 @@ function normalizedQuestions(items) {
       .map((item) => item.trim())
       .filter(Boolean),
   ));
+}
+
+function chooseExample(item) {
+  questionInput.value = item;
+  autoGrowInput();
+  updatePromptCoach();
+  questionInput.focus();
 }
 
 function renderExampleButtons(container, examples, className) {
@@ -1257,22 +1713,9 @@ function renderExampleButtons(container, examples, className) {
     button.type = "button";
     button.textContent = item;
     button.dataset.example = item;
-    const isRecommendation = className.includes("recommendation");
-    button.setAttribute("aria-label", `${isRecommendation ? "추천" : "예시"} 질문 사용: ${item}`);
+    button.setAttribute("aria-label", `예시 질문 사용: ${item}`);
     container.appendChild(button);
   });
-}
-
-function renderPromptSuggestionContent() {
-  const box = $("#examples");
-  if (!box) return;
-  const isFollowup = state.queryMode === "followup" && canUseFollowupMode();
-  const questions = isFollowup ? state.recommendedQuestions : state.exampleQuestions;
-  promptSuggestionsTitle.textContent = isFollowup ? "추천 질문" : "예시 질문";
-  hideSuggestionsBtn.title = `${isFollowup ? "추천" : "예시"} 질문 닫기`;
-  hideSuggestionsBtn.setAttribute("aria-label", hideSuggestionsBtn.title);
-  renderExampleButtons(box, questions, isFollowup ? "example recommendation" : "example");
-  if (!questions.length) promptSuggestions?.classList.add("hidden");
 }
 
 async function loadExamples() {
@@ -1281,14 +1724,118 @@ async function loadExamples() {
     const apiExamples = Array.isArray(data?.examples) ? data.examples : [];
     const examples = normalizedQuestions(apiExamples);
     if (!examples.length) throw new Error("예시 질문 응답이 비어 있습니다.");
-    state.exampleQuestions = examples;
-    renderPromptSuggestionContent();
     renderExampleButtons(heroExamples, examples.slice(0, 3), "starter-chip");
   } catch {
-    state.exampleQuestions = normalizedQuestions(DEFAULT_EXAMPLES);
-    renderPromptSuggestionContent();
     renderExampleButtons(heroExamples, DEFAULT_EXAMPLES.slice(0, 3), "starter-chip");
   }
+}
+
+function formatPeriodValue(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length === 8) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  if (digits.length === 6) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}`;
+  return digits || String(value ?? "");
+}
+
+// 실제 보유 구간은 접힌 줄에서도 보여야 한다. 어떤 기간을 물을 수 있는 테이블인지
+// 하나하나 펼쳐 보지 않고 고르게 하는 정보다. 값을 읽는 동안, 그리고 못 읽었을
+// 때는 기준이 되는 기간 컬럼명이라도 남긴다.
+function tablePeriodCell(table) {
+  const column = String(table.accumulation_policy?.query_time_dimension || "").trim();
+  if (!column) return `<span class="table-catalog-period is-empty">기간 컬럼 없음</span>`;
+  const range = state.tablePeriodsLoaded ? state.tablePeriods[table.name] : null;
+  if (!range) {
+    return `<span class="table-catalog-period is-unknown" title="${escapeHtml(column)}">
+              <strong>${escapeHtml(column)}</strong>
+              <small>${state.tablePeriodsLoaded ? "보유 구간 확인 불가" : "보유 구간 확인 중"}</small>
+            </span>`;
+  }
+  return `<span class="table-catalog-period" title="${escapeHtml(column)} 최소~최대">
+              <strong>${escapeHtml(`${formatPeriodValue(range.min)} ~ ${formatPeriodValue(range.max)}`)}</strong>
+              <small>${escapeHtml(column)}</small>
+            </span>`;
+}
+
+function renderTableCatalog() {
+  if (!tableCatalogList || !tableCatalogMeta) return;
+  const query = String(tableCatalogSearch?.value || "").trim().toLocaleLowerCase("ko-KR");
+  const filtered = state.tableCatalog.filter((table) => {
+    if (!query) return true;
+    return [
+      table.name,
+      table.physical_table,
+      table.korean_name,
+      table.description,
+      table.grain,
+      table.accumulation_policy?.summary,
+    ].some((value) => String(value || "").toLocaleLowerCase("ko-KR").includes(query));
+  });
+  tableCatalogMeta.textContent = query
+    ? `${filtered.length}개 검색 결과 · 전체 ${state.tableCatalog.length}개`
+    : `조회 가능한 테이블 ${state.tableCatalog.length}개`;
+  if (!filtered.length) {
+    tableCatalogList.innerHTML = `<div class="inspector-empty">검색 조건과 일치하는 테이블이 없습니다.</div>`;
+    return;
+  }
+  tableCatalogList.innerHTML = filtered
+    .map(
+      (table) => `
+        <details class="table-catalog-item">
+          <summary>
+            <span>
+              <strong>${escapeHtml(table.korean_name || table.name)}</strong>
+              <code>${escapeHtml(table.physical_table || table.name)}</code>
+            </span>
+            ${tablePeriodCell(table)}
+            <span class="table-catalog-toggle" aria-hidden="true">+</span>
+          </summary>
+          <div class="table-catalog-detail">
+            <p>${escapeHtml(table.description || "등록된 설명이 없습니다.")}</p>
+            <dl>
+              <dt>Grain</dt>
+              <dd>${escapeHtml(table.grain || "미정의")}</dd>
+              <dt>주기</dt>
+              <dd>${escapeHtml(table.accumulation_policy?.summary || "미정의")}</dd>
+            </dl>
+          </div>
+        </details>`,
+    )
+    .join("");
+}
+
+async function loadTableCatalog() {
+  if (!tableCatalogList || state.tableCatalogLoaded) {
+    renderTableCatalog();
+    return;
+  }
+  tableCatalogMeta.textContent = "사용 테이블을 불러오는 중입니다.";
+  tableCatalogList.innerHTML = `<div class="inspector-empty">테이블 목록을 불러오는 중입니다.</div>`;
+  try {
+    const data = await api("api/tables");
+    state.tableCatalog = Array.isArray(data?.tables) ? data.tables : [];
+    state.tableCatalogLoaded = true;
+    renderTableCatalog();
+    loadTablePeriods();
+  } catch (error) {
+    tableCatalogMeta.textContent = "사용 테이블을 불러오지 못했습니다.";
+    tableCatalogList.innerHTML = `<div class="inspector-empty">${escapeHtml(friendlyErrorMessage(error))}</div>`;
+  }
+}
+
+// 테이블마다 MIN/MAX 를 한 건씩 읽는 조회다. 목록이 먼저 뜨고 구간은 뒤따라
+// 채운다. 실패해도 카탈로그는 그대로 쓸 수 있어야 하므로 조용히 접는다.
+async function loadTablePeriods() {
+  if (state.tablePeriodsLoaded || state.tablePeriodsLoading) return;
+  state.tablePeriodsLoading = true;
+  try {
+    const data = await api("api/tables/periods");
+    state.tablePeriods = data?.periods && typeof data.periods === "object" ? data.periods : {};
+  } catch {
+    state.tablePeriods = {};
+  }
+  state.tablePeriodsLoaded = true;
+  state.tablePeriodsLoading = false;
+  renderTableCatalog();
 }
 
 function extractTemplateParameters(queryTemplate) {
@@ -1470,7 +2017,6 @@ async function runSavedQuery() {
   try {
     const rendered = await renderSavedQueryFromForm();
     closeSavedQueryDialog();
-    hidePromptSuggestions();
     downloadList.innerHTML = "";
     questionInput.value = "";
     autoGrowInput();
@@ -1482,23 +2028,20 @@ async function runSavedQuery() {
 }
 
 function resetSessionDraft() {
-  resetPromptSuggestionsDismissal();
   state.retryAction = null;
   state.failedRequest = null;
   state.sessionId = null;
   state.lastResultId = "";
   state.canFollowup = false;
+  state.newQueryOverride = false;
   state.recommendedQuestions = [];
   state.continuation = null;
   state.pendingQuestion = "";
   state.conversation = [];
-  state.queryMode = "new";
   queryPanel.classList.remove("awaiting-param");
-  closeParamDialog();
   resetResultPanels();
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
-  renderPromptSuggestionContent();
   syncQueryModeUi();
 }
 
@@ -1511,62 +2054,114 @@ async function createSession() {
 async function loadSessions() {
   try {
     const data = await api("api/sessions");
+    state.sessionDeleteEnabled = Boolean(data.session_delete_enabled);
+    if (state.sessionDeleteEnabled) localStorage.removeItem(HIDDEN_SESSION_IDS_KEY);
     renderSessions(data.sessions || []);
   } catch {
     sessionList.innerHTML = "";
   }
 }
 
+function hiddenSessionIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(HIDDEN_SESSION_IDS_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
 function renderSessions(sessions) {
   sessionList.innerHTML = "";
-  const visibleSessions = (sessions || []).filter((session) => Number(session.message_count || 0) > 0);
+  const hiddenIds = hiddenSessionIds();
+  const visibleSessions = (sessions || []).filter(
+    (session) => Number(session.message_count || 0) > 0 && !hiddenIds.has(session.id),
+  );
   if (!visibleSessions.length) {
     sessionList.innerHTML = `<div class="session-empty">아직 세션이 없습니다.</div>`;
     return;
   }
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const groups = [
+    { label: "오늘", maxDays: 0, sessions: [] },
+    { label: "이전 7일", maxDays: 7, sessions: [] },
+    { label: "이전 30일", maxDays: 30, sessions: [] },
+  ];
+
   visibleSessions.forEach((session) => {
-    const item = document.createElement("div");
-    item.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+    const updatedAt = new Date(session.updated_at || session.created_at || "");
+    if (Number.isNaN(updatedAt.getTime())) return;
+    const updatedDay = new Date(updatedAt.getFullYear(), updatedAt.getMonth(), updatedAt.getDate());
+    const ageDays = Math.max(0, Math.floor((today - updatedDay) / 86400000));
+    groups.find((group) => ageDays <= group.maxDays)?.sessions.push(session);
+  });
 
-    const openButton = document.createElement("button");
-    openButton.type = "button";
-    openButton.className = "session-open";
-    openButton.innerHTML = `
-      <span>${escapeHtml(session.title || "새 대화")}</span>
-      <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
-    `;
-    if (session.id === state.sessionId) openButton.setAttribute("aria-current", "page");
-    openButton.addEventListener("click", () => loadSession(session.id));
+  const populatedGroups = groups.filter((group) => group.sessions.length);
+  if (!populatedGroups.length) {
+    sessionList.innerHTML = `<div class="session-empty">최근 30일 이내 대화가 없습니다.</div>`;
+    return;
+  }
 
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "session-delete";
-    deleteButton.title = "세션 삭제";
-    deleteButton.setAttribute("aria-label", `${session.title || "새 대화"} 세션 삭제`);
-    deleteButton.textContent = "×";
-    deleteButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      deleteSession(session.id);
+  populatedGroups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "session-group";
+
+    const heading = document.createElement("h3");
+    heading.className = "session-group-label";
+    heading.textContent = group.label;
+    section.appendChild(heading);
+
+    group.sessions.forEach((session) => {
+      const item = document.createElement("div");
+      item.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.className = "session-open";
+      openButton.innerHTML = `
+        <span>${escapeHtml(session.title || "새 대화")}</span>
+        <small>${escapeHtml(String(session.message_count || 0))}개 메시지</small>
+      `;
+      if (session.id === state.sessionId) openButton.setAttribute("aria-current", "page");
+      openButton.addEventListener("click", () => loadSession(session.id));
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "session-delete";
+      deleteButton.title = "세션 삭제";
+      deleteButton.setAttribute("aria-label", `${session.title || "새 대화"} 세션 삭제`);
+      deleteButton.textContent = "×";
+      deleteButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSession(session.id);
+      });
+
+      item.appendChild(openButton);
+      item.appendChild(deleteButton);
+      section.appendChild(item);
     });
-
-    item.appendChild(openButton);
-    item.appendChild(deleteButton);
-    sessionList.appendChild(item);
+    sessionList.appendChild(section);
   });
 }
 
 async function deleteSession(sessionId) {
   if (!sessionId) return;
-  if (!window.confirm("이 세션을 삭제할까요?")) return;
+  const action = state.sessionDeleteEnabled ? "삭제" : "목록에서 숨김";
+  if (!window.confirm(`이 세션을 ${action} 처리할까요?`)) return;
   try {
-    await api(`api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    const result = await api(`api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (result.hidden) {
+      const hiddenIds = hiddenSessionIds();
+      hiddenIds.add(sessionId);
+      localStorage.setItem(HIDDEN_SESSION_IDS_KEY, JSON.stringify([...hiddenIds]));
+    }
     if (state.sessionId === sessionId) {
       resetSessionDraft();
       stopProgress();
       clearInlineError();
     }
     await loadSessions();
-    showToast("세션을 삭제했습니다.");
+    showToast(result.deleted ? "세션을 삭제했습니다." : "세션을 목록에서 숨겼습니다.");
   } catch (error) {
     showToast(error.message);
   }
@@ -1575,32 +2170,31 @@ async function deleteSession(sessionId) {
 async function loadSession(sessionId) {
   const data = await api(`api/sessions/${encodeURIComponent(sessionId)}`);
   rail.classList.remove("menu-open");
-  mobileMenuBtn.setAttribute("aria-expanded", "false");
-  mobileMenuBtn.textContent = "세션·보고서 메뉴";
+  syncRailToggleUi();
   state.retryAction = null;
   state.lastResultSummary = null;
   state.lastResultData = null;
   state.sessionId = data.session.id;
   state.lastResultId = data.session.last_result_id || "";
   state.canFollowup = Boolean(state.lastResultId);
+  state.newQueryOverride = false;
   state.continuation = null;
   state.pendingQuestion = "";
-  state.queryMode = "new";
   state.conversation = (data.messages || []).map((message) => ({
     role: message.role,
     text: message.text,
     status: message.status,
     missing_params: message.missing_params,
     continuation: message.continuation,
+    followup_route: message.followup_route,
   }));
   const pendingMessage = [...state.conversation].reverse().find((message) => message.status === "requires_params" && message.continuation);
   if (pendingMessage) {
     state.continuation = pendingMessage.continuation;
     state.pendingQuestion = pendingMessage.continuation?.question || "";
-    applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
   } else {
     queryPanel.classList.remove("awaiting-param");
-    closeParamDialog();
+    hideInlineParamForm();
   }
 
   if (data.last_result) {
@@ -1609,19 +2203,25 @@ async function loadSession(sessionId) {
       state.continuation = pendingMessage.continuation;
       state.pendingQuestion = pendingMessage.continuation?.question || "";
       syncQueryModeUi();
-      applyPendingParamPrompt(pendingMessage.missing_params || pendingMessage.continuation?.missing_params || []);
+      const params = pendingMessage.missing_params || pendingMessage.continuation?.missing_params || [];
+      applyPendingParamPrompt(params);
+      renderInlineParamForm(params);
     }
     return;
   }
   resetResultPanels();
   renderConversation();
   syncQueryModeUi();
+  if (pendingMessage) {
+    const params = pendingMessage.missing_params || pendingMessage.continuation?.missing_params || [];
+    applyPendingParamPrompt(params);
+    renderInlineParamForm(params);
+  }
   await loadSessions();
 }
 
 function renderMissingParams(data) {
   state.continuation = data.continuation;
-  state.queryMode = "new";
   state.pendingQuestion = data.continuation?.question || state.pendingQuestion;
   if (data.session_id) state.sessionId = data.session_id;
   if (data.messages?.length) {
@@ -1631,8 +2231,10 @@ function renderMissingParams(data) {
       status: message.status,
       missing_params: message.missing_params,
       continuation: message.continuation,
+      followup_route: message.followup_route,
     }));
   } else {
+    settlePendingUserMessage(state.activeRequest?.question || state.pendingQuestion);
     state.conversation.push({
       role: "assistant",
       text: "추가 입력이 필요합니다.",
@@ -1641,14 +2243,17 @@ function renderMissingParams(data) {
       continuation: data.continuation,
     });
   }
-  stopProgress();
+  pauseProgressForParams();
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
+  sourceLabel.textContent = "추가 입력 요청";
+  resultBadges.innerHTML = "";
   renderConversation();
   renderHistory({ question: "", original_answer: "", analysis_history: [] });
   syncQueryModeUi();
-  applyPendingParamPrompt(data.missing_params || data.continuation?.missing_params || []);
-  openParamDialog(data.missing_params || data.continuation?.missing_params || []);
+  const params = data.missing_params || data.continuation?.missing_params || [];
+  applyPendingParamPrompt(params);
+  renderInlineParamForm(params);
   loadSessions();
 }
 
@@ -1668,85 +2273,64 @@ function isManagedScopeParam(param = {}) {
   return String(param.type || "").toLowerCase() === "business_number_list" || name === "관리기업목록";
 }
 
-function paramPlaceholder(param) {
-  const key = String(param.name || param.label || "").toLowerCase();
+function inlineParamDefault(param = {}) {
+  const name = String(param.name || param.label || "").toLowerCase();
+  const { year, day } = currentDateParts();
+  if (name.includes("전월")) return { value: currentYm(-1), note: "전월 기준 기본값" };
+  if (/(년월|기준월|기간_|_ym|base_ym)/.test(name)) return { value: currentYm(), note: "현재 월 기준 기본값" };
+  if (/(기준일|날짜|date)/.test(name)) return { value: `${currentYm()}${day}`, note: "오늘 기준 기본값" };
+  if (/(기준년|연도|년도|year)/.test(name)) return { value: String(year), note: "현재 연도 기준 기본값" };
+  if (param.default !== undefined && param.default !== null && param.default !== "") {
+    return { value: String(param.default), note: "제안 기본값" };
+  }
+  return { value: "", note: "" };
+}
+
+function inlineParamPlaceholder(param = {}) {
+  const name = String(param.name || param.label || "").toLowerCase();
   if (isManagedScopeParam(param)) return "예: 123-45-67890, 234-56-78901";
-  if (key.includes("ym") || key.includes("년월") || key.includes("기준월")) return `예: ${currentYm()}`;
-  if (key.includes("year") || key.includes("연도") || key.includes("년도")) return `예: ${currentYear()}`;
-  if (key.includes("date") || key.includes("일자") || key.includes("날짜")) return `예: ${currentYear()}-${currentDateParts().month}-01`;
+  if (name === "ls" || name === "is" || name.includes("비율") || name.includes("율")) return "예: 0.3";
+  if (name.includes("기업") || name.includes("가맹점") || name.includes("대상")) return "조회 대상명을 입력하세요";
   return "값을 입력하세요";
 }
 
-function paramNaturalPlaceholder(params = []) {
-  const names = params.map((param) => String(param.name || param.label || "").toLowerCase());
-  if (params.some(isManagedScopeParam)) {
-    return "예: 123-45-67890, 234-56-78901";
-  }
-  if (names.some((name) => name.includes("ls")) || names.some((name) => name.includes("is"))) {
-    return `예: 한빛테크놀로지 ${currentYmKorean()}, LS=0.3, IS=0.3`;
-  }
-  if (names.some((name) => name.includes("가맹점") || name.includes("기업"))) {
-    return "예: 한빛테크놀로지로 해줘";
-  }
-  if (names.some((name) => name.includes("년월") || name.includes("기준월") || name.includes("ym"))) {
-    return `예: ${currentYmKorean()}로 해줘`;
-  }
-  return "예: 필요한 값을 문장으로 입력";
+function hideInlineParamForm() {
+  inlineParamForm.classList.add("hidden");
+  inlineParamFields.innerHTML = "";
 }
 
-function openParamDialog(params = []) {
-  modalReturnFocus = document.activeElement;
-  $("#paramTitle").textContent = params.length ? `필수 값 ${params.length}개 입력` : "추가 정보 입력";
-  const fields = params
+function renderInlineParamForm(params = []) {
+  const normalized = (params || []).map((param) => typeof param === "object" ? param : { name: String(param) });
+  if (!normalized.length) {
+    hideInlineParamForm();
+    return;
+  }
+  inlineParamTitle.textContent = `조회 조건 ${normalized.length}개를 확인해주세요.`;
+  inlineParamFields.innerHTML = normalized
     .map((param, index) => {
       const name = param.name || param.label || `param_${index + 1}`;
       const label = param.label || param.name || `필수 값 ${index + 1}`;
-      const detail = [param.description, param.type ? `형식: ${param.type}` : ""].filter(Boolean).join(" · ");
-      if (isManagedScopeParam(param)) {
-        return `
-          <div class="field managed-scope-field">
-            <label for="param-${index}">${escapeHtml(label)}</label>
-            ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
-            <textarea id="param-${index}" name="${escapeHtml(name)}" data-param-field rows="5" autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}"></textarea>
-            <small class="managed-scope-input-hint">사업자등록번호를 쉼표 또는 줄바꿈으로 구분해 입력하세요. 하이픈은 있어도 됩니다.</small>
-          </div>
-        `;
-      }
+      const { value, note } = inlineParamDefault(param);
+      const id = `inline-param-${index}`;
+      const hint = param.description ? `<small class="field-hint">${escapeHtml(param.description)}</small>` : "";
+      const defaultNote = note ? `<small class="field-default">${escapeHtml(note)}</small>` : "";
+      const control = isManagedScopeParam(param)
+        ? `<textarea id="${id}" name="${escapeHtml(name)}" rows="4" required autocomplete="off" placeholder="${escapeHtml(inlineParamPlaceholder(param))}">${escapeHtml(value)}</textarea>`
+        : `<input id="${id}" name="${escapeHtml(name)}" type="${["integer", "number"].includes(String(param.type || "").toLowerCase()) ? "number" : "text"}" ${String(param.type || "").toLowerCase() === "number" ? 'step="any"' : ""} value="${escapeHtml(value)}" required autocomplete="off" placeholder="${escapeHtml(inlineParamPlaceholder(param))}" />`;
       return `
         <div class="field">
-          <label for="param-${index}">${escapeHtml(label)}</label>
-          ${detail ? `<small class="field-hint">${escapeHtml(detail)}</small>` : ""}
-          <input id="param-${index}" name="${escapeHtml(name)}" data-param-field autocomplete="off" placeholder="${escapeHtml(paramPlaceholder(param))}" />
+          <label for="${id}">${escapeHtml(label)}</label>
+          ${hint}
+          ${control}
+          ${defaultNote}
         </div>
       `;
     })
     .join("");
-  paramForm.innerHTML = `
-    <div class="field param-natural">
-      <label for="param-natural-input">문장으로 답하기</label>
-      <input id="param-natural-input" name="_natural_input" autocomplete="off" placeholder="${escapeHtml(paramNaturalPlaceholder(params))}" />
-    </div>
-    <div class="param-grid">${fields || ""}</div>
-    <div class="param-actions">
-      <button type="submit">계속</button>
-      <button type="button" data-use-chat-input>질문창에 적기</button>
-    </div>
-  `;
-  paramForm.querySelector("[data-use-chat-input]")?.addEventListener("click", () => {
-    closeParamDialog();
-    questionInput.focus();
-  });
-  paramPanel.classList.remove("hidden");
-  const firstParamField = params.some(isManagedScopeParam)
-    ? paramForm.querySelector("[data-param-field]")
-    : paramForm.querySelector("#param-natural-input");
-  window.setTimeout(() => firstParamField?.focus(), 0);
-}
-
-function closeParamDialog() {
-  paramPanel.classList.add("hidden");
-  modalReturnFocus?.focus?.();
-  modalReturnFocus = null;
+  inlineParamForm.classList.remove("hidden");
+  const fields = Array.from(inlineParamForm.querySelectorAll("input, textarea"));
+  const focusTarget = fields.find((field) => !field.value.trim()) || fields[0];
+  window.setTimeout(() => focusTarget?.focus(), 0);
 }
 
 function renderBadges(data) {
@@ -1781,7 +2365,9 @@ function renderResultMeta(data) {
   const displayedRows = meta.displayed_rows ?? data.rows?.length ?? 0;
   const rowLimit = meta.display_row_limit || 100;
   const rowText = `${displayedRows.toLocaleString("ko-KR")}건 표시 · 최대 ${rowLimit.toLocaleString("ko-KR")}건`;
-  const limitedText = meta.rows_may_be_limited ? "더 많은 결과가 있을 수 있습니다." : "표시 범위 안의 결과입니다.";
+  const limitedText = meta.rows_may_be_limited
+    ? meta.completeness_reason || "더 많은 결과가 있을 수 있습니다."
+    : meta.completeness_reason || "표시 범위 안의 결과입니다.";
   const dataSources = meta.data_sources?.length ? meta.data_sources.join(", ") : data.selected_tables?.join(", ") || "선택 데이터 없음";
   const plannedSources = meta.planned_data_sources?.length ? meta.planned_data_sources.join(", ") : "";
   const sqlSources = meta.sql_data_sources?.length ? meta.sql_data_sources.join(", ") : "";
@@ -1799,7 +2385,27 @@ function renderResultMeta(data) {
   resultMeta.classList.remove("hidden");
 }
 
-function renderTable(columns, rows) {
+const tableSortState = { columns: [], rows: [], sortIndex: -1, sortDir: 1 };
+
+function compareCellValues(a, b) {
+  const aEmpty = a === null || a === undefined || a === "";
+  const bEmpty = b === null || b === undefined || b === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  const aNum = typeof a === "number" ? a : Number(String(a).replaceAll(",", ""));
+  const bNum = typeof b === "number" ? b : Number(String(b).replaceAll(",", ""));
+  if (Number.isFinite(aNum) && Number.isFinite(bNum)) return aNum - bNum;
+  return String(a).localeCompare(String(b), "ko-KR");
+}
+
+function renderTable(columns, rows, keepSort = false) {
+  if (!keepSort) {
+    tableSortState.columns = columns || [];
+    tableSortState.rows = rows || [];
+    tableSortState.sortIndex = -1;
+    tableSortState.sortDir = 1;
+  }
   if (!columns?.length || !rows?.length) {
     tableMeta.textContent = "조회 데이터가 없습니다.";
     resultTable.innerHTML = "";
@@ -1809,7 +2415,14 @@ function renderTable(columns, rows) {
   }
   tableMeta.textContent = `${rows.length.toLocaleString("ko-KR")}건 표시`;
   resultTable.setAttribute("aria-label", `조회 결과 ${rows.length.toLocaleString("ko-KR")}건`);
-  const thead = `<thead><tr>${columns.map((c) => `<th scope="col">${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
+  const thead = `<thead><tr>${columns
+    .map((c, idx) => {
+      const active = idx === tableSortState.sortIndex;
+      const arrow = active ? (tableSortState.sortDir === 1 ? " ▲" : " ▼") : "";
+      const ariaSort = active ? (tableSortState.sortDir === 1 ? "ascending" : "descending") : "none";
+      return `<th scope="col" class="sortable" data-sort-col="${idx}" aria-sort="${ariaSort}" title="클릭하면 이 열로 정렬합니다">${escapeHtml(c)}${arrow}</th>`;
+    })
+    .join("")}</tr></thead>`;
   const tbody = rows
     .map((row) => {
       const cells = columns
@@ -1825,6 +2438,23 @@ function renderTable(columns, rows) {
   resultTable.innerHTML = `${thead}<tbody>${tbody}</tbody>`;
   copyTableBtn.disabled = false;
 }
+
+resultTable.addEventListener("click", (event) => {
+  const header = event.target.closest("th[data-sort-col]");
+  if (!header || !tableSortState.rows.length) return;
+  const index = Number(header.dataset.sortCol);
+  if (!Number.isInteger(index)) return;
+  if (tableSortState.sortIndex === index) {
+    tableSortState.sortDir = -tableSortState.sortDir;
+  } else {
+    tableSortState.sortIndex = index;
+    tableSortState.sortDir = 1;
+  }
+  const sorted = [...tableSortState.rows].sort(
+    (a, b) => compareCellValues(a[index], b[index]) * tableSortState.sortDir,
+  );
+  renderTable(tableSortState.columns, sorted, true);
+});
 
 function renderCompactSummary(columns, rows) {
   if (!columns?.length || !rows?.length) {
@@ -1858,6 +2488,17 @@ function chartCssColor(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
+function chartSeriesColors() {
+  return [
+    chartCssColor("--mint", "#58cdbc"),
+    chartCssColor("--blue", "#7fa8ff"),
+    chartCssColor("--accent", "#f4c84a"),
+    chartCssColor("--green", "#5fd68a"),
+    chartCssColor("--red", "#ff7a70"),
+    "#b18cff", "#ff9f67", "#66c7f2", "#d6cf5f", "#ef7fb1", "#70d6a8", "#8b9cff",
+  ];
+}
+
 function compactChartNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
@@ -1871,7 +2512,11 @@ function drawChart(chart) {
   if (!labels.length || !datasets.length) return;
 
   const height = 330;
-  const width = Math.max(320, resultChart.parentElement?.clientWidth || 720);
+  const available = resultChart.parentElement?.clientWidth || 0;
+  // 접혀 있거나 아직 배치되지 않았으면 폭을 알 수 없다. 이때 그리면 좁은 폭으로
+  // 굳어 라벨이 겹치므로, 폭이 생기면 ResizeObserver가 다시 부르도록 넘긴다.
+  if (!available) return;
+  const width = Math.max(320, available);
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   resultChart.width = Math.round(width * dpr);
   resultChart.height = Math.round(height * dpr);
@@ -1884,15 +2529,8 @@ function drawChart(chart) {
   const text = chartCssColor("--muted", "#9aa5b2");
   const grid = chartCssColor("--line-soft", "#242b36");
   const panel = chartCssColor("--panel", "#151922");
-  const colors = [
-    chartCssColor("--mint", "#58cdbc"),
-    chartCssColor("--blue", "#7fa8ff"),
-    chartCssColor("--accent", "#f4c84a"),
-    chartCssColor("--green", "#5fd68a"),
-    chartCssColor("--red", "#ff7a70"),
-    "#b18cff", "#ff9f67", "#66c7f2", "#d6cf5f", "#ef7fb1", "#70d6a8", "#8b9cff",
-  ];
-  ctx.font = '11px "Pretendard", sans-serif';
+  const colors = chartSeriesColors();
+  ctx.font = '11px "BodyFont", sans-serif';
   ctx.fillStyle = text;
   ctx.strokeStyle = grid;
   const chartNumber = (value) => {
@@ -1920,24 +2558,62 @@ function drawChart(chart) {
       ctx.strokeStyle = panel;
       ctx.lineWidth = 2;
       ctx.stroke();
+      const share = value / total;
+      if (share >= 0.05) {
+        const middle = (angle + next) / 2;
+        ctx.fillStyle = panel;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`${Math.round(share * 100)}%`, cx + Math.cos(middle) * radius * 0.64, cy + Math.sin(middle) * radius * 0.64);
+      }
       angle = next;
     });
     return;
   }
 
-  const plot = { left: 68, right: width - 22, top: 20, bottom: height - 65 };
-  const allValues = datasets.flatMap((dataset) => (dataset.data || []).map(chartNumber)).filter((value) => value !== null);
+  const rightDatasets = datasets.filter((dataset) => dataset.axis === "right");
+  const axisValues = (pool) => pool.flatMap((dataset) => (dataset.data || []).map(chartNumber)).filter((value) => value !== null);
+  const allValues = axisValues(datasets);
   if (!allValues.length) return;
-  let minValue = Math.min(0, ...allValues);
-  let maxValue = Math.max(0, ...allValues);
-  if (minValue === maxValue) maxValue = minValue + 1;
-  const range = maxValue - minValue;
-  const y = (value) => plot.top + ((maxValue - value) / range) * (plot.bottom - plot.top);
+  const plot = { left: 68, right: width - (rightDatasets.length ? 62 : 22), top: 20, bottom: height - 65 };
   const xStep = (plot.right - plot.left) / Math.max(labels.length, 1);
-  const zeroY = y(0);
+  const labelTexts = labels.map((label) => String(label));
+  // 칸보다 긴 라벨은 눕혀서 전부 보여준다. 너무 많을 때만 건너뛴다.
+  const rotateLabels = labelTexts.length <= 24 && labelTexts.some((label) => ctx.measureText(label).width > xStep - 6);
+  if (rotateLabels) plot.bottom = height - 96;
+  // 막대는 0 기준선이 의미를 갖지만, 선 그래프에 0을 강제하면 96%대 추이가 평평해진다.
+  const zeroBased = chart.type !== "line";
+  const niceStep = (span) => {
+    const magnitude = Math.pow(10, Math.floor(Math.log10(Math.abs(span) || 1)));
+    return [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((step) => step >= span) || magnitude * 10;
+  };
+  const axisScale = (values, intervals) => {
+    let min = zeroBased ? Math.min(0, ...values) : Math.min(...values);
+    let max = zeroBased ? Math.max(0, ...values) : Math.max(...values);
+    if (min === max) max = min + Math.max(Math.abs(min) * 0.05, 1);
+    else if (!zeroBased) {
+      const padding = (max - min) * 0.08;
+      min -= padding;
+      max += padding;
+    }
+    // 눈금을 1·2·5의 배수로 맞춘다. 기업 수 축에 1.8 같은 값이 찍히면 셈이 아닌 것처럼 읽힌다.
+    const step = niceStep((max - min) / (intervals || 5));
+    min = Math.floor(min / step) * step;
+    max = min + step * (intervals || Math.max(1, Math.ceil((max - min) / step)));
+    const project = (value) => plot.top + ((max - value) / (max - min)) * (plot.bottom - plot.top);
+    return { min, max, step, project };
+  };
+  const leftValues = axisValues(datasets.filter((dataset) => dataset.axis !== "right"));
+  const leftAxis = axisScale(leftValues.length ? leftValues : allValues);
+  const ticks = Math.max(1, Math.round((leftAxis.max - leftAxis.min) / leftAxis.step));
+  // 오른쪽 축도 같은 눈금 수로 맞춰야 격자선이 두 축에서 같은 자리를 뜻한다.
+  const rightAxis = rightDatasets.length ? axisScale(axisValues(rightDatasets), ticks) : null;
+  const axisFor = (dataset) => (dataset.axis === "right" && rightAxis ? rightAxis : leftAxis);
+  const y = leftAxis.project;
 
-  for (let tick = 0; tick <= 5; tick += 1) {
-    const value = maxValue - (range * tick) / 5;
+  for (let tick = 0; tick <= ticks; tick += 1) {
+    const ratio = tick / ticks;
+    const value = leftAxis.max - (leftAxis.max - leftAxis.min) * ratio;
     const tickY = y(value);
     ctx.beginPath();
     ctx.moveTo(plot.left, tickY);
@@ -1949,20 +2625,41 @@ function drawChart(chart) {
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     ctx.fillText(compactChartNumber(value), plot.left - 9, tickY);
+    if (rightAxis) {
+      ctx.fillStyle = colors[datasets.indexOf(rightDatasets[0]) % colors.length];
+      ctx.textAlign = "left";
+      ctx.fillText(compactChartNumber(rightAxis.max - (rightAxis.max - rightAxis.min) * ratio), plot.right + 8, tickY);
+    }
   }
 
-  const labelStride = Math.max(1, Math.ceil(labels.length / 10));
-  labels.forEach((label, index) => {
+  // 눕힌 라벨끼리 겹치지 않을 만큼만 그린다. 좁은 화면에서는 건너뛰는 편이 읽기 쉽다.
+  const labelStride = rotateLabels
+    ? Math.max(1, Math.ceil(14 / Math.max(xStep * 0.7071, 1)))
+    : Math.max(1, Math.ceil(labels.length / 10));
+  const labelLimit = rotateLabels ? 14 : 10;
+  labelTexts.forEach((label, index) => {
     if (index % labelStride !== 0) return;
-    const shortLabel = String(label).length > 10 ? `${String(label).slice(0, 9)}…` : String(label);
+    const shortLabel = label.length > labelLimit ? `${label.slice(0, labelLimit - 1)}…` : label;
+    const px = plot.left + xStep * (index + 0.5);
     ctx.fillStyle = text;
+    if (rotateLabels) {
+      ctx.save();
+      ctx.translate(px, plot.bottom + 9);
+      ctx.rotate(-Math.PI / 4);
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(shortLabel, 0, 0);
+      ctx.restore();
+      return;
+    }
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText(shortLabel, plot.left + xStep * (index + 0.5), plot.bottom + 10);
+    ctx.fillText(shortLabel, px, plot.bottom + 10);
   });
 
   if (chart.type === "line") {
     datasets.forEach((dataset, datasetIndex) => {
+      const project = axisFor(dataset).project;
       ctx.strokeStyle = colors[datasetIndex % colors.length];
       ctx.fillStyle = colors[datasetIndex % colors.length];
       ctx.lineWidth = 2.2;
@@ -1972,7 +2669,7 @@ function drawChart(chart) {
         const value = chartNumber(rawValue);
         if (value === null) return;
         const px = plot.left + xStep * (index + 0.5);
-        const py = y(value);
+        const py = project(value);
         if (!started) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
         started = true;
@@ -1982,7 +2679,7 @@ function drawChart(chart) {
         const value = chartNumber(rawValue);
         if (value === null) return;
         ctx.beginPath();
-        ctx.arc(plot.left + xStep * (index + 0.5), y(value), 3, 0, Math.PI * 2);
+        ctx.arc(plot.left + xStep * (index + 0.5), project(value), 3, 0, Math.PI * 2);
         ctx.fill();
       });
     });
@@ -1990,13 +2687,15 @@ function drawChart(chart) {
     const groupWidth = xStep * 0.72;
     const barWidth = Math.max(2, groupWidth / Math.max(datasets.length, 1));
     datasets.forEach((dataset, datasetIndex) => {
+      const axis = axisFor(dataset);
+      const baseY = axis.project(0);
       ctx.fillStyle = colors[datasetIndex % colors.length];
       (dataset.data || []).forEach((rawValue, index) => {
         const value = chartNumber(rawValue);
         if (value === null) return;
         const px = plot.left + xStep * index + (xStep - groupWidth) / 2 + barWidth * datasetIndex;
-        const valueY = y(value);
-        ctx.fillRect(px, Math.min(valueY, zeroY), Math.max(1, barWidth - 2), Math.max(1, Math.abs(zeroY - valueY)));
+        const valueY = axis.project(value);
+        ctx.fillRect(px, Math.min(valueY, baseY), Math.max(1, barWidth - 2), Math.max(1, Math.abs(baseY - valueY)));
       });
     });
   }
@@ -2014,9 +2713,14 @@ function renderChart(chart) {
   }
   chartTitle.textContent = chart.title || "조회 결과 차트";
   chartNote.textContent = chart.note || "";
-  const colors = ["var(--mint)", "var(--blue)", "var(--accent)", "var(--green)", "var(--red)"];
-  chartLegend.innerHTML = chart.datasets
-    .map((dataset, index) => `<span><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(dataset.label || `계열 ${index + 1}`)}</span>`)
+  const colors = chartSeriesColors();
+  const shares = (chart.datasets[0]?.data || []).map((value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0));
+  const total = shares.reduce((sum, value) => sum + value, 0);
+  const legendLabels = chart.type === "pie"
+    ? chart.labels.map((label, index) => `${label}${total ? ` ${Math.round(((shares[index] || 0) / total) * 100)}%` : ""}`)
+    : chart.datasets.map((dataset, index) => `${dataset.label || `계열 ${index + 1}`}${dataset.axis === "right" ? " (오른쪽 축)" : ""}`);
+  chartLegend.innerHTML = legendLabels
+    .map((label, index) => `<span><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(label)}</span>`)
     .join("");
   resultChart.setAttribute("aria-label", `${chart.title || "조회 결과 차트"}. ${chart.note || ""}`);
   chartBox.classList.remove("hidden");
@@ -2130,10 +2834,11 @@ function rebuildConversationFromResult(data) {
       status: message.status,
       missing_params: message.missing_params,
       continuation: message.continuation,
+      followup_route: message.followup_route,
     }));
   }
   const messages = [];
-  const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
+  const originalQuestion = data.original_question || data.question || state.pendingQuestion || questionInput.value.trim();
   if (originalQuestion) messages.push({ role: "user", text: originalQuestion });
   if (data.original_answer) messages.push({ role: "assistant", text: data.original_answer });
   (data.analysis_history || []).forEach((item) => {
@@ -2144,6 +2849,28 @@ function rebuildConversationFromResult(data) {
   return messages;
 }
 
+const CONTEXT_RELATION_LABELS = {
+  existing_result: "현재 결과를 이어서 처리",
+  refine_query: "이전 조건을 이어받은 조회",
+  new_query: "이전 조건과 분리된 새 조회",
+};
+
+function interpretationHtml(message, askedText, index) {
+  const route = message.followup_route || {};
+  const resolved = String(route.resolved_question || "").trim();
+  const asked = String(askedText || "").trim();
+  if (!resolved || resolved.replace(/\s+/g, "") === asked.replace(/\s+/g, "")) return "";
+  const relation = CONTEXT_RELATION_LABELS[route.context_relation] || "";
+  return `
+    <div class="message-interpretation">
+      <span class="interpretation-label">이렇게 이해했습니다</span>
+      <span class="interpretation-text">${escapeHtml(resolved)}</span>
+      ${relation ? `<span class="interpretation-relation">${escapeHtml(relation)}</span>` : ""}
+      <button class="interpretation-edit" type="button" data-refine-message="${index}">질문 고치기</button>
+    </div>
+  `;
+}
+
 function renderConversation() {
   if (!state.conversation.length) {
     answerBox.innerHTML = "";
@@ -2151,14 +2878,25 @@ function renderConversation() {
   }
 
   let turn = 0;
+  let askedText = "";
   answerBox.innerHTML = state.conversation
     .map((message, index) => {
-      if (message.role === "user") turn += 1;
+      if (message.role === "user") {
+        turn += 1;
+        askedText = message.text || "";
+      }
       const turnLabel = turn ? ` ${turn}` : "";
-      const label = message.role === "user" ? `내 질문${turnLabel}` : message.status === "error" ? "오류" : `분석 답변${turnLabel}`;
+      const label =
+        message.role === "user"
+          ? `내 질문${turnLabel}`
+          : message.status === "error"
+            ? "오류"
+            : message.status === "requires_params"
+              ? "추가 입력 요청"
+              : `분석 답변${turnLabel}`;
       const content =
         message.role === "assistant"
-          ? `${renderAnswerHtml(message.text || "응답이 없습니다.")}`
+          ? `${interpretationHtml(message, askedText, index)}${renderAnswerHtml(message.text || "응답이 없습니다.")}`
           : `<p>${escapeHtml(message.text || "")}</p>`;
       return `
         <div class="conversation-message ${escapeHtml(message.role)} ${escapeHtml(message.status || "")}">
@@ -2176,7 +2914,7 @@ function renderConversation() {
 
 function renderHistory(data) {
   const entries = [];
-  const originalQuestion = data.question || state.pendingQuestion || questionInput.value.trim();
+  const originalQuestion = data.original_question || data.question || state.pendingQuestion || questionInput.value.trim();
   if (originalQuestion || data.original_answer || data.answer) {
     entries.push({
       mode: "초기 질문",
@@ -2297,8 +3035,7 @@ function triggerDownloads(files) {
 }
 
 function renderSuggestions(suggestions) {
-  state.recommendedQuestions = normalizedQuestions(suggestions);
-  renderPromptSuggestionContent();
+  state.recommendedQuestions = normalizedQuestions(suggestions).slice(0, 3);
   suggestionList.innerHTML = "";
   if (!state.recommendedQuestions.length || !state.lastResultId || !state.canFollowup) {
     followupBox.classList.add("hidden");
@@ -2312,7 +3049,6 @@ function renderSuggestions(suggestions) {
     button.addEventListener("click", () => submitFollowup(item));
     suggestionList.appendChild(button);
   });
-  followupInput.value = "";
   followupBox.classList.remove("hidden");
 }
 
@@ -2320,23 +3056,24 @@ function renderResult(data, context = {}) {
   state.retryAction = null;
   state.failedRequest = null;
   state.lastResultId = data.result_id;
-  state.canFollowup = Boolean(data.columns?.length && data.rows?.length);
-  state.recommendedQuestions = normalizedQuestions(data.suggestions);
-  resetPromptSuggestionsDismissal();
+  state.canFollowup = Boolean(
+    data.result_id
+      && (data.rows?.length || data.sql || data.selected_tool || data.matched_query_name || data.selected_tables?.length),
+  );
+  state.newQueryOverride = false;
+  state.recommendedQuestions = normalizedQuestions(data.suggestions).slice(0, 3);
   if (data.session_id) state.sessionId = data.session_id;
   state.continuation = null;
-  state.queryMode = context.mode === "followup" && state.canFollowup ? "followup" : "new";
+  hideInlineParamForm();
   queryPanel.classList.remove("awaiting-param");
-  renderPromptSuggestionContent();
   syncQueryModeUi();
   finishProgress();
-  closeParamDialog();
   emptyState.classList.add("hidden");
   resultPanel.classList.remove("hidden");
   setInspectorHasData(true);
   setExportEnabled(Boolean(data.result_id) && !data.error);
   if (data.error) {
-    showInlineError(data.error, "조회 중 확인 필요", false);
+    showInlineError(data.error, "SQL 처리 실패", { diagnostics: data.failure_details });
   } else {
     clearInlineError();
   }
@@ -2346,10 +3083,17 @@ function renderResult(data, context = {}) {
   if (data.messages?.length) {
     state.conversation = rebuildConversationFromResult(data);
   } else if (data.error) {
+    settlePendingUserMessage(context.question || data.question || state.pendingQuestion);
     state.conversation.push({ role: "assistant", text: data.error });
   } else if (context.mode === "followup") {
-    state.conversation.push({ role: "user", text: context.question });
-    state.conversation.push({ role: "assistant", text: data.answer || "응답이 없습니다." });
+    if (!settlePendingUserMessage(context.question)) {
+      state.conversation.push({ role: "user", text: context.question });
+    }
+    state.conversation.push({
+      role: "assistant",
+      text: data.answer || "응답이 없습니다.",
+      followup_route: data.followup_route,
+    });
   } else {
     state.conversation = rebuildConversationFromResult(data);
   }
@@ -2357,6 +3101,7 @@ function renderResult(data, context = {}) {
   state.lastResultSummary = {
     question: latestUserMessage?.text || data.question || context.question || state.pendingQuestion || "직전 조회 결과",
     rowCount: Array.isArray(data.rows) ? data.rows.length : 0,
+    totalRowCount: data.result_meta?.result_scope?.total_row_count ?? null,
     source: data.source || data.question_type || "",
   };
   state.lastResultData = data.columns?.length && data.rows?.length
@@ -2386,10 +3131,10 @@ function renderResult(data, context = {}) {
 }
 
 async function submitFollowup(question, options = {}) {
-  const followupQuestion = String(question || followupInput.value || "").trim();
+  const followupQuestion = String(question || "").trim();
   if (!followupQuestion) {
     showToast("후속 질문을 입력해주세요.");
-    followupInput.focus();
+    questionInput.focus();
     return;
   }
   if (!state.lastResultId || !state.canFollowup) {
@@ -2397,8 +3142,8 @@ async function submitFollowup(question, options = {}) {
     return;
   }
   if (state.isBusy) return;
+  state.pendingQuestion = followupQuestion;
   setBusy(true);
-  setFollowupBusy(true);
   if (state.llmReady === false) {
     await loadHealth();
   }
@@ -2406,18 +3151,16 @@ async function submitFollowup(question, options = {}) {
     const message = llmUnavailableMessage();
     state.failedRequest = { kind: "followup", question: followupQuestion };
     state.retryAction = () => submitFollowup(followupQuestion, options);
-    showInlineError(message, "모델 연결 오류");
+    showInlineError(message, "모델 연결 오류", { appendMessage: true });
     showToast("모델 서버 확인 필요");
     setBusy(false);
-    setFollowupBusy(false);
     return;
   }
 
-  state.pendingQuestion = followupQuestion;
   state.retryAction = null;
   clearInlineError();
   const request = beginActiveRequest("followup", followupQuestion, options.restoreTarget || "followup");
-  startProgress([], false, followupProgressLabels);
+  startProgress([], followupProgressLabels);
   let receivedTerminalEvent = false;
   try {
     await streamApi(
@@ -2449,16 +3192,29 @@ async function submitFollowup(question, options = {}) {
       restoreCancelledDraft(request);
     } else {
       stopProgress();
+      settlePendingUserMessage(followupQuestion);
+      renderConversation();
       const message = friendlyErrorMessage(error, "후속 질문 처리 중 오류가 발생했습니다.");
+      const lostBaseResult = message.includes("이전 결과를 찾을 수 없습니다");
       state.failedRequest = { kind: "followup", question: followupQuestion };
-      state.retryAction = () => submitFollowup(followupQuestion, options);
-      showInlineError(message, "후속 질문 처리 오류");
+      if (lostBaseResult) {
+        // 이어받을 결과가 사라진 뒤에는 후속으로 재시도해도 같은 오류만 반복된다.
+        state.canFollowup = false;
+        state.retryAction = () => submitQuestion({ question: followupQuestion, session_id: state.sessionId });
+        syncQueryModeUi();
+      } else {
+        state.retryAction = () => submitFollowup(followupQuestion, options);
+      }
+      showInlineError(
+        lostBaseResult ? `${message} 다시 시도하면 새 질문으로 조회합니다.` : message,
+        "후속 질문 처리 오류",
+        { appendMessage: true },
+      );
       showToast(message);
     }
   } finally {
     endActiveRequest(request);
     setBusy(false);
-    setFollowupBusy(false);
     loadSessions();
   }
 }
@@ -2466,10 +3222,11 @@ async function submitFollowup(question, options = {}) {
 async function submitQuestion(payload) {
   if (state.isBusy) return;
   setBusy(true);
-  if (state.llmReady === false) {
+  const directSql = looksLikeDirectSql(payload.question || state.pendingQuestion || "");
+  if (!directSql && state.llmReady === false) {
     await loadHealth();
   }
-  if (state.llmReady === false) {
+  if (!directSql && state.llmReady === false) {
     const message = llmUnavailableMessage();
     state.failedRequest = { kind: "query", question: payload.question || state.pendingQuestion || "" };
     state.retryAction = () => submitQuestion(payload);
@@ -2481,8 +3238,8 @@ async function submitQuestion(payload) {
   state.retryAction = null;
   clearInlineError();
   const requestQuestion = payload.question || state.pendingQuestion || "";
-  const request = beginActiveRequest("query", requestQuestion, "composer");
-  startProgress([], !state.lastResultData);
+  const request = beginActiveRequest("query", payload.display_question || requestQuestion, "composer");
+  startProgress();
   let receivedTerminalEvent = false;
   try {
     await streamApi(
@@ -2517,6 +3274,8 @@ async function submitQuestion(payload) {
       restoreCancelledDraft(request);
     } else {
       stopProgress();
+      settlePendingUserMessage(request.question);
+      renderConversation();
       const message = friendlyErrorMessage(error, "질문 처리 중 오류가 발생했습니다.");
       state.failedRequest = { kind: "query", question: requestQuestion };
       state.retryAction = () => submitQuestion(payload);
@@ -2535,30 +3294,36 @@ function handleSubmit() {
   if (!question) {
     showToast(state.continuation ? "추가 정보를 입력해주세요." : "질문을 입력해주세요.");
     questionInput.focus();
-    showPromptSuggestions();
     return;
   }
-  hidePromptSuggestions();
+  if (question.toLowerCase() === "/tables") {
+    questionInput.value = "";
+    autoGrowInput();
+    updatePromptCoach();
+    openTableCatalog();
+    return;
+  }
   downloadList.innerHTML = "";
   questionInput.value = "";
   autoGrowInput();
   if (state.continuation) {
     submitQuestion({
       question: state.continuation.question || state.pendingQuestion || "추가 입력",
+      display_question: question,
       session_id: state.sessionId,
       params: { _natural_input: question },
       continuation: state.continuation,
     });
-  } else if (state.queryMode === "followup" && state.lastResultId && state.canFollowup) {
+  } else if (state.lastResultId && state.canFollowup && !state.newQueryOverride) {
     state.pendingQuestion = question;
     submitFollowup(question, { restoreTarget: "composer" });
   } else {
     state.pendingQuestion = question;
+    state.newQueryOverride = false;
     submitQuestion({ question, session_id: state.sessionId });
   }
 }
 
-submitBtn.addEventListener("click", handleSubmit);
 cancelRequestBtn.addEventListener("click", cancelActiveRequest);
 
 retryBtn.addEventListener("click", () => {
@@ -2572,9 +3337,6 @@ retryBtn.addEventListener("click", () => {
 editQuestionBtn.addEventListener("click", () => {
   const failedRequest = state.failedRequest;
   const draft = failedRequest?.question || state.pendingQuestion;
-  if (failedRequest?.kind === "followup" && canUseFollowupMode()) {
-    setQueryMode("followup");
-  }
   if (draft) {
     questionInput.value = draft;
     autoGrowInput();
@@ -2589,24 +3351,12 @@ questionInput.addEventListener("input", () => {
   autoGrowInput();
   updatePromptCoach();
 });
-questionInput.addEventListener("focus", showPromptSuggestions);
-questionInput.addEventListener("click", showPromptSuggestions);
 
 questionInput.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    hidePromptSuggestions();
-    return;
-  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     handleSubmit();
   }
-});
-
-hideSuggestionsBtn?.addEventListener("click", (event) => {
-  event.preventDefault();
-  hidePromptSuggestions({ dismiss: true });
-  questionInput.focus();
 });
 
 document.addEventListener("click", (event) => {
@@ -2615,26 +3365,57 @@ document.addEventListener("click", (event) => {
   chooseExample(exampleButton.dataset.example || exampleButton.textContent || "");
 });
 
+function showUserGuide() {
+  if (!userGuideDialog.open) userGuideDialog.showModal();
+  loadTableCatalog();
+}
+
+$$("[data-user-guide]").forEach((button) => button.addEventListener("click", showUserGuide));
+
+newQueryBtn.addEventListener("click", () => {
+  if (state.isBusy) return;
+  state.newQueryOverride = !state.newQueryOverride;
+  syncQueryModeUi();
+  questionInput.focus();
+});
+
 answerBox.addEventListener("click", (event) => {
+  const refineButton = event.target.closest("[data-refine-message]");
+  if (refineButton) {
+    const message = state.conversation[Number(refineButton.dataset.refineMessage)];
+    const resolved = String(message?.followup_route?.resolved_question || "").trim();
+    if (!resolved) return;
+    state.newQueryOverride = true;
+    syncQueryModeUi();
+    chooseExample(resolved);
+    return;
+  }
   const copyButton = event.target.closest("[data-copy-message]");
   if (!copyButton) return;
   const message = state.conversation[Number(copyButton.dataset.copyMessage)];
   copyText(message?.text || "", "메시지를 복사했습니다.");
 });
 
-paramForm.addEventListener("submit", (event) => {
+inlineParamForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const params = {};
-  new FormData(paramForm).forEach((value, key) => {
-    if (String(value).trim()) params[key] = String(value).trim();
-  });
-  if (!Object.keys(params).length) {
-    showToast("필요한 값을 입력하거나 질문창에 이어서 적어주세요.");
-    paramForm.querySelector("input")?.focus();
+  const emptyField = Array.from(inlineParamForm.querySelectorAll("input, textarea"))
+    .find((field) => !field.value.trim());
+  if (emptyField) {
+    showToast("비어 있는 필수 값을 입력해주세요.");
+    emptyField.focus();
     return;
   }
+  const params = {};
+  new FormData(inlineParamForm).forEach((value, key) => {
+    if (String(value).trim()) params[key] = String(value).trim();
+  });
+  const displayQuestion = Object.entries(params)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(" · ");
+  hideInlineParamForm();
   submitQuestion({
-    question: state.pendingQuestion || questionInput.value.trim(),
+    question: state.continuation?.question || state.pendingQuestion || "추가 입력",
+    display_question: displayQuestion,
     session_id: state.sessionId,
     params,
     continuation: state.continuation,
@@ -2646,21 +3427,9 @@ savedQueryForm.addEventListener("submit", (event) => {
   runSavedQuery();
 });
 
-cancelParamsBtn.addEventListener("click", () => {
-  closeParamDialog();
-  questionInput.focus();
-});
-
 cancelSavedQueryBtn.addEventListener("click", () => {
   closeSavedQueryDialog();
   questionInput.focus();
-});
-
-paramPanel.addEventListener("click", (event) => {
-  if (event.target === paramPanel) {
-    closeParamDialog();
-    questionInput.focus();
-  }
 });
 
 savedQueryPanel.addEventListener("click", (event) => {
@@ -2671,13 +3440,11 @@ savedQueryPanel.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  const activeModal = !paramPanel.classList.contains("hidden")
-    ? paramPanel
-    : !savedQueryPanel.classList.contains("hidden")
-      ? savedQueryPanel
-      : appEl.classList.contains("inspector-mobile-open")
-        ? inspector
-        : null;
+  const activeModal = !savedQueryPanel.classList.contains("hidden")
+    ? savedQueryPanel
+    : appEl.classList.contains("inspector-mobile-open")
+      ? inspector
+      : null;
   if (event.key === "Tab" && activeModal) {
     const focusable = Array.from(
       activeModal.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'),
@@ -2694,40 +3461,16 @@ document.addEventListener("keydown", (event) => {
       }
     }
   }
-  if (event.key === "Escape" && !paramPanel.classList.contains("hidden")) {
-    closeParamDialog();
-    questionInput.focus();
-  } else if (event.key === "Escape" && !savedQueryPanel.classList.contains("hidden")) {
+  if (event.key === "Escape" && !savedQueryPanel.classList.contains("hidden")) {
     closeSavedQueryDialog();
     questionInput.focus();
   } else if (event.key === "Escape" && appEl.classList.contains("inspector-mobile-open")) {
-    closeCompactInspector({ restoreFocus: true });
+    closeInspector({ restoreFocus: true });
   }
-});
-
-followupBtn.addEventListener("click", () => submitFollowup());
-
-followupInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    submitFollowup();
-  }
-});
-
-clearContextBtn.addEventListener("click", () => {
-  setQueryMode("new");
-  questionInput.focus();
-  showToast("직전 결과 맥락을 해제했습니다. 새 조회로 실행합니다.");
 });
 
 copyTableBtn.addEventListener("click", () => copyText(resultTableAsTsv(), "표를 복사했습니다."));
 copySqlBtn.addEventListener("click", () => copyText(state.lastResultData?.sql || sqlBox.textContent, "SQL을 복사했습니다."));
-
-mobileMenuBtn.addEventListener("click", () => {
-  const expanded = rail.classList.toggle("menu-open");
-  mobileMenuBtn.setAttribute("aria-expanded", String(expanded));
-  mobileMenuBtn.textContent = expanded ? "세션·보고서 메뉴 닫기" : "세션·보고서 메뉴";
-});
 
 newSessionBtn.addEventListener("click", async () => {
   try {
@@ -2744,10 +3487,6 @@ newSessionBtn.addEventListener("click", async () => {
 
 saveQueryBtn.addEventListener("click", saveCurrentQuery);
 
-modeButtons.forEach((button) => {
-  button.addEventListener("click", () => setQueryMode(button.dataset.queryMode));
-});
-
 clearBtn.addEventListener("click", () => {
   newSessionBtn.click();
 });
@@ -2757,12 +3496,16 @@ themeToggle?.addEventListener("click", () => {
 });
 
 let chartResizeTimer = null;
-window.addEventListener("resize", () => {
+function scheduleChartRedraw() {
   window.clearTimeout(chartResizeTimer);
   chartResizeTimer = window.setTimeout(() => {
     if (state.lastChart) drawChart(state.lastChart);
   }, 120);
-});
+}
+window.addEventListener("resize", scheduleChartRedraw);
+if (window.ResizeObserver && resultChart?.parentElement) {
+  new window.ResizeObserver(scheduleChartRedraw).observe(resultChart.parentElement);
+}
 
 const compactInspectorMedia = window.matchMedia("(max-width: 1240px)");
 
@@ -2772,8 +3515,9 @@ function updateInspectorButton(expanded) {
   inspectorToggle.title = expanded ? "상세 패널 숨기기" : "상세 패널 열기";
 }
 
-function closeCompactInspector({ restoreFocus = false } = {}) {
+function closeInspector({ restoreFocus = false } = {}) {
   appEl.classList.remove("inspector-mobile-open");
+  if (!compactInspectorMedia.matches) appEl.classList.add("inspector-collapsed");
   inspector.removeAttribute("role");
   inspector.removeAttribute("aria-modal");
   updateInspectorButton(false);
@@ -2813,12 +3557,14 @@ inspectorToggle.addEventListener("click", () => {
   updateInspectorButton(!collapsed);
 });
 
-inspectorClose.addEventListener("click", () => closeCompactInspector({ restoreFocus: true }));
+inspectorClose.addEventListener("click", () => closeInspector({ restoreFocus: true }));
 compactInspectorMedia.addEventListener?.("change", syncInspectorViewport);
 syncInspectorViewport();
 
 $$(".tab").forEach((button) => {
-  button.addEventListener("click", () => activateInspectorTab(button));
+  button.addEventListener("click", () => {
+    activateInspectorTab(button);
+  });
   button.addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
@@ -2845,12 +3591,83 @@ function activateInspectorTab(button, focus = false) {
   if (focus) button.focus();
 }
 
+function openTableCatalog() {
+  if (!tableCatalogPanel) return;
+  if (tableCatalogSearch) tableCatalogSearch.value = "";
+  if (!userGuideDialog.open) userGuideDialog.showModal();
+  loadTableCatalog();
+  window.requestAnimationFrame(() => {
+    const guideContent = tableCatalogPanel.closest(".user-guide-content");
+    if (guideContent) guideContent.scrollTop = tableCatalogPanel.offsetTop - guideContent.offsetTop;
+    tableCatalogSearch?.focus({ preventScroll: true });
+  });
+}
+
 activateInspectorTab($(".tab.active"));
 
-$$("[data-export]").forEach((button) => {
+tableCatalogSearch?.addEventListener("input", renderTableCatalog);
+
+// 다운로드는 저장된 SQL을 전체 행으로 다시 조회한다. 44만건이면 분 단위로 걸리는데
+// 비활성 버튼이 활성과 똑같이 보여서 "아무 일도 안 일어난다"로 읽혔다. 진행 중임을
+// 버튼·상태줄·경과시간으로 계속 보여주고, 그 동안 다른 형식 클릭은 막는다.
+const exportButtons = $$("[data-export]");
+const exportGrid = $(".export-grid");
+let exportTicker = 0;
+
+function elapsedClock(seconds) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function exportScaleLabel() {
+  const total = state.lastResultSummary?.totalRowCount;
+  return Number.isFinite(total) && total > 0 ? ` · 전체 ${total.toLocaleString("ko-KR")}건` : "";
+}
+
+function startExportProgress(button) {
+  const label = button.textContent.trim();
+  const startedAt = Date.now();
+  exportButtons.forEach((item) => {
+    item.disabled = true;
+    item.classList.toggle("busy", item === button);
+  });
+  exportGrid?.classList.add("busy");
+  exportStatus.classList.remove("is-error");
+  exportProgressTitle.textContent = `${label} 보고서 생성 중`;
+  exportProgressNote.textContent =
+    `전체 데이터를 다시 조회하는 중입니다${exportScaleLabel()} · 완료되면 자동으로 내려받습니다.`;
+  const render = () => {
+    exportProgressTime.textContent = elapsedClock(Math.floor((Date.now() - startedAt) / 1000));
+  };
+  render();
+  exportStatus.classList.remove("hidden");
+  window.clearInterval(exportTicker);
+  exportTicker = window.setInterval(render, 1000);
+  return label;
+}
+
+function stopExportProgress(errorMessage) {
+  window.clearInterval(exportTicker);
+  exportTicker = 0;
+  exportButtons.forEach((item) => {
+    item.disabled = false;
+    item.classList.remove("busy");
+  });
+  exportGrid?.classList.remove("busy");
+  if (!errorMessage) {
+    exportStatus.classList.add("hidden");
+    return;
+  }
+  // 토스트는 사라지므로 실패 사유는 카드에 남긴다.
+  exportStatus.classList.add("is-error");
+  exportProgressTime.textContent = "";
+  exportProgressNote.textContent = errorMessage;
+}
+
+exportButtons.forEach((button) => {
   button.addEventListener("click", async () => {
-    if (!state.lastResultId) return;
-    button.disabled = true;
+    if (!state.lastResultId || exportTicker) return;
+    const label = startExportProgress(button);
+    showToast(`${label} 보고서를 만들고 있습니다${exportScaleLabel()}. 완료되면 자동으로 내려받습니다.`);
     try {
       const data = await api("api/export", {
         method: "POST",
@@ -2861,11 +3678,12 @@ $$("[data-export]").forEach((button) => {
       });
       renderDownloads(data.files);
       triggerDownloads(data.files);
+      stopExportProgress();
       showToast("보고서가 생성되었습니다.");
     } catch (error) {
+      exportProgressTitle.textContent = `${label} 보고서 생성 실패`;
+      stopExportProgress(error.message);
       showToast(error.message);
-    } finally {
-      button.disabled = false;
     }
   });
 });

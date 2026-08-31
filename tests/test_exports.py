@@ -3,13 +3,15 @@ from __future__ import annotations
 import tempfile
 import builtins
 import importlib.util
+import re
 import sys
 import types
 import unittest
 import zipfile
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from docx import Document
 from openpyxl import load_workbook
@@ -24,6 +26,8 @@ def _load_exports_module():
 
     config = types.ModuleType(f"{package_name}.config")
     config.REPORT_DIR = root / "reports"
+    config.MAX_QUERY_ROW_LIMIT = 1_000_000
+    config.EXPORT_QUERY_TIMEOUT_MS = 300_000
     sys.modules[f"{package_name}.config"] = config
 
     spec = importlib.util.spec_from_file_location(
@@ -105,6 +109,143 @@ class ExportReportTest(unittest.TestCase):
                 self.assertEqual(["월", "매출금액"], [cell.value for cell in data_sheet[1]])
                 self.assertEqual("2026-02", data_sheet["A3"].value)
                 self.assertEqual(2000, data_sheet["B3"].value)
+
+    def test_prepare_export_result_reloads_all_rows_without_mutating_preview(self) -> None:
+        db_module = types.ModuleType(f"{exports.__package__}.db")
+        execute_sql = Mock(
+            return_value=(["값"], [(1,), (2,), (3,)], None)
+        )
+        db_module.execute_sql = execute_sql
+        preview = {
+            "final_sql": "SELECT value FROM sample LIMIT 1000000",
+            "query_columns": ["값"],
+            "query_rows": [(1,)],
+        }
+
+        with patch.dict(sys.modules, {f"{exports.__package__}.db": db_module}):
+            prepared = exports.prepare_export_result(preview)
+
+        self.assertEqual([(1,)], preview["query_rows"])
+        self.assertEqual([(1,), (2,), (3,)], prepared["query_rows"])
+        execute_sql.assert_called_once_with(
+            preview["final_sql"],
+            max_rows=1_000_000,
+            statement_timeout_ms=300_000,
+        )
+
+    def test_prepare_export_result_preserves_current_snapshot_fallback_decision(self) -> None:
+        db_module = types.ModuleType(f"{exports.__package__}.db")
+        execute_sql = Mock(return_value=(["값"], [(1,)], None))
+        db_module.execute_sql = execute_sql
+        workflow_module = types.ModuleType(f"{exports.__package__}.workflow")
+        allow_fallback = Mock(return_value=False)
+        workflow_module._allow_cross_cycle_fallback = allow_fallback
+        preview = {
+            "question": "현재 가맹점 현황",
+            "final_sql": (
+                'SELECT a."기준년월일" FROM card_system.tbdaaus01 a '
+                'WHERE a."기준년월일" = \'20260811\''
+            ),
+            "query_columns": ["값"],
+            "query_rows": [(1,)],
+        }
+
+        with patch.dict(
+            sys.modules,
+            {
+                f"{exports.__package__}.db": db_module,
+                f"{exports.__package__}.workflow": workflow_module,
+            },
+        ):
+            exports.prepare_export_result(preview)
+
+        allow_fallback.assert_called_once_with(preview["question"], preview["final_sql"])
+        execute_sql.assert_called_once_with(
+            preview["final_sql"],
+            max_rows=1_000_000,
+            statement_timeout_ms=300_000,
+            allow_cross_cycle_fallback=False,
+        )
+
+    def test_large_excel_export_uses_write_only_path_and_keeps_every_row(self) -> None:
+        result = {
+            "question": "대용량 조회",
+            "query_columns": ["순번", "값"],
+            "query_rows": [(1, "가"), (2, "나"), (3, "다")],
+            "final_sql": "SELECT sequence, value FROM sample LIMIT 1000000",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(exports, "REPORT_DIR", Path(tmpdir)),
+                patch.object(exports, "_LARGE_EXCEL_ROW_THRESHOLD", 2),
+            ):
+                path = exports.export_to_excel(result)
+
+            workbook = load_workbook(path, data_only=True)
+            self.assertEqual(["요약", "상세 데이터", "SQL"], workbook.sheetnames)
+            data_rows = list(workbook["상세 데이터"].iter_rows(values_only=True))
+            self.assertEqual(("순번", "값"), data_rows[0])
+            self.assertEqual([(1, "가"), (2, "나"), (3, "다")], data_rows[1:])
+            self.assertEqual("A1:B4", workbook["상세 데이터"].auto_filter.ref)
+
+    def test_text_export_keeps_rows_beyond_the_report_preview_size(self) -> None:
+        result = {
+            "question": "TXT 전체 데이터",
+            "query_columns": ["순번"],
+            "query_rows": [(index,) for index in range(250)],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(exports, "REPORT_DIR", Path(tmpdir)):
+                path = exports.export_to_text(result)
+
+            text = Path(path).read_text(encoding="utf-8")
+            self.assertIn("[상세 데이터] (총 250건)", text)
+            self.assertIn("\n249\n", text)
+            self.assertNotIn("상위 200건만 표시", text)
+
+    def test_excel_export_accepts_database_values_openpyxl_cannot_store(self) -> None:
+        # 화면 경로는 세션 저장에서 값이 문자열로 바뀌지만, 다운로드 경로는
+        # prepare_export_result 가 DB 원본 타입을 다시 읽어와 그대로 넘긴다.
+        result = {
+            "question": "원본 타입 저장",
+            "query_columns": ["적재일시", "이용금액", "비고"],
+            "query_rows": [
+                (datetime(2026, 8, 13, 3, 0, tzinfo=timezone.utc), Decimal("12345678901.55"), "비고\x07항목"),
+                (datetime(2026, 8, 13, 3, 0), float("nan"), None),
+            ],
+            "final_sql": "SELECT loaded_at, amount, note FROM sample",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(exports, "REPORT_DIR", Path(tmpdir)):
+                path = exports.export_to_excel(result)
+
+            data_rows = list(load_workbook(path, data_only=True)["상세 데이터"].iter_rows(values_only=True))
+
+        self.assertEqual(("적재일시", "이용금액", "비고"), data_rows[0])
+        self.assertEqual(datetime(2026, 8, 13, 3, 0), data_rows[1][0])
+        self.assertEqual(12345678901.55, data_rows[1][1])
+        self.assertEqual("비고항목", data_rows[1][2])
+        self.assertEqual("nan", data_rows[2][1])
+
+    def test_word_export_writes_korean_east_asian_font_for_every_style_it_uses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(exports, "REPORT_DIR", Path(tmpdir)):
+                path = exports.export_to_word({**self.result, "answer": "비고\x07항목"})
+
+            document = Document(path)
+            used_styles = {paragraph.style.name for paragraph in document.paragraphs if paragraph.text}
+            styles_xml = zipfile.ZipFile(path).read("word/styles.xml").decode("utf-8")
+
+        self.assertTrue({"Normal", "Title", "Heading 1"}.issuperset(used_styles), used_styles)
+        for style_id in ("Normal", "Title", "Heading1"):
+            element = re.search(rf'<w:style [^>]*w:styleId="{style_id}">.*?</w:style>', styles_xml, re.S)
+            self.assertIsNotNone(element, style_id)
+            fonts = re.search(r"<w:rFonts[^/]*/>", element.group(0))
+            self.assertIsNotNone(fonts, f"{style_id}에 rFonts가 없습니다.")
+            # eastAsia 를 지정해야 한글이 대체 글꼴로 떨어지지 않고, *Theme 속성이 남아
+            # 있으면 기본 서식의 빈 eastAsia 테마가 지정한 글꼴을 덮어쓴다.
+            self.assertIn('w:eastAsia="Malgun Gothic"', fonts.group(0), style_id)
+            self.assertNotIn("Theme=", fonts.group(0), style_id)
 
     def test_word_export_falls_back_when_python_docx_is_missing(self) -> None:
         real_import = builtins.__import__

@@ -2,7 +2,16 @@
 __pycache__/
 *.py[cod]
 .env
+.env.local
 .venv/
 venv/
 output/
 reports/
+logs/
+# 로컬 endpoint·모델 설정 (템플릿은 *.example.yaml 참고)
+config/*.local.yaml
+# 로컬 프레젠테이션 빌드 중간 산출물
+.ppt_build_*/
+.ppt_appendix_*/
+text2sql_agent/v2.zip
+*.pptx.inspect.ndjson

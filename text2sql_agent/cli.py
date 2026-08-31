@@ -6,14 +6,15 @@ from decimal import Decimal
 from .config import BAD_DEBT_OUTPUT_DIR, LLM_BASE_URL, LLM_MODEL
 from .exports import (
     export_all,
-    export_to_csv,
     export_to_excel,
     export_to_text,
     export_to_word,
     format_number_for_report as format_number,
+    prepare_export_result,
 )
+from .config import ENABLE_EMBEDDING_PRECOMPUTE
 from .tools.registry import TOOLS
-from .workflow import EMBEDDINGS_AVAILABLE, run_agent_with_prompts
+from .workflow import run_agent_with_prompts
 
 _NUMERIC = (int, float, Decimal)
 
@@ -41,7 +42,7 @@ def print_result_table(columns: list[str], rows: list[tuple], max_rows: int = 20
         print(f"\n  ... 외 {len(rows) - max_rows}건")
 
 
-EXPORT_COMMANDS = {"저장", "export", "보고서", "word", "docx", "excel", "xlsx", "text", "txt", "csv", "내보내기", "파일"}
+EXPORT_COMMANDS = {"저장", "export", "보고서", "word", "docx", "excel", "xlsx", "text", "txt", "내보내기", "파일"}
 
 
 def _parse_export_format(cmd: str) -> str | None:
@@ -52,8 +53,6 @@ def _parse_export_format(cmd: str) -> str | None:
         return "excel"
     elif cmd_lower in ("text", "txt"):
         return "text"
-    elif cmd_lower == "csv":
-        return "csv"
     elif cmd_lower in ("저장", "export", "보고서", "내보내기", "파일"):
         return "all"
     return None
@@ -67,7 +66,10 @@ def main():
     print(" - 보고서 내보내기 (Word/Excel/Text)")
     print("=" * 60)
     print(f" LLM: {LLM_MODEL} @ {LLM_BASE_URL}")
-    embed_status = "ON" if EMBEDDINGS_AVAILABLE else "OFF (LLM 폴백)"
+    # 기존에는 workflow.EMBEDDINGS_AVAILABLE를 import 시점에 복사해 항상 OFF로
+    # 표시됐다. 배너는 설정값 기준으로 안내하고, 실제 가용성은 첫 질문 처리 시
+    # 사전계산 결과에 따라 결정된다.
+    embed_status = "ON (첫 질문 시 사전계산)" if ENABLE_EMBEDDING_PRECOMPUTE else "OFF (규칙/LLM 폴백)"
     print(f" Embedding: {embed_status}")
     print(f" 등록된 Tool: {len(TOOLS)}개")
     for t in TOOLS:
@@ -97,23 +99,21 @@ def main():
                 fmt = "all"
             print("\n보고서 생성 중...")
             try:
+                export_result = prepare_export_result(last_result) if fmt in {"all", "excel", "text"} else last_result
                 if fmt == "all":
-                    paths = export_all(last_result)
+                    paths = export_all(export_result)
                     print("\n[보고서 저장 완료]")
                     for ftype, fpath in paths.items():
                         print(f"  {ftype.upper()}: {fpath}")
                 elif fmt == "word":
-                    path = export_to_word(last_result)
+                    path = export_to_word(export_result)
                     print(f"\n[Word 저장 완료] {path}")
                 elif fmt == "excel":
-                    path = export_to_excel(last_result)
+                    path = export_to_excel(export_result)
                     print(f"\n[Excel 저장 완료] {path}")
                 elif fmt == "text":
-                    path = export_to_text(last_result)
+                    path = export_to_text(export_result)
                     print(f"\n[Text 저장 완료] {path}")
-                elif fmt == "csv":
-                    path = export_to_csv(last_result)
-                    print(f"\n[CSV 저장 완료] {path}")
             except ImportError:
                 print("python-docx 패키지가 필요합니다: pip install python-docx")
             except Exception as e:

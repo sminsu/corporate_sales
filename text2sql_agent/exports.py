@@ -1,9 +1,10 @@
 """Report/export helpers for completed query results."""
 
 import csv
+import math
 import re
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from html import escape
 from typing import Any
@@ -13,6 +14,16 @@ from .config import REPORT_DIR
 # ---------------------------------------------------------------------------
 # 7. 보고서 내보내기
 # ---------------------------------------------------------------------------
+
+# xlsx/docx 는 둘 다 XML 문서라서 이 제어문자를 담을 수 없다. openpyxl 은
+# IllegalCharacterError, python-docx 는 lxml ValueError 로 저장 자체를 거부한다.
+# 화면 경로는 세션 저장에서 값이 문자열로 바뀌며 걸러지지만, 다운로드 경로는
+# prepare_export_result 가 DB 원본 타입을 다시 읽어오므로 여기서 걸러야 한다.
+_XML_UNSAFE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _xml_safe_text(value: Any) -> str:
+    return _XML_UNSAFE_RE.sub("", str(value))
 
 
 def _ensure_report_dir():
@@ -34,7 +45,7 @@ def format_number_for_report(val) -> str:
             return f"{val / 10_000:,.0f}만"
         else:
             return f"{val:,}"
-    return str(val)
+    return _xml_safe_text(val)
 
 
 def _is_numeric_value(value: Any) -> bool:
@@ -57,8 +68,8 @@ def _row_values(row: Any, columns: list[Any] | None = None) -> list[Any]:
     return values
 
 
-def _result_columns_and_rows(result: dict) -> tuple[list[str], list[list[Any]]]:
-    raw_rows = list(result.get("query_rows", []) or [])
+def _raw_result_columns_and_rows(result: dict) -> tuple[list[Any], list[Any]]:
+    raw_rows = result.get("query_rows", []) or []
     raw_columns = list(result.get("query_columns", []) or [])
     if not raw_columns and raw_rows:
         first_row = raw_rows[0]
@@ -66,17 +77,73 @@ def _result_columns_and_rows(result: dict) -> tuple[list[str], list[list[Any]]]:
             raw_columns = list(first_row.keys())
         else:
             raw_columns = [f"컬럼{i + 1}" for i in range(len(_row_values(first_row)))]
-    columns = [str(col) for col in raw_columns]
-    rows = [_row_values(row, raw_columns) for row in raw_rows]
+    return raw_columns, raw_rows
+
+
+def _result_columns_and_rows(result: dict, row_limit: int | None = None) -> tuple[list[str], list[list[Any]]]:
+    raw_columns, raw_rows = _raw_result_columns_and_rows(result)
+    selected_rows = raw_rows if row_limit is None else raw_rows[:row_limit]
+    columns = [_xml_safe_text(col) for col in raw_columns]
+    rows = [_row_values(row, raw_columns) for row in selected_rows]
     return columns, rows
+
+
+def prepare_export_result(result: dict) -> dict:
+    """Reload the complete SQL result for file export without growing UI/session payloads."""
+
+    prepared = dict(result)
+    sql = str(result.get("final_sql") or "").strip()
+    if not sql or result.get("bad_debt_excel_path") or result.get("selected_tool") == "대손비용률_분석":
+        return prepared
+
+    from .config import EXPORT_QUERY_TIMEOUT_MS, MAX_QUERY_ROW_LIMIT
+    from .db import execute_sql
+
+    execute_kwargs = {
+        "max_rows": MAX_QUERY_ROW_LIMIT,
+        "statement_timeout_ms": EXPORT_QUERY_TIMEOUT_MS,
+    }
+    question = str(result.get("question") or "").strip()
+    if question:
+        # 화면 조회에서 최신 D-1 스냅샷의 월별 폴백을 막았다면
+        # 다운로드용 전체 재조회도 같은 의도를 유지해야 한다. 순환 import를
+        # 피하기 위해 실행 시점에만 workflow의 단일 판정 함수를 재사용한다.
+        from .workflow import _allow_cross_cycle_fallback
+
+        if not _allow_cross_cycle_fallback(question, sql):
+            execute_kwargs["allow_cross_cycle_fallback"] = False
+
+    columns, rows, error = execute_sql(sql, **execute_kwargs)
+    if error:
+        # 원인을 버리면 서버 로그에도 "조회 실패"만 남아 다운로드 오류를 추적할 수 없다.
+        # 사용자에게 나가는 문구는 호출 측(web_service)이 따로 정한다.
+        raise RuntimeError(f"다운로드용 전체 데이터를 조회하지 못했습니다: {error}") from None
+
+    if str(result.get("followup_mode") or "") in {"transform", "transform_visualization"}:
+        from .followup_ops import apply_local_transform
+
+        transformed = apply_local_transform(str(result.get("followup_question") or ""), columns, rows)
+        columns, rows = transformed["columns"], transformed["rows"]
+
+    prepared["query_columns"] = columns
+    prepared["query_rows"] = rows
+    return prepared
 
 
 def _excel_cell_value(value: Any) -> Any:
     if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, (datetime, date, str, int, float, bool)) or value is None:
+        value = float(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        # Excel 에는 NaN/Inf 셀이 없다. 숫자로 쓰면 저장은 되지만 열리지 않는 파일이 된다.
+        return str(value)
+    if isinstance(value, str):
+        return _xml_safe_text(value)
+    if isinstance(value, (datetime, time)) and value.tzinfo is not None:
+        # Postgres timestamptz/timetz. openpyxl 은 tzinfo 가 붙은 값을 저장하지 못한다.
+        return value.replace(tzinfo=None)
+    if isinstance(value, (datetime, date, time, int, float, bool)) or value is None:
         return value
-    return str(value)
+    return _xml_safe_text(value)
 
 
 def _word_run(value: Any, *, bold: bool = False, size: int = 20, color: str | None = None) -> str:
@@ -88,7 +155,7 @@ def _word_run(value: Any, *, bold: bool = False, size: int = 20, color: str | No
         props.append("<w:b/>")
     if color:
         props.append(f'<w:color w:val="{color}"/>')
-    text = str(value or "")
+    text = _xml_safe_text(value or "")
     parts = text.splitlines() or [""]
     runs = []
     for i, part in enumerate(parts):
@@ -147,10 +214,10 @@ def _word_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 def _export_to_word_fallback(result: dict, filepath) -> str:
     question = result.get("question", "조회결과")
-    columns, rows = _result_columns_and_rows(result)
+    total_rows = len(result.get("query_rows", []) or [])
+    columns, rows = _result_columns_and_rows(result, row_limit=200)
     answer = result.get("answer", "")
     sql = result.get("final_sql", "")
-    display_rows = rows[:200]
 
     body = [
         _word_paragraph("KB카드 법인영업 데이터 분석 보고서", bold=True, size=32, align="center"),
@@ -172,11 +239,11 @@ def _export_to_word_fallback(result: dict, filepath) -> str:
     if columns and rows:
         body.extend([
             _word_paragraph("상세 데이터", bold=True, size=26, color="2F5597"),
-            _word_paragraph(f"총 {len(rows)}건 조회됨"),
-            _word_table(columns, display_rows),
+            _word_paragraph(f"총 {total_rows}건 조회됨"),
+            _word_table(columns, rows),
         ])
-        if len(rows) > 200:
-            body.append(_word_paragraph(f"* 전체 {len(rows)}건 중 상위 200건만 표시", size=18))
+        if total_rows > 200:
+            body.append(_word_paragraph(f"* 전체 {total_rows}건 중 상위 200건만 표시", size=18))
     if sql:
         body.extend([
             _word_paragraph("실행 SQL", bold=True, size=26, color="2F5597"),
@@ -218,6 +285,30 @@ def _export_to_word_fallback(result: dict, filepath) -> str:
     return str(filepath)
 
 
+_WORD_KOREAN_FONT = "Malgun Gothic"
+# 제목/본문 문단이 실제로 쓰는 스타일. 여기에 한글 글꼴을 심지 않으면 해당 문단만
+# 대체 글꼴로 나온다.
+_WORD_KOREAN_STYLES = ("Normal", "Title", "Heading 1")
+
+
+def _apply_korean_font(style) -> None:
+    """Word 는 한글을 eastAsia 글꼴로 그린다.
+
+    python-docx 의 ``font.name`` 은 ascii/hAnsi 만 채우기 때문에, 그대로 두면 한글은
+    테마 글꼴로 렌더링된다. 그런데 기본 서식 파일의 테마는 eastAsia typeface 가 비어
+    있어서 결과가 대체 글꼴이 된다. 제목 스타일에 남아 있는 ``*Theme`` 속성은 명시한
+    글꼴보다 우선하므로(ECMA-376) 함께 지운다. 글꼴 이름은 로케일 독립적인
+    "Malgun Gothic" 을 써야 한국어 Windows 밖에서도 Word 가 글꼴을 찾는다.
+    """
+    from docx.oxml.ns import qn
+
+    style.font.name = _WORD_KOREAN_FONT
+    fonts = style.element.rPr.rFonts
+    for theme_attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+        fonts.attrib.pop(qn(theme_attr), None)
+    fonts.set(qn("w:eastAsia"), _WORD_KOREAN_FONT)
+
+
 def export_to_word(result: dict) -> str:
     _ensure_report_dir()
     question = result.get("question", "조회결과")
@@ -230,10 +321,11 @@ def export_to_word(result: dict) -> str:
     except ImportError:
         return _export_to_word_fallback(result, filepath)
 
+    question = _xml_safe_text(question)
     doc = Document()
-    style = doc.styles["Normal"]
-    style.font.name = "맑은 고딕"
-    style.font.size = Pt(10)
+    for style_name in _WORD_KOREAN_STYLES:
+        _apply_korean_font(doc.styles[style_name])
+    doc.styles["Normal"].font.size = Pt(10)
     doc.add_heading("KB카드 법인영업 데이터 분석 보고서", level=0)
     info_table = doc.add_table(rows=3, cols=2)
     info_table.style = "Light List"
@@ -245,16 +337,16 @@ def export_to_word(result: dict) -> str:
         info_table.rows[i].cells[0].text = label
         info_table.rows[i].cells[1].text = value
     doc.add_paragraph("")
-    answer = result.get("answer", "")
+    answer = _xml_safe_text(result.get("answer", ""))
     if answer:
         doc.add_heading("분석 결과", level=1)
         doc.add_paragraph(answer)
-    columns, rows = _result_columns_and_rows(result)
+    total_rows = len(result.get("query_rows", []) or [])
+    columns, rows = _result_columns_and_rows(result, row_limit=200)
     if columns and rows:
         doc.add_heading("상세 데이터", level=1)
-        doc.add_paragraph(f"총 {len(rows)}건 조회됨")
-        display_rows = rows[:200]
-        table = doc.add_table(rows=1 + len(display_rows), cols=len(columns))
+        doc.add_paragraph(f"총 {total_rows}건 조회됨")
+        table = doc.add_table(rows=1 + len(rows), cols=len(columns))
         table.style = "Light Grid Accent 1"
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         for j, col_name in enumerate(columns):
@@ -265,7 +357,7 @@ def export_to_word(result: dict) -> str:
                 for run in paragraph.runs:
                     run.bold = True
                     run.font.size = Pt(9)
-        for i, row in enumerate(display_rows):
+        for i, row in enumerate(rows):
             for j, val in enumerate(row):
                 cell = table.rows[i + 1].cells[j]
                 cell.text = format_number_for_report(val)
@@ -274,9 +366,9 @@ def export_to_word(result: dict) -> str:
                         paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                     if cell.paragraphs[0].runs:
                         cell.paragraphs[0].runs[0].font.size = Pt(9)
-        if len(rows) > 200:
-            doc.add_paragraph(f"* 전체 {len(rows)}건 중 상위 200건만 표시")
-    sql = result.get("final_sql", "")
+        if total_rows > 200:
+            doc.add_paragraph(f"* 전체 {total_rows}건 중 상위 200건만 표시")
+    sql = _xml_safe_text(result.get("final_sql", ""))
     if sql:
         doc.add_heading("실행 SQL", level=1)
         sql_para = doc.add_paragraph()
@@ -294,6 +386,48 @@ def export_to_word(result: dict) -> str:
     return str(filepath)
 
 
+_LARGE_EXCEL_ROW_THRESHOLD = 100_000
+_EXCEL_MAX_DATA_ROWS = 1_048_575
+
+
+def _export_to_excel_write_only(result: dict, filepath) -> str:
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+
+    raw_columns, raw_rows = _raw_result_columns_and_rows(result)
+    if len(raw_rows) > _EXCEL_MAX_DATA_ROWS:
+        raise ValueError(f"Excel은 헤더를 제외하고 최대 {_EXCEL_MAX_DATA_ROWS:,}행까지 저장할 수 있습니다.")
+
+    columns = [_xml_safe_text(column) for column in raw_columns]
+    wb = Workbook(write_only=True)
+    summary = wb.create_sheet("요약")
+    summary.append(["KB카드 법인영업 데이터 분석 보고서"])
+    summary.append([])
+    summary.append(["작성일시", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    summary.append(["질문", _xml_safe_text(result.get("question", "조회결과"))])
+    summary.append(["분석 경로", _get_source_label(result)])
+    summary.append(["조회 행 수", len(raw_rows)])
+    summary.append(["조회 컬럼 수", len(columns)])
+    summary.append([])
+    summary.append(["분석 결과", _xml_safe_text(result.get("answer", "")) or "분석 결과가 없습니다."])
+
+    data_sheet = wb.create_sheet("상세 데이터")
+    data_sheet.freeze_panes = "A2"
+    if columns:
+        data_sheet.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{len(raw_rows) + 1}"
+        data_sheet.append(columns)
+        for row in raw_rows:
+            data_sheet.append([_excel_cell_value(value) for value in _row_values(row, raw_columns)])
+    else:
+        data_sheet.append(["조회 데이터가 없습니다."])
+
+    sql_sheet = wb.create_sheet("SQL")
+    sql_sheet.append(["실행 SQL"])
+    sql_sheet.append([_xml_safe_text(result.get("final_sql", "")) or "실행 SQL이 없습니다."])
+    wb.save(str(filepath))
+    return str(filepath)
+
+
 def export_to_excel(result: dict) -> str:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -304,9 +438,14 @@ def export_to_excel(result: dict) -> str:
     question = result.get("question", "조회결과")
     filepath = REPORT_DIR / _make_filename(question, "xlsx")
 
+    _, raw_rows = _raw_result_columns_and_rows(result)
+    if len(raw_rows) >= _LARGE_EXCEL_ROW_THRESHOLD:
+        return _export_to_excel_write_only(result, filepath)
+
     columns, rows = _result_columns_and_rows(result)
-    answer = result.get("answer", "")
-    sql = result.get("final_sql", "")
+    question = _xml_safe_text(question)
+    answer = _xml_safe_text(result.get("answer", ""))
+    sql = _xml_safe_text(result.get("final_sql", ""))
 
     wb = Workbook()
     summary = wb.active
@@ -439,50 +578,36 @@ def export_to_text(result: dict) -> str:
     _ensure_report_dir()
     question = result.get("question", "조회결과")
     filepath = REPORT_DIR / _make_filename(question, "txt")
-    lines = ["=" * 70, "  KB카드 법인영업 데이터 분석 보고서", "=" * 70,
-             f"  작성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-             f"  질문: {question}", f"  분석 경로: {_get_source_label(result)}", "=" * 70, ""]
+    raw_columns, raw_rows = _raw_result_columns_and_rows(result)
+    columns = [str(column) for column in raw_columns]
     answer = result.get("answer", "")
-    if answer:
-        lines.extend(["[분석 결과]", "-" * 70, answer, ""])
-    columns, rows = _result_columns_and_rows(result)
-    if columns and rows:
-        lines.extend([f"[상세 데이터] (총 {len(rows)}건)", "-" * 70])
-        display_rows = rows[:200]
-        col_widths = [max(len(c), 8) for c in columns]
-        for row in display_rows:
-            for j, val in enumerate(row):
-                col_widths[j] = max(col_widths[j], len(format_number_for_report(val)))
-        lines.append(" | ".join(c.ljust(col_widths[j]) for j, c in enumerate(columns)))
-        lines.append("-+-".join("-" * w for w in col_widths))
-        for row in display_rows:
-            cells = []
-            for j, val in enumerate(row):
-                formatted = format_number_for_report(val)
-                cells.append(formatted.rjust(col_widths[j]) if _is_numeric_value(val) else formatted.ljust(col_widths[j]))
-            lines.append(" | ".join(cells))
-        if len(rows) > 200:
-            lines.append(f"\n* 전체 {len(rows)}건 중 상위 200건만 표시")
-        lines.append("")
     sql = result.get("final_sql", "")
-    if sql:
-        lines.extend(["[실행 SQL]", "-" * 70, sql, ""])
-    lines.extend(["=" * 70, "  KB카드 법인영업 Text2SQL Agent v10 자동생성 보고서", "=" * 70])
-    filepath.write_text("\n".join(lines), encoding="utf-8")
-    return str(filepath)
-
-
-def export_to_csv(result: dict) -> str:
-    _ensure_report_dir()
-    question = result.get("question", "조회결과")
-    filepath = REPORT_DIR / _make_filename(question, "csv")
-    columns, rows = _result_columns_and_rows(result)
-    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        if columns:
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        f.write(
+            "\n".join(
+                [
+                    "=" * 70,
+                    "  KB카드 법인영업 데이터 분석 보고서",
+                    "=" * 70,
+                    f"  작성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"  질문: {question}",
+                    f"  분석 경로: {_get_source_label(result)}",
+                    "=" * 70,
+                    "",
+                ]
+            )
+        )
+        if answer:
+            f.write(f"\n[분석 결과]\n{'-' * 70}\n{answer}\n")
+        if columns and raw_rows:
+            f.write(f"\n[상세 데이터] (총 {len(raw_rows)}건)\n{'-' * 70}\n")
+            writer = csv.writer(f, delimiter="\t", lineterminator="\n")
             writer.writerow(columns)
-        for row in rows:
-            writer.writerow(row)
+            for row in raw_rows:
+                writer.writerow(_row_values(row, raw_columns))
+        if sql:
+            f.write(f"\n[실행 SQL]\n{'-' * 70}\n{sql}\n")
+        f.write(f"\n{'=' * 70}\n  KB카드 법인영업 Text2SQL Agent v10 자동생성 보고서\n{'=' * 70}")
     return str(filepath)
 
 
@@ -511,6 +636,8 @@ def _get_source_label(result: dict) -> str:
         return f"Tool: {tool}"
     elif matched:
         return f"검증된 쿼리: {matched}"
+    elif result.get("question_type") == "direct_sql":
+        return "사용자 SQL 실행"
     elif result.get("question_type") == "direct":
         return "직접 답변"
     else:

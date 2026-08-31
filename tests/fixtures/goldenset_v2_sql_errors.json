@@ -1,0 +1,2108 @@
+{
+ "metadata": {
+  "source": "goldenset-v2-sql-errors.csv",
+  "total_error_rows": 400,
+  "error_kind_counts": {
+   "guard": 332,
+   "column_not_found": 57,
+   "syntax": 10,
+   "group_by": 1
+  },
+  "baseline": "v1 semantic_layer.yaml + v1 _phrase_in_text",
+  "notes": [
+   "column_gaps 는 v1 기준으로 질문↔컬럼 매칭이 실패한 조합이다. 회귀 테스트의 기준선.",
+   "dialect_failures 의 agent_sql 은 Athena가 거절한 원문이므로 수정하지 않는다."
+  ]
+ },
+ "column_gaps": [
+  {
+   "id": "cs-golden-v2-0044",
+   "table": "tmdaaus01",
+   "column": "가맹점상태구분코드",
+   "question": "2026년 7월 기준 가맹점 상태구분별 가맹점 수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0045",
+   "table": "tmdaaus01",
+   "column": "가맹점배달가능여부",
+   "question": "2026년 7월 기준 배달이 가능한 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0046",
+   "table": "tmdaaus01",
+   "column": "가맹점포장가능여부",
+   "question": "2026년 7월 기준 포장이 가능한 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0047",
+   "table": "tmdaaus01",
+   "column": "가맹점주차가능여부",
+   "question": "2026년 7월 기준 주차가 가능한 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0048",
+   "table": "tmdaaus01",
+   "column": "가맹점예약가능여부",
+   "question": "2026년 7월 기준 예약이 가능한 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0049",
+   "table": "tmdaaus01",
+   "column": "평일24시간운영여부",
+   "question": "2026년 7월 기준 평일 24시간 운영하는 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0050",
+   "table": "tmdaaus01",
+   "column": "직영점여부",
+   "question": "2026년 7월 기준 직영점인 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0162",
+   "table": "tmdaa3e16",
+   "column": "금월이용합계금액",
+   "question": "2026년 7월 법인카드 금월 이용금액과 금월 청구금액을 비교해서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0162",
+   "table": "tmdaa3e16",
+   "column": "금월청구금액",
+   "question": "2026년 7월 법인카드 금월 이용금액과 금월 청구금액을 비교해서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0162",
+   "table": "tmdaa3e16",
+   "column": "금월이용합계건수",
+   "question": "2026년 7월 법인카드 금월 이용금액과 금월 청구금액을 비교해서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0162",
+   "table": "tmdaa3e16",
+   "column": "금월청구건수",
+   "question": "2026년 7월 법인카드 금월 이용금액과 금월 청구금액을 비교해서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0171",
+   "table": "tmdaa5e11",
+   "column": "가맹점미수금등록건수",
+   "question": "2026년 7월 가맹점 미수금 등록금액과 회수금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0171",
+   "table": "tmdaa5e11",
+   "column": "가맹점미수금등록금액",
+   "question": "2026년 7월 가맹점 미수금 등록금액과 회수금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0171",
+   "table": "tmdaa5e11",
+   "column": "가맹점미수금회수건수",
+   "question": "2026년 7월 가맹점 미수금 등록금액과 회수금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0171",
+   "table": "tmdaa5e11",
+   "column": "가맹점미수금회수금액",
+   "question": "2026년 7월 가맹점 미수금 등록금액과 회수금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0174",
+   "table": "tmdaa5e11",
+   "column": "가맹점명",
+   "question": "2026년 7월 기준 가맹점 월 승인한도금액이 큰 가맹점 20곳을 알려줘",
+   "v1_synonyms": [
+    "가맹점이름",
+    "상호",
+    "상호명"
+   ]
+  },
+  {
+   "id": "cs-golden-v2-0174",
+   "table": "tmdaa5e11",
+   "column": "가맹점1회승인한도금액",
+   "question": "2026년 7월 기준 가맹점 월 승인한도금액이 큰 가맹점 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0174",
+   "table": "tmdaa5e11",
+   "column": "가맹점일승인한도금액",
+   "question": "2026년 7월 기준 가맹점 월 승인한도금액이 큰 가맹점 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0174",
+   "table": "tmdaa5e11",
+   "column": "가맹점월승인한도금액",
+   "question": "2026년 7월 기준 가맹점 월 승인한도금액이 큰 가맹점 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0315",
+   "table": "tmdaa5e11",
+   "column": "가맹점일시불매출금액",
+   "question": "2026년 3월 가맹점매출금액을 가맹점상태 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0315",
+   "table": "tmdaa5e11",
+   "column": "가맹점할부매출금액",
+   "question": "2026년 3월 가맹점매출금액을 가맹점상태 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0399",
+   "table": "tbdaaat03",
+   "column": "할부요율그룹구분코드",
+   "question": "현재 기준 할부요율그룹별 통합한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0404",
+   "table": "tbdaaat03",
+   "column": "CA한도등급코드",
+   "question": "현재 기준 CA한도별 CA한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0419",
+   "table": "tbdaaat03",
+   "column": "연회비면제구분코드",
+   "question": "현재 기준 연회비면제별 유효신용카드수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0424",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "현재 기준 회원자격별 결제단위수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0429",
+   "table": "tbdaaat03",
+   "column": "CA요율그룹구분코드",
+   "question": "현재 기준 CA요율그룹별 유효체크카드수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0434",
+   "table": "tbdaaat03",
+   "column": "통합한도등급코드",
+   "question": "현재 기준 부서사업장이용한도금액을 통합한도 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0459",
+   "table": "tbdaaat03",
+   "column": "CA요율그룹구분코드",
+   "question": "현재 기준 통합한도금액을 CA요율그룹 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0473",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 자산건전성 분류별 특수채권편입원금을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0479",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "회원자격별로 현재 기준 평균 통합 ASS 평점을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0481",
+   "table": "tmdaa3e16",
+   "column": "회수방법구분코드",
+   "question": "2024년 10월 금월할부이용금액을 회수방법 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0483",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 특수채권편입수수료를 자산건전성 분류 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0501",
+   "table": "tmdaa3e16",
+   "column": "교부유형구분코드",
+   "question": "2025년 5월 금월이용합계건수를 교부유형 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0533",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2026년 특수채권편입연체료를 연체채권 종류 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0538",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 특수채권편입가지급금을 자산건전성 분류 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0548",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "연체채권 종류별로 2026년 특수채권편입가지급금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0563",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "카드론평가상품별로 2026년 특수채권편입수수료를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0633",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "자산건전성 분류별로 2024년 리볼빙일시불편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0638",
+   "table": "tbmaisd06",
+   "column": "KB카드BC카드구분코드",
+   "question": "KB카드·BC카드별로 2025년 특수채권편입연체료를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0643",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "카드론평가상품별로 2026년 특수채권편입가지급금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0648",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "채권관리부점별로 2024년 일시불편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0703",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 평균 연체회차를 자산건전성 분류 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0726",
+   "table": "tbdaabt30",
+   "column": "카드브랜드구분코드",
+   "question": "2025년 9월 매출금액을 카드브랜드 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0748",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 채권관리부점별 리볼빙CA편입원금을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0753",
+   "table": "tbmaisd06",
+   "column": "회계계정과목코드",
+   "question": "2025년 회계계정과목별 평균 연체회차를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0758",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2026년 연체채권 종류별 특수채권건수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0783",
+   "table": "tbmewcm94",
+   "column": "회계계정과목코드",
+   "question": "회계계정과목별로 2025년 4월 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0783",
+   "table": "tbmewcm94",
+   "column": "기대1년PD율",
+   "question": "회계계정과목별로 2025년 4월 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0803",
+   "table": "tbmewcm94",
+   "column": "기대1년PD율",
+   "question": "2025년 3월 충당금 차주 구분별 평균 기대 1년 PD율을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0808",
+   "table": "tbmewcm94",
+   "column": "회계계정과목코드",
+   "question": "2025년 1월 회계계정과목별 평균 충당금 기대 LGD율을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0808",
+   "table": "tbmewcm94",
+   "column": "충당금기대LGD율",
+   "question": "2025년 1월 회계계정과목별 평균 충당금 기대 LGD율을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0853",
+   "table": "tbmewcm94",
+   "column": "금융회계구분코드",
+   "question": "금융회계 구분별로 2025년 1월 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0853",
+   "table": "tbmewcm94",
+   "column": "기대1년PD율",
+   "question": "금융회계 구분별로 2025년 1월 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0896",
+   "table": "tbdaabt30",
+   "column": "카드매출유형구분코드",
+   "question": "카드매출유형별로 2026년 2월 소득공제제외대상금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0918",
+   "table": "tbmewcm94",
+   "column": "금융회계구분코드",
+   "question": "금융회계 구분별로 2026년 1월 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0938",
+   "table": "tbdccam02",
+   "column": "카드거래정지사유구분코드",
+   "question": "2025년 1월 거래정지건수를 카드거래정지사유 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0015",
+   "table": "tmdaaus01",
+   "column": "가맹점사업주체구분코드",
+   "question": "서울특별시에서 2026년 7월 기준 기업카드를 보유하지 않은 법인 가맹점이 몇 개인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0017",
+   "table": "tbdaa1d12",
+   "column": "한도증액가망여부",
+   "question": "2026년 7월 기준 한도증액 가망으로 표시된 기업 명단과 총한도를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0036",
+   "table": "tmdaaus01",
+   "column": "마케팅업종대분류구분명",
+   "question": "2026년 7월 마케팅 업종 대분류별 가맹점 수와 전월 매입금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0057",
+   "table": "tbdaadt01",
+   "column": "가맹점해지사유구분코드",
+   "question": "2026년 7월에 계약이 해지된 가맹점 수와 해지사유 구분별 분포를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0057",
+   "table": "tbdaadt01",
+   "column": "가맹점해지년월일",
+   "question": "2026년 7월에 계약이 해지된 가맹점 수와 해지사유 구분별 분포를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0085",
+   "table": "tbdaadb17",
+   "column": "업종대분류코드명",
+   "question": "2026년 1월부터 7월까지 업종 대분류별 법인카드 이용건수를 많은 순으로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0119",
+   "table": "tbdaaat03",
+   "column": "부서사업장이용한도금액",
+   "question": "기업 회원의 부서사업장 이용한도금액 상위 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0119",
+   "table": "tbdaaat03",
+   "column": "기업회원이용한도금액",
+   "question": "기업 회원의 부서사업장 이용한도금액 상위 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0120",
+   "table": "tbdaaat03",
+   "column": "통합한도금액",
+   "question": "기업 회원의 통합한도등급코드별 회원 수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0122",
+   "table": "tmdaaaa12",
+   "column": "가맹점대표자여부",
+   "question": "2026년 7월 기준 가맹점 대표자로 등록된 관계를 관계구분별로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0125",
+   "table": "tbdaaat05",
+   "column": "모바일카드여부",
+   "question": "현재 기준 모바일 카드로 발급된 기업카드 좌수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0126",
+   "table": "tbdaaat05",
+   "column": "알파원카드여부",
+   "question": "현재 기준 알파원 카드로 발급된 기업카드 좌수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0127",
+   "table": "tbdaaat05",
+   "column": "갱신카드여부",
+   "question": "현재 기준 갱신 카드로 발급된 기업카드 좌수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0128",
+   "table": "tbdaaat05",
+   "column": "교체카드여부",
+   "question": "현재 기준 교체 카드로 발급된 기업카드 좌수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0140",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2026년 기업 특수채권을 자산건전성 분류별로 요약해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0140",
+   "table": "tbmaisd06",
+   "column": "특수채권편입원금",
+   "question": "2026년 기업 특수채권을 자산건전성 분류별로 요약해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0142",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2026년 기업 특수채권을 연체채권 종류별로 편입원금과 건수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0142",
+   "table": "tbmaisd06",
+   "column": "특수채권편입원금",
+   "question": "2026년 기업 특수채권을 연체채권 종류별로 편입원금과 건수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0142",
+   "table": "tbmaisd06",
+   "column": "특수채권편입이자",
+   "question": "2026년 기업 특수채권을 연체채권 종류별로 편입원금과 건수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0142",
+   "table": "tbmaisd06",
+   "column": "특수채권편입연체료",
+   "question": "2026년 기업 특수채권을 연체채권 종류별로 편입원금과 건수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0145",
+   "table": "tbmewcm94",
+   "column": "회계계정과목코드",
+   "question": "2026년 7월 기업 대손충당금을 회계계정과목별로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0176",
+   "table": "tmdaaus01",
+   "column": "사업자과세유형구분코드",
+   "question": "2026년 7월 기준 사업자 과세유형별 가맹점 수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0177",
+   "table": "tmdaaus01",
+   "column": "신용카드가맹점수수료율",
+   "question": "서울특별시 가맹점의 평균 신용카드 수수료율을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0185",
+   "table": "tbdaa1d12",
+   "column": "사업자과세분류구분코드",
+   "question": "2026년 7월 기준 기업고객을 사업자 과세분류별로 몇 곳인지 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0188",
+   "table": "tbdaaat05",
+   "column": "발급유형구분코드",
+   "question": "현재 기준 기업카드를 발급유형 구분별로 몇 좌인지 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0198",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2026년 기업 특수채권을 채권관리부점별 상위 10곳으로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0198",
+   "table": "tbmaisd06",
+   "column": "특수채권편입원금",
+   "question": "2026년 기업 특수채권을 채권관리부점별 상위 10곳으로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0199",
+   "table": "tbmaisd06",
+   "column": "연체회차",
+   "question": "2026년 기업 특수채권을 연체회차별로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0199",
+   "table": "tbmaisd06",
+   "column": "특수채권편입원금",
+   "question": "2026년 기업 특수채권을 연체회차별로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0201",
+   "table": "tbmewcm94",
+   "column": "유효회원구분코드",
+   "question": "2026년 7월 기업 대손충당금을 유효회원 구분별로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0384",
+   "table": "tbdaaat03",
+   "column": "CA요율그룹구분코드",
+   "question": "현재 기준 유효신용카드수가 가장 많은 CA요율그룹 상위 30개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0513",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2026년 특수채권편입이자가 가장 많은 연체채권 종류 상위 20개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0524",
+   "table": "tbdaaat03",
+   "column": "카드신용체크이원화구분코드",
+   "question": "현재 기준 유효신용카드수가 가장 많은 카드신용체크이원화 상위 15개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0549",
+   "table": "tbdaaat03",
+   "column": "연회비면제구분코드",
+   "question": "현재 기준 CA한도금액이 가장 많은 연회비면제 상위 15개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0554",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "현재 기준 회원수가 가장 많은 회원자격 상위 15개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0579",
+   "table": "tbdaaat05",
+   "column": "상품중분류구분코드",
+   "question": "현재 기준 상품중분류별 평균 기업카드 신용한도금액 상위 15개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0579",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 상품중분류별 평균 기업카드 신용한도금액 상위 15개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0584",
+   "table": "tbdaaat05",
+   "column": "카드브랜드구분코드",
+   "question": "카드브랜드별로 현재 기준 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0594",
+   "table": "tbdaaat05",
+   "column": "카드브랜드구분코드",
+   "question": "현재 기준 카드브랜드별 기업카드신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0599",
+   "table": "tbdaaat05",
+   "column": "카드등급그룹코드",
+   "question": "현재 기준 카드등급그룹별 평균 기업카드 신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0599",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 카드등급그룹별 평균 기업카드 신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0604",
+   "table": "tbdaaat05",
+   "column": "상품중분류구분코드",
+   "question": "현재 기준 상품중분류별 회원수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0624",
+   "table": "tbdaaat05",
+   "column": "상품중분류구분코드",
+   "question": "현재 기준 소유고객수를 상품중분류 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0659",
+   "table": "tbdaaat05",
+   "column": "발급유형구분코드",
+   "question": "현재 기준 발급유형별 평균 기업카드 신용한도금액 상위 50개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0659",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 발급유형별 평균 기업카드 신용한도금액 상위 50개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0694",
+   "table": "tbdaaat05",
+   "column": "교부유형구분코드",
+   "question": "현재 기준 평균 기업카드 신용한도금액을 교부유형 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0694",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 평균 기업카드 신용한도금액을 교부유형 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0699",
+   "table": "tbdaaat05",
+   "column": "발급유형구분코드",
+   "question": "현재 기준 회원수를 발급유형 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0723",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 특수채권건수가 가장 많은 자산건전성 분류 상위 25개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0733",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 리볼빙일시불편입원금이 가장 많은 채권관리부점 상위 25개를 뽑아줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0744",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 모바일카드여부별 평균 기업카드 신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0769",
+   "table": "tbdaaat05",
+   "column": "CD기기능구분코드",
+   "question": "현재 기준 카드좌수를 CD기기능 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0779",
+   "table": "tbdaaat05",
+   "column": "카드거래매체구분코드",
+   "question": "현재 기준 카드거래매체별 평균 기업카드 신용한도금액 상위 20개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0779",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 카드거래매체별 평균 기업카드 신용한도금액 상위 20개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0784",
+   "table": "tbdaaat05",
+   "column": "수령지주소구분코드",
+   "question": "수령지주소별로 현재 기준 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0799",
+   "table": "tbdaaat05",
+   "column": "카드거래매체구분코드",
+   "question": "카드거래매체별로 현재 기준 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0813",
+   "table": "tbmewcm94",
+   "column": "금융회계구분코드",
+   "question": "2025년 4월 금융회계 구분별 기대대손충당금 상위 25개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0814",
+   "table": "tbdaaat05",
+   "column": "카드거래매체구분코드",
+   "question": "현재 기준 카드거래매체별 소유고객수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0824",
+   "table": "tbdaaat05",
+   "column": "수령지주소구분코드",
+   "question": "현재 기준 수령지주소별 기업카드신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0828",
+   "table": "tbmewcm94",
+   "column": "회계계정과목코드",
+   "question": "2026년 7월 회계계정과목별 고객수 상위 25개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0839",
+   "table": "tbdaaat05",
+   "column": "수령지주소구분코드",
+   "question": "현재 기준 평균 기업카드 신용한도금액을 수령지주소 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0839",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 평균 기업카드 신용한도금액을 수령지주소 기준으로 집계해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0859",
+   "table": "tbdaaat05",
+   "column": "CD기기능구분코드",
+   "question": "CD기기능별로 현재 기준 소유고객수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0868",
+   "table": "tbmewcm94",
+   "column": "충당금기대LGD율",
+   "question": "최근 1년 월별 평균 충당금 기대 LGD율 추이를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0879",
+   "table": "tbdaaat05",
+   "column": "수령지주소구분코드",
+   "question": "수령지주소별로 현재 기준 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0889",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 카드도난분실발급여부별 평균 기업카드 신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0899",
+   "table": "tbdaaat05",
+   "column": "수령지주소구분코드",
+   "question": "현재 기준 수령지주소별 소유고객수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0913",
+   "table": "tbmewcm94",
+   "column": "유효회원구분코드",
+   "question": "2026년 3월 유효회원 구분별 고객수 상위 10개를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0088",
+   "table": "tbdaabt30",
+   "column": "가맹점번호",
+   "question": "2026년 7월 법인카드 이용금액을 결제처 가맹점 시도별로 보여줘",
+   "v1_synonyms": [
+    "가맹점ID",
+    "가맹점코드"
+   ]
+  },
+  {
+   "id": "cs-golden-v2-0108",
+   "table": "tbdaaat01",
+   "column": "대표자고객식별자",
+   "question": "2026년 7월 신규 기업고객 중 대표자가 여성인 고객을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0111",
+   "table": "tbdaaat05",
+   "column": "모집부점코드",
+   "question": "2026년 모집부점별 기업카드 신규 발급 좌수 상위 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0111",
+   "table": "tbdaaat05",
+   "column": "카드신규발급년월일",
+   "question": "2026년 모집부점별 기업카드 신규 발급 좌수 상위 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0114",
+   "table": "tbdaaat05",
+   "column": "카드등급구분코드",
+   "question": "2026년 7월 기준 기업카드 등급 구분별 유효 좌수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0144",
+   "table": "tbmewcm94",
+   "column": "충당금기대LGD율",
+   "question": "2026년 월별 기업 대손충당금률과 평균 PD, LGD를 계산해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0165",
+   "table": "tbdaabt30",
+   "column": "회원자산관리부점코드",
+   "question": "2026년 7월 회원자산관리부점별 법인카드 매출금액 상위 20곳을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0172",
+   "table": "tmdaaus01",
+   "column": "가맹점업종코드",
+   "question": "2026년 7월 기준 거래정지 상태인 가맹점 수를 업종대분류별로 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0172",
+   "table": "tmdaaus01",
+   "column": "가맹점거래정지여부",
+   "question": "2026년 7월 기준 거래정지 상태인 가맹점 수를 업종대분류별로 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0172",
+   "table": "tbdaadb17",
+   "column": "업종대분류코드명",
+   "question": "2026년 7월 기준 거래정지 상태인 가맹점 수를 업종대분류별로 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0183",
+   "table": "tbdaaat01",
+   "column": "등록부점코드",
+   "question": "등록부점별 기업고객 수 상위 20곳을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0191",
+   "table": "tddaa3e21",
+   "column": "관리부점코드",
+   "question": "2026년 7월 최초 모집 기업카드 좌수를 관리부점별 상위 10곳으로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0191",
+   "table": "tddaa3e21",
+   "column": "최초모집카드여부",
+   "question": "2026년 7월 최초 모집 기업카드 좌수를 관리부점별 상위 10곳으로 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0193",
+   "table": "tddaa3d01",
+   "column": "상품중분류구분코드",
+   "question": "2026년 7월 31일 기준 유효한 기업카드 좌수를 상품중분류별로 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0195",
+   "table": "tbdaa1d12",
+   "column": "가맹점업종코드",
+   "question": "2026년 7월 기준 연체가 발생한 기업을 가맹점 업종코드별로 몇 곳인지 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0195",
+   "table": "tbdaadb17",
+   "column": "가맹점업종명",
+   "question": "2026년 7월 기준 연체가 발생한 기업을 가맹점 업종코드별로 몇 곳인지 보여줘",
+   "v1_synonyms": [
+    "업종",
+    "업종명"
+   ]
+  },
+  {
+   "id": "cs-golden-v2-0197",
+   "table": "tbdaa1d12",
+   "column": "최하자산건전성구분코드",
+   "question": "2026년 7월 기준 최하 자산건전성 구분별 기업 수와 연체원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0213",
+   "table": "tbdaadb17",
+   "column": "업종대분류코드명",
+   "question": "2026년 7월 업종 대분류별 법인카드 이용금액을 전월과 비교해서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0252",
+   "table": "tmdaa3e16",
+   "column": "상품중분류구분코드",
+   "question": "2026년 5월 금월이용합계금액을 상품중분류별로 전년 동월과 비교해줘",
+   "v1_synonyms": [
+    "상품중분류",
+    "상품 중분류"
+   ]
+  },
+  {
+   "id": "cs-golden-v2-0256",
+   "table": "tmdaa3e16",
+   "column": "발급유형구분코드",
+   "question": "2026년 2월 카드등급그룹과 발급유형을 교차해서 금월이용합계금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0262",
+   "table": "tddaa3l01",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 12월 31일 기준 연체관리부점과 KB카드·BC카드를 교차해서 연체합계금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0267",
+   "table": "tmdaa5e11",
+   "column": "가맹점일시불매출건수",
+   "question": "2026년 3월 가맹점매출건수가 전체 평균보다 높은 가맹점 업종명만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0267",
+   "table": "tmdaa5e11",
+   "column": "가맹점할부매출건수",
+   "question": "2026년 3월 가맹점매출건수가 전체 평균보다 높은 가맹점 업종명만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0267",
+   "table": "tmdaa5e11",
+   "column": "가맹점업종코드",
+   "question": "2026년 3월 가맹점매출건수가 전체 평균보다 높은 가맹점 업종명만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0288",
+   "table": "tmdaa3e16",
+   "column": "KB카드BC카드구분코드",
+   "question": "2026년 1월 KB카드·BC카드별 금월이용합계금액 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0301",
+   "table": "tmdaa3e16",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 10월 KB카드·BC카드별 기업당 평균 금월이용합계건수를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0316",
+   "table": "tmdaa3e16",
+   "column": "카드등급그룹코드",
+   "question": "2026년 1월 금월일시불이용건수를 카드등급그룹별로 전년 동월과 비교해줘",
+   "v1_synonyms": [
+    "카드등급그룹",
+    "카드 등급 그룹"
+   ]
+  },
+  {
+   "id": "cs-golden-v2-0331",
+   "table": "tmdaa3e16",
+   "column": "회수방법구분코드",
+   "question": "2026년 1월 금월이용합계금액을 회수방법별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0334",
+   "table": "tbdaaat03",
+   "column": "통합한도등급코드",
+   "question": "현재 기준 통합한도와 결제단위분리를 교차해서 유효체크카드수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0334",
+   "table": "tbdaaat03",
+   "column": "결제단위분리구분코드",
+   "question": "현재 기준 통합한도와 결제단위분리를 교차해서 유효체크카드수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0344",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "현재 기준 회원자격별 CA한도금액 순위를 50위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0351",
+   "table": "tmdaa3e16",
+   "column": "카드결제기관구분코드",
+   "question": "2025년 10월 카드결제기관과 갱신카드여부를 교차해서 금월이용합계금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0356",
+   "table": "tmdaa3e16",
+   "column": "회수방법구분코드",
+   "question": "2026년 7월 카드등급과 회수방법을 교차해서 금월CA이용금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0364",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "현재 기준 회원자격별 기업회원이용한도금액 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0369",
+   "table": "tbdaaat03",
+   "column": "할부요율그룹구분코드",
+   "question": "현재 기준 유효신용카드수가 전체 평균보다 높은 할부요율그룹만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0371",
+   "table": "tmdaa3e16",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 4월 KB카드·BC카드와 교부유형을 교차해서 금월일시불이용건수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0371",
+   "table": "tmdaa3e16",
+   "column": "교부유형구분코드",
+   "question": "2025년 4월 KB카드·BC카드와 교부유형을 교차해서 금월일시불이용건수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0379",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "현재 기준 회원자격별 회원당 평균 부서사업장이용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0381",
+   "table": "tmdaa3e16",
+   "column": "회수방법구분코드",
+   "question": "2025년 5월 금월일시불이용금액이 전체 평균보다 높은 회수방법만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0388",
+   "table": "tddaa3l01",
+   "column": "통합한도등급코드",
+   "question": "2025년 12월 31일 기준 통합한도별 연체료 순위를 25위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0389",
+   "table": "tbdaaat03",
+   "column": "CA한도등급코드",
+   "question": "현재 기준 CA한도별 회원당 평균 통합한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0396",
+   "table": "tmdaa3e16",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 1월 KB카드·BC카드별 금월할부이용금액이 1천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0403",
+   "table": "tddaa3l01",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 6월 30일 기준 KB카드·BC카드별 연체원금 순위를 25위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0415",
+   "table": "tmdaa5e11",
+   "column": "카드대금지급주기구분코드",
+   "question": "2025년 11월 가맹점일시불매출금액을 카드대금지급주기별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0416",
+   "table": "tmdaa3e16",
+   "column": "카드결제기관구분코드",
+   "question": "2025년 7월 카드결제기관별 금월이용합계건수가 100건 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0418",
+   "table": "tddaa3l01",
+   "column": "CA한도등급코드",
+   "question": "2025년 12월 31일 기준 카드브랜드와 CA한도를 교차해서 CA연체원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0420",
+   "table": "tbdaadb17",
+   "column": "업종대분류코드명",
+   "question": "2025년 11월 최근9개월가맹점매출금액을 업종 대분류별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0420",
+   "table": "tmdaa5e11",
+   "column": "가맹점업종코드",
+   "question": "2025년 11월 최근9개월가맹점매출금액을 업종 대분류별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0439",
+   "table": "tbdaaat03",
+   "column": "결제단위분리구분코드",
+   "question": "현재 기준 결제단위분리별 유효신용카드수 순위를 20위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0448",
+   "table": "tddaa3l01",
+   "column": "카드결제기관구분코드",
+   "question": "2026년 3월 31일 기준 카드결제기관별 채권잔액이 3천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0449",
+   "table": "tbdaaat03",
+   "column": "연회비면제구분코드",
+   "question": "현재 기준 연회비면제와 회수방법을 교차해서 유효체크카드수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0449",
+   "table": "tbdaaat03",
+   "column": "회수방법구분코드",
+   "question": "현재 기준 연회비면제와 회수방법을 교차해서 유효체크카드수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0450",
+   "table": "tmdaa5e11",
+   "column": "카드VAN사구분코드",
+   "question": "2024년 12월 가맹점상태와 카드VAN사를 교차해서 해외가맹점매출건수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0454",
+   "table": "tbdaaat03",
+   "column": "회원자격코드",
+   "question": "현재 기준 회원자격과 CA요율그룹을 교차해서 평균 통합 BSS 평점을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0454",
+   "table": "tbdaaat03",
+   "column": "CA요율그룹구분코드",
+   "question": "현재 기준 회원자격과 CA요율그룹을 교차해서 평균 통합 BSS 평점을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0464",
+   "table": "tbdaaat03",
+   "column": "할부요율그룹구분코드",
+   "question": "현재 기준 할부요율그룹별 CA한도금액 순위를 20위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0468",
+   "table": "tddaa3l01",
+   "column": "통합한도등급코드",
+   "question": "2026년 7월 31일 기준 연체수수료를 통합한도별 비중으로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0471",
+   "table": "tmdaa3e16",
+   "column": "카드결제기관구분코드",
+   "question": "2025년 9월 금월일시불이용건수를 카드결제기관별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0474",
+   "table": "tbdaaat03",
+   "column": "연회비면제구분코드",
+   "question": "현재 기준 연회비면제별 통합한도금액이 1천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0476",
+   "table": "tmdaa3e16",
+   "column": "카드등급구분코드",
+   "question": "2025년 9월 금월해외CA이용금액을 카드등급별로 전년 동월과 비교해줘",
+   "v1_synonyms": [
+    "카드등급",
+    "카드 등급"
+   ]
+  },
+  {
+   "id": "cs-golden-v2-0478",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2026년 연체채권 종류와 자산건전성 분류를 교차해서 특수채권편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0478",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2026년 연체채권 종류와 자산건전성 분류를 교차해서 특수채권편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0484",
+   "table": "tbdaaat03",
+   "column": "CA요율그룹구분코드",
+   "question": "현재 기준 CA한도금액이 전체 평균보다 높은 CA요율그룹만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0488",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2026년 연체채권 종류별 특수채권편입수수료가 5천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0489",
+   "table": "tbdaaat03",
+   "column": "할부요율그룹구분코드",
+   "question": "현재 기준 할부요율그룹별 기업회원이용한도금액 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0493",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 특수채권편입이자가 전체 평균보다 높은 자산건전성 분류만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0494",
+   "table": "tbdaaat03",
+   "column": "CA한도등급코드",
+   "question": "현재 기준 CA한도별 부서사업장이용한도금액이 1천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0496",
+   "table": "tmdaa3e16",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 9월 금월CA이용금액을 KB카드·BC카드별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0499",
+   "table": "tbdaaat03",
+   "column": "결제정보이원화구분코드",
+   "question": "현재 기준 유효신용카드수가 전체 평균보다 높은 결제정보이원화만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0519",
+   "table": "tbdaaat03",
+   "column": "할부요율그룹구분코드",
+   "question": "현재 기준 할부요율그룹별 회원당 평균 부서사업장이용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0526",
+   "table": "tmdaa3e16",
+   "column": "교부유형구분코드",
+   "question": "2025년 2월 교부유형별 금월일시불이용금액 순위를 5위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0530",
+   "table": "tmdaa5e11",
+   "column": "카드VAN사구분코드",
+   "question": "2025년 7월 가맹점매출건수가 전체 평균보다 높은 카드VAN사만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0530",
+   "table": "tmdaa5e11",
+   "column": "가맹점일시불매출건수",
+   "question": "2025년 7월 가맹점매출건수가 전체 평균보다 높은 카드VAN사만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0530",
+   "table": "tmdaa5e11",
+   "column": "가맹점할부매출건수",
+   "question": "2025년 7월 가맹점매출건수가 전체 평균보다 높은 카드VAN사만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0536",
+   "table": "tmdaa3e16",
+   "column": "발급유형구분코드",
+   "question": "2024년 12월 발급유형과 교체카드여부를 교차해서 금월일시불이용건수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0541",
+   "table": "tmdaa3e16",
+   "column": "카드결제기관구분코드",
+   "question": "2025년 9월 상품중분류와 카드결제기관을 교차해서 금월해외CA이용금액을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0545",
+   "table": "tmdaa5e11",
+   "column": "카드지역구분코드",
+   "question": "2025년 8월 카드지역별 가맹점당 평균 가맹점매출금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0545",
+   "table": "tmdaa5e11",
+   "column": "가맹점일시불매출금액",
+   "question": "2025년 8월 카드지역별 가맹점당 평균 가맹점매출금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0545",
+   "table": "tmdaa5e11",
+   "column": "가맹점할부매출금액",
+   "question": "2025년 8월 카드지역별 가맹점당 평균 가맹점매출금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0551",
+   "table": "tmdaa3e16",
+   "column": "회수방법구분코드",
+   "question": "2026년 5월 회수방법별 금월할부이용건수 순위를 5위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0553",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 자산건전성 분류별 일시불편입원금 순위를 10위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0556",
+   "table": "tmdaa3e16",
+   "column": "교부유형구분코드",
+   "question": "2024년 10월 교부유형별 금월일시불이용건수 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0558",
+   "table": "tbmaisd06",
+   "column": "KB카드BC카드구분코드",
+   "question": "2025년 KB카드·BC카드와 카드론평가상품을 교차해서 특수채권편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0558",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "2025년 KB카드·BC카드와 카드론평가상품을 교차해서 특수채권편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0559",
+   "table": "tbdaaat05",
+   "column": "상품중분류구분코드",
+   "question": "현재 기준 상품중분류와 교부유형을 교차해서 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0559",
+   "table": "tbdaaat05",
+   "column": "교부유형구분코드",
+   "question": "현재 기준 상품중분류와 교부유형을 교차해서 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0564",
+   "table": "tbdaaat05",
+   "column": "카드등급그룹코드",
+   "question": "현재 기준 카드좌수를 카드등급그룹별 비중으로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0566",
+   "table": "tmdaa3e16",
+   "column": "발급유형구분코드",
+   "question": "2026년 6월 발급유형별 금월할부이용금액이 3억원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0568",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 채권관리부점별 특수채권편입이자 순위를 10위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0573",
+   "table": "tbmaisd06",
+   "column": "회계계정과목코드",
+   "question": "2025년 회계계정과목과 연체채권 종류를 교차해서 특수채권편입연체료를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0573",
+   "table": "tbmaisd06",
+   "column": "연체채권종류구분코드",
+   "question": "2025년 회계계정과목과 연체채권 종류를 교차해서 특수채권편입연체료를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0574",
+   "table": "tbdaaat05",
+   "column": "카드등급그룹코드",
+   "question": "현재 기준 카드등급그룹별 카드당 평균 기업카드신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0576",
+   "table": "tmdaa3e16",
+   "column": "카드결제기관구분코드",
+   "question": "2026년 4월 금월할부이용건수가 전체 평균보다 높은 카드결제기관만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0578",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "2026년 특수채권편입이자가 전체 평균보다 높은 카드론평가상품만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0583",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 채권관리부점별 특수채권편입연체료 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0598",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 자산건전성 분류별 할부편입원금 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0614",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 카드브랜드별 평균 기업카드 신용한도금액 순위를 5위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0614",
+   "table": "tbdaaat05",
+   "column": "카드브랜드구분코드",
+   "question": "현재 기준 카드브랜드별 평균 기업카드 신용한도금액 순위를 5위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0618",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 자산건전성 분류별 특수채권당 평균 CA편입원금을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0619",
+   "table": "tbdaaat05",
+   "column": "카드등급그룹코드",
+   "question": "현재 기준 카드등급그룹과 리볼빙대상여부를 교차해서 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0628",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 채권관리부점별 특수채권당 평균 특수채권편입가지급금을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0629",
+   "table": "tbdaaat05",
+   "column": "발급유형구분코드",
+   "question": "현재 기준 발급유형과 실물보유를 교차해서 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0629",
+   "table": "tbdaaat05",
+   "column": "실물보유구분코드",
+   "question": "현재 기준 발급유형과 실물보유를 교차해서 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0634",
+   "table": "tbdaaat05",
+   "column": "카드등급그룹코드",
+   "question": "현재 기준 카드등급그룹별 소유고객수가 50 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0639",
+   "table": "tbdaaat05",
+   "column": "교부유형구분코드",
+   "question": "현재 기준 카드좌수를 교부유형별 비중으로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0644",
+   "table": "tbdaaat05",
+   "column": "발급유형구분코드",
+   "question": "현재 기준 발급유형별 기업카드신용한도금액이 5억원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0663",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "2026년 카드론평가상품별 일시불편입원금 순위를 30위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0668",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 채권관리부점과 회계계정과목을 교차해서 할부편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0668",
+   "table": "tbmaisd06",
+   "column": "회계계정과목코드",
+   "question": "2024년 채권관리부점과 회계계정과목을 교차해서 할부편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0671",
+   "table": "tbdaabt30",
+   "column": "카드매출유형구분코드",
+   "question": "2025년 11월 카드매출유형별 매출금액이 5억원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0679",
+   "table": "tbdaaat05",
+   "column": "교부유형구분코드",
+   "question": "현재 기준 교부유형별 카드당 평균 기업카드신용한도금액을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0683",
+   "table": "tbmaisd06",
+   "column": "자산건전성분류구분코드",
+   "question": "2024년 자산건전성 분류와 KB카드·BC카드를 교차해서 리볼빙CA편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0683",
+   "table": "tbmaisd06",
+   "column": "KB카드BC카드구분코드",
+   "question": "2024년 자산건전성 분류와 KB카드·BC카드를 교차해서 리볼빙CA편입원금을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0693",
+   "table": "tbmaisd06",
+   "column": "회계계정과목코드",
+   "question": "2025년 리볼빙일시불편입원금이 전체 평균보다 높은 회계계정과목만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0709",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 리볼빙대상여부별 평균 기업카드 신용한도금액 순위를 25위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0713",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "2026년 카드론평가상품별 할부편입원금 구성비를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0714",
+   "table": "tbdaaat05",
+   "column": "교부유형구분코드",
+   "question": "현재 기준 교부유형과 CD기기능을 교차해서 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0714",
+   "table": "tbdaaat05",
+   "column": "CD기기능구분코드",
+   "question": "현재 기준 교부유형과 CD기기능을 교차해서 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0718",
+   "table": "tbmaisd06",
+   "column": "채권관리부점코드",
+   "question": "2024년 채권관리부점별 CA편입원금이 5천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0724",
+   "table": "tbdaaat05",
+   "column": "카드거래매체구분코드",
+   "question": "현재 기준 카드거래매체와 카드도난분실발급여부를 교차해서 카드좌수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0728",
+   "table": "tbmaisd06",
+   "column": "카드론평가상품구분코드",
+   "question": "2026년 카드론평가상품별 특수채권당 평균 CA편입원금을 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0739",
+   "table": "tbdaaat05",
+   "column": "카드거래매체구분코드",
+   "question": "현재 기준 카드거래매체별 기업카드신용한도금액이 3천만원 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0741",
+   "table": "tbdaabt30",
+   "column": "카드매출유형구분코드",
+   "question": "2025년 12월 봉사료를 카드매출유형별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0754",
+   "table": "tbdaaat05",
+   "column": "교부유형구분코드",
+   "question": "현재 기준 교부유형별 소유고객수가 50 이상인 것만 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0756",
+   "table": "tbdaabt30",
+   "column": "매출전표종류구분코드",
+   "question": "2025년 4월 매출전표종류와 매입경로를 교차해서 봉사료를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0756",
+   "table": "tbdaabt30",
+   "column": "매입경로구분코드",
+   "question": "2025년 4월 매출전표종류와 매입경로를 교차해서 봉사료를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0781",
+   "table": "tbdaabt30",
+   "column": "카드브랜드구분코드",
+   "question": "2025년 6월 카드브랜드별 카드승인금액 순위를 25위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0798",
+   "table": "tbmewcm94",
+   "column": "충당금산출계정관리구분코드",
+   "question": "2025년 5월 기대대손충당금이 전체 평균보다 높은 충당금산출계정관리만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0806",
+   "table": "tbdaabt30",
+   "column": "상품중분류구분코드",
+   "question": "2025년 5월 카드승인금액이 전체 평균보다 높은 상품중분류만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0816",
+   "table": "tbdaabt30",
+   "column": "카드브랜드구분코드",
+   "question": "2025년 3월 봉사료를 카드브랜드별 비중으로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0829",
+   "table": "tbdaaat05",
+   "column": "기업카드신용한도금액",
+   "question": "현재 기준 CD기기능별 평균 기업카드 신용한도금액 순위를 10위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0829",
+   "table": "tbdaaat05",
+   "column": "CD기기능구분코드",
+   "question": "현재 기준 CD기기능별 평균 기업카드 신용한도금액 순위를 10위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0843",
+   "table": "tbmewcm94",
+   "column": "회계계정과목코드",
+   "question": "2026년 2월 회원수를 회계계정과목별로 전년 동월과 비교해줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0844",
+   "table": "tbdaaat05",
+   "column": "CD기기능구분코드",
+   "question": "현재 기준 회원수를 CD기기능별 비중으로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0846",
+   "table": "tbdaabt30",
+   "column": "카드브랜드구분코드",
+   "question": "2024년 12월 카드브랜드별 전표당 평균 가맹점수수료를 알려줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0863",
+   "table": "tbmewcm94",
+   "column": "유효회원구분코드",
+   "question": "2024년 12월 유효회원 구분과 금융회계 구분을 교차해서 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0863",
+   "table": "tbmewcm94",
+   "column": "금융회계구분코드",
+   "question": "2024년 12월 유효회원 구분과 금융회계 구분을 교차해서 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0863",
+   "table": "tbmewcm94",
+   "column": "기대1년PD율",
+   "question": "2024년 12월 유효회원 구분과 금융회계 구분을 교차해서 평균 기대 1년 PD율을 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0873",
+   "table": "tbmewcm94",
+   "column": "충당금산출계정관리구분코드",
+   "question": "2026년 5월 충당금산출계정관리별 고객수 순위를 15위까지 매겨줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0878",
+   "table": "tbmewcm94",
+   "column": "회계계정과목코드",
+   "question": "2026년 3월 충당금 차주 구분과 회계계정과목을 교차해서 회원수를 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0888",
+   "table": "tbmewcm94",
+   "column": "충당금산출계정관리구분코드",
+   "question": "2026년 2월 회원수를 충당금산출계정관리별 비중으로 나눠서 보여줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0903",
+   "table": "tbmewcm94",
+   "column": "금융회계구분코드",
+   "question": "2026년 4월 고객수가 전체 평균보다 높은 금융회계 구분만 골라줘",
+   "v1_synonyms": []
+  },
+  {
+   "id": "cs-golden-v2-0931",
+   "table": "tbdaabt08",
+   "column": "카드브랜드구분코드",
+   "question": "2025년 12월 국가와 카드브랜드를 교차해서 매출미화금액을 보여줘",
+   "v1_synonyms": []
+  }
+ ],
+ "dialect_failures": [
+  {
+   "id": "cs-golden-v2-0486",
+   "error_kind": "syntax",
+   "question": "2025년 8월 금월취소이용금액을 카드브랜드 기준으로 집계해줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 8:29: mismatched input ':'. Expecting: ')', ',', '.', 'FILTER', 'IGNORE', 'ORDER', 'OVER",
+   "agent_sql": "SELECT \"카드브랜드구분코드\" AS \"카드브랜드\",\n       COUNT(DISTINCT \"카드구분키번호\") AS \"카드수\",\n       SUM(\"금월이용합계건수\") AS \"총이용건수\",\n       SUM(\"금월이용합계금액\") AS \"총이용금액\",\n       SUM(\"금월일시불이용금액\") AS \"일시불이용\",\n       SUM(\"금월할부이용금액\") AS \"할부이용\",\n       SUM(\"금월ca이용금액\") AS \"CA이용\",\n       ROUND(SUM(\"금월이용합계금액\")::FLOAT / NULLIF(SUM(\"금월이용합계건수\"), 0), 0) AS \"건당평균금액\"\nFROM tmdaa3e16\nWHERE \"개인기업구분코드\" = '2'\n  AND \"기준년월\" BETWEEN '202508' AND '202508'\nGROUP BY \"카드브랜드구분코드\"\nORDER BY \"총이용금액\" DESC"
+  },
+  {
+   "id": "cs-golden-v2-0122",
+   "error_kind": "syntax",
+   "question": "2026년 7월 기준 가맹점 대표자로 등록된 관계를 관계구분별로 보여줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 107:1: mismatched input 'AND'. Expecting: ',', '.', 'AS', 'CROSS', 'EXCEPT', 'FETCH', 'F",
+   "agent_sql": "WITH upjong AS\n  (SELECT \"가맹점업종코드\",\n          \"가맹점업종명\",\n          \"업종대분류코드명\"\n   FROM tbdaadb17\n   WHERE \"사용여부\" = '1'),\n     gm_base AS\n  (SELECT a.\"가맹점신규년월일\" AS \"등록년월일\",\n          a.\"가맹점번호\",\n          a.\"기업고객식별자\",\n          a.\"대표고객식별자\" AS \"개인고객식별자\",\n          a.\"가맹점명\",\n          a.\"사업자등록번호\",\n          a.\"가맹점업종코드\",\n          b.\"가맹점업종명\",\n          b.\"업종대분류코드명\",\n          a.\"가맹점사업주체구분코드\",\n          a.\"현금카드결제기관구분코드\" AS \"가맹점결제계좌\",\n          a.\"신용카드가맹점수수료율\",\n          a.\"체크카드가맹점수수료율\",\n          a.\"가맹점관리부점코드\",\n          a.\"가맹점상태구분코드\"\n   FROM tbdaadt01 a\n   LEFT JOIN upjong b ON a.\"가맹점업종코드\" = b.\"가맹점업종코드\"),\n     gm_perf AS\n  (SELECT \"기준년월\",\n          \"가맹점번호\",\n          COALESCE(\"가맹점일시불매출금액\", 0) + COALESCE(\"가맹점할부매출금액\", 0) AS \"당월매출금액\",\n          \"최근1년가맹점매출금액\",\n          \"최근1년가맹점매출건수\",\n          \"최근3개월가맹점매출금액\",\n          \"최근3개월가맹점매출건수\",\n          \"가맹점상태구분코드\"\n   FROM tmdaa5e11\n   WHERE \"기준년월\" = '202607'),\n     card_base AS\n  (SELECT DISTINCT \"본인고객식별자\",\n                   \"개인기업구분코드\",\n                   \"카드결제기관구분코드\",\n                   \"상품중분류구분코드\",\n                   CASE\n                       WHEN \"카드결제기관구분코드\" = '004' THEN '1'\n                       ELSE '0'\n                   END AS \"KB카드계좌여부\"\n   FROM tbdaaat05\n   WHERE \"실제카드만료년월일\" > '20260731'\n     AND \"KB카드BC카드구분코드\" = '1'),\n     joined AS\n  (SELECT g.\"등록년월일\",\n          g.\"가맹점번호\",\n          g.\"기업고객식별자\",\n          g.\"개인고객식별자\",\n          g.\"가맹점명\",\n          g.\"사업자등록번호\",\n          g.\"가맹점업종코드\",\n          g.\"가맹점업종명\",\n          g.\"업종대분류코드명\",\n          g.\"가맹점사업주체구분코드\",\n          g.\"가맹점결제계좌\",\n          g.\"신용카드가맹점수수료율\",\n          g.\"체크카드가맹점수수료율\",\n          g.\"가맹점관리부점코드\",\n          COALESCE(p.\"가맹점상태구분코드\", g.\"가맹점상태구분코드\") AS \"가맹점상태구분코드\",\n          p.\"기준년월\",\n          p.\"당월매출금액\",\n          p.\"최근3개월가맹점매출금액\",\n          p.\"최근3개월가맹점매출건수\",\n          p.\"최근1년가맹점매출금액\",\n          p.\"최근1년가맹점매출건수\",\n          CASE\n              WHEN c1.\"본인고객식별자\" IS NOT NULL THEN '1'\n              ELSE '0'\n          END AS \"개인카드소지여부\",\n          CASE\n              WHEN c2.\"본인고객식별자\" IS NOT NULL THEN '1'\n              ELSE '0'\n          END AS \"기업카드소지여부\"\n   FROM gm_base g\n   LEFT JOIN gm_perf p ON g.\"가맹점번호\" = p.\"가맹점번호\"\n   LEFT JOIN card_base c1 ON g.\"개인고객식별자\" = c1.\"본인고객식별자\"\n   AND c1.\"개인기업구분코드\" = '1'\n   LEFT JOIN card_base c2 ON g.\"기업고객식별자\" = c2.\"본인고객식별자\"\n   AND c2.\"개인기업구분코드\" = '2')\nSELECT \"등록년월일\",\n       \"기준년월\",\n       \"가맹점번호\",\n       \"가맹점명\",\n       \"사업자등록번호\",\n       \"가맹점업종코드\",\n       \"가맹점업종명\",\n       \"업종대분류코드명\",\n       \"개인고객식별자\",\n       \"기업고객식별자\",\n       \"개인카드소지여부\",\n       \"기업카드소지여부\",\n       \"당월매출금액\",\n       \"최근3개월가맹점매출금액\",\n       \"최근3개월가맹점매출건수\",\n       \"최근1년가맹점매출금액\",\n       \"최근1년가맹점매출건수\",\n       \"신용카드가맹점수수료율\",\n       \"체크카드가맹점수수료율\",\n       \"가맹점결제계좌\",\n       \"가맹점관리부점코드\",\n       \"가맹점상태구분코드\"\nFROM joined\nAND \"가맹점명\" LIKE '%기준%가맹점%' ESCAPE '\\'\nORDER BY \"당월매출금액\" DESC NULLS LAST,\n         \"가맹점번호\"\nLIMIT 1000000"
+  },
+  {
+   "id": "cs-golden-v2-0820",
+   "error_kind": "syntax",
+   "question": "2026년 4월 마케팅 업종 대분류별 전월할부매입건수를 알려줘",
+   "error_first_line": "OperationalError: EXPRESSION_NOT_SCALAR: line 7:11: WHERE clause cannot contain aggregations, window functions or grouping operations: [ROW_NUMBER() OVER (PARTITION BY \"가맹점번호\" ORDER BY \"기준년월일\" DESC)]",
+   "agent_sql": "WITH latest_snapshot AS (\n    SELECT\n        \"가맹점번호\",\n        \"마케팅업종대분류구분명\",\n        \"전월할부매입건수\"\n    FROM tbdaaus01\n    WHERE SUBSTR(\"기준년월일\", 1, 6) = '202604'\n      AND ROW_NUMBER() OVER (\n            PARTITION BY \"가맹점번호\"\n            ORDER BY \"기준년월일\" DESC\n          ) = 1\n)\nSELECT\n    \"마케팅업종대분류구분명\" AS \"마케팅업종대분류\",\n    SUM(COALESCE(\"전월할부매입건수\", 0)) AS \"전월할부매입건수\"\nFROM latest_snapshot\nGROUP BY \"마케팅업종대분류구분명\"\nORDER BY \"전월할부매입건수\" DESC\nLIMIT 1000000;"
+  },
+  {
+   "id": "cs-golden-v2-0088",
+   "error_kind": "syntax",
+   "question": "2026년 7월 법인카드 이용금액을 결제처 가맹점 시도별로 보여줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 9:11: mismatched input '<EOF>'. Expecting: '%', '(', ')', '*', '+', ',', '-', '.', '/', ",
+   "agent_sql": "WITH params AS\n  (SELECT '202607' AS \"기준년월\"), -- 법인카드(신용+체크) 이용금액을 고객별 월합계\ncorp_usage AS (\nSELECT c.\"고객식별자\",\n       SUM(COALESCE(c.\"금월신용카드이용금액\", 0) + COALESCE(c.\"금월체크카드이용금액\", 0)) AS \"법인카드이용금액\"\nFROM tmdaa1d12 c\nCROSS JOIN params p\nWHERE c.\"기준년월\" = p.\"기준년월\"\nGROUP BY c"
+  },
+  {
+   "id": "cs-golden-v2-0095",
+   "error_kind": "syntax",
+   "question": "현재 기업카드 보유회원 중 2026년 상반기에 전기요금전용 체크카드를 신규로 몇 좌 발급했는지와 목록을 뽑아줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 35:7: mismatched input '<EOF>'. Expecting: '*', 'ALL', 'DISTINCT', <expression>",
+   "agent_sql": "WITH latest_card_snapshot AS\n  (SELECT MAX(c.\"실적기준년월일\") AS \"조회기준일\"\n   FROM tbdaaat05 c),\n     corporate_members AS\n  (SELECT m.\"회원일련번호\",\n          m.\"고객식별자\"\n   FROM tbdaaat03 m\n   WHERE m.\"개인기업구분코드\" = '2'\n     AND (COALESCE(m.\"유효신용카드수\", 0) + COALESCE(m.\"유효체크카드수\", 0)) > 0),\n     issued_cards AS\n  (SELECT DISTINCT s.\"조회기준일\",\n                   cm.\"고객식별자\",\n                   c.\"회원일련번호\",\n                   c.\"카드구분키번호\",\n                   c.\"상품코드\",\n                   COALESCE(p.\"한글상품명\", p.\"대표카드상품명\", p.\"고객안내상품명\", p.\"통장장표인자상품명\") AS \"상품명\",\n                   c.\"카드신규발급년월일\"\n   FROM tbdaaat05 c\n   JOIN corporate_members cm ON c.\"회원일련번호\" = cm.\"회원일련번호\"\n   JOIN tbdaada72 p ON c.\"상품코드\" = p.\"상품코드\"\n   CROSS JOIN latest_card_snapshot s\n   WHERE c.\"실적기준년월일\" = s.\"조회기준일\"\n     AND c.\"개인기업구분코드\" = '2'\n     AND c.\"상품중분류구분코드\" IN ('CP53',\n                           'CP54')-- 체크카드 구분\n\n     AND c.\"카드신규발급년월일\" BETWEEN '20260101' AND '20260630'\n     AND (LOWER(COALESCE(p.\"한글상품명\", '')) LIKE LOWER('%전기요금%')\n          OR LOWER(COALESCE(p.\"대표카드상품명\", '')) LIKE LOWER('%전기요금%')\n          OR LOWER(COALESCE(p.\"고객안내상품명\", '')) LIKE LOWER('%전기요금%')\n          OR LOWER(COALESCE(p.\"통장장표인자상품명\", '')) LIKE LOWER('%전기요금%'))),\n     issuance_summary AS\n  (SELECT COUNT(*) AS \"신규발급좌수\"\n   FROM issued_cards)\nSELECT"
+  },
+  {
+   "id": "cs-golden-v2-0144",
+   "error_kind": "syntax",
+   "question": "2026년 월별 기업 대손충당금률과 평균 PD, LGD를 계산해줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 6:22: mismatched input ':'. Expecting: '%', '*', '+', ',', '-', '.', '/', 'AND', 'AS', '",
+   "agent_sql": "SELECT \"기준년월\",\n       SUM(\"원화대출잔액\") AS \"원화대출잔액\",\n       SUM(\"기대대손충당금\") AS \"기대대손충당금\",\n       AVG(\"기대1년PD율\") AS \"평균PD율\",\n       AVG(\"충당금기대LGD율\") AS \"평균LGD율\",\n       SUM(\"기대대손충당금\")::FLOAT / NULLIF(SUM(\"원화대출잔액\"), 0) AS \"대손충당금률\"\nFROM tbmewcm94\nWHERE \"개인기업구분코드\" = '2'\n  AND \"기준년월\" BETWEEN '202601' AND '202612'\nGROUP BY \"기준년월\"\nORDER BY \"기준년월\""
+  },
+  {
+   "id": "cs-golden-v2-0167",
+   "error_kind": "syntax",
+   "question": "두산에너빌리티가 2026년 7월에 어떤 업종에서 법인카드를 많이 썼는지 상위 10개 업종을 알려줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 8:5: mismatched input 'QUALIFY'. Expecting: '%', '(', ')', '*', '+', ',', '-', '.', '/',",
+   "agent_sql": "WITH corporate_ids AS (\n    -- 두산에너빌리티(기업명)와 일치하는 최신 월 스냅샷(202607)에서 고객식별자를 추출\n    SELECT\n        \"고객식별자\"\n    FROM tbdaa1d12\n    WHERE LOWER(\"가맹점명\") LIKE LOWER('%두산에너빌리티%')\n      AND SUBSTR(\"기준년월일\", 1, 6) = '202607'\n    QUALIFY ROW_NUMBER() OVER (\n        PARTITION BY \"고객식별자\"\n        ORDER BY \"기준년월일\" DESC\n    ) = 1\n),\n\ntransactions AS (\n    -- 해당 고객들의 2026년 7월 법인카드 이용 전표\n    SELECT\n        t.\"고객식별자\",\n        t.\"가맹점업종코드\",\n        t.\"매출금액\"\n    FROM tbdaabt30 t\n    INNER JOIN corporate_ids c\n        ON t.\"고객식별자\" = c.\"고객식별자\"\n    WHERE t.\"개인기업구분코드\" = '2'                                   -- 법인카드 이용\n      AND SUBSTR(t.\"전표매출년월일\", 1, 6) = '202607'                -- 2026년 7월 전표\n)\n\nSELECT\n    i.\"가맹점업종코드\"   AS \"업종코드\",\n    i.\"업종명\"          AS \"업종명\",\n    SUM(t.\"매출금액\")   AS \"총사용금액\"\nFROM transactions t\nLEFT JOIN tbdaadb17 i\n    ON t.\"가맹점업종코드\" = i.\"가맹점업종코드"
+  },
+  {
+   "id": "cs-golden-v2-0204",
+   "error_kind": "syntax",
+   "question": "쿠팡의 2026년 7월 기준 연체 현황을 자세히 보여줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 6:43: mismatched input 'QUALIFY'. Expecting: '%', '(', ')', '*', '+', ',', '-', '.', '/'",
+   "agent_sql": "WITH coupang_customers AS\n  (SELECT \"고객식별자\",\n          \"기업명\"\n   FROM tbdaa1d12\n   WHERE \"기업명\" LIKE '%쿠팡%'\n     AND SUBSTR(\"기준년월일\", 1, 6) = '202607' QUALIFY ROW_NUMBER() OVER (PARTITION BY \"고객식별자\"\n                                                                     ORDER BY \"기준년월일\" DESC) = 1),\n     delinquency AS\n  (SELECT d.\"회원일련번호\",\n          d.\"카드구분키번호\",\n          d.\"신용카드연체회차\",\n          d.\"연체일수\",\n          d.\"기준년월일\",\n          d.\"고객식별자\"\n   FROM tddaa3l01 d\n   JOIN coupang_customers c ON d.\"고객식별자\" = c.\"고객식별자\"\n   WHERE d.\"기준년월일\" BETWEEN '20260701' AND '20260731'\n     AND d.\"신용카드연체회차\" > 0)\nSELECT d.\"고객식별자\",\n       c.\"기업명\",\n       d.\"회원일련번호\",\n       d.\"카드구분키번호\",\n       d.\"신용카드연체회차\",\n       d.\"연체일수\",\n       d.\"기준년월일\"\nFROM delinquency d\nJOIN coupang_customers c ON d.\"고객식별자\" = c.\"고객식별자\"\nORDER BY d.\"회원일련번호\"\nLIMIT 1000000;"
+  },
+  {
+   "id": "cs-golden-v2-0600",
+   "error_kind": "syntax",
+   "question": "2026년 2월 시군구와 가맹점배달가능여부를 교차해서 가맹점일시불지급금액을 보여줘",
+   "error_first_line": "DatabaseError: An error occurred (InvalidRequestException) when calling the StartQueryExecution operation: line 5:5: mismatched input 'QUALIFY'. Expecting: '%', '(', ')', '*', '+', ',', '-', '.', '/',",
+   "agent_sql": "WITH latest_feb AS (\n    SELECT *\n    FROM tbdaaus01\n    WHERE SUBSTR(\"기준년월일\", 1, 6) = '202602'\n    QUALIFY ROW_NUMBER() OVER (\n        PARTITION BY \"가맹점번호\", SUBSTR(\"기준년월일\", 1, 6)\n        ORDER BY \"기준년월일\" DESC\n    ) = 1\n)\nSELECT\n    \"시군구\",\n    \"가맹점배달가능여부\",\n    SUM(COALESCE(\"가맹점일시불지급금액\", 0)) AS \"총일시불지급금액\"\nFROM latest_feb\nGROUP BY\n    \"시군구\",\n    \"가맹점배달가능여부\"\nORDER BY\n    \"시군구\",\n    \"가맹점배달가능여부\"\nLIMIT 1000000;"
+  },
+  {
+   "id": "cs-golden-v2-0747",
+   "error_kind": "syntax",
+   "question": "2026년 1월 특별한도잔여금액이 전체 평균보다 높은 우수고객 구분만 골라줘",
+   "error_first_line": "OperationalError: EXPRESSION_NOT_SCALAR: line 8:10: WHERE clause cannot contain aggregations, window functions or grouping operations: [ROW_NUMBER() OVER (PARTITION BY \"고객식별자\" ORDER BY \"기준년월일\" DESC)]",
+   "agent_sql": "WITH monthly_snapshot AS\n  (SELECT \"고객식별자\",\n          \"사업자등록번호\",\n          \"기업명\",\n          \"특별한도잔여금액\", -- 우수고객 구분 컬럼을 여기 추가\n \"우수고객구분컬럼\"\n   FROM tbdaa1d12\n   WHERE SUBSTR(\"기준년월일\", 1, 6) = '202601' -- 2026년 1월\n\n     AND ROW_NUMBER() OVER (PARTITION BY \"고객식별자\"\n                            ORDER BY \"기준년월일\" DESC) = 1 -- 월별 최신 스냅샷\n)\nSELECT \"고객식별자\",\n       \"사업자등록번호\",\n       \"기업명\",\n       \"특별한도잔여금액\",\n       \"우수고객구분컬럼\"\nFROM monthly_snapshot\nWHERE \"특별한도잔여금액\" >\n    (SELECT AVG(\"특별한도잔여금액\")\n     FROM monthly_snapshot)\n  AND \"우수고객구분컬럼\" = '우수' -- 예시값, 실제 값에 맞게 조정\n;"
+  },
+  {
+   "id": "cs-golden-v2-0925",
+   "error_kind": "group_by",
+   "question": "2026년 2월 전월할부매입건수를 직영점여부별 비중으로 나눠서 보여줘",
+   "error_first_line": "OperationalError: EXPRESSION_NOT_AGGREGATE: line 21:68: '((CAST(SUM(lm.\"전월할부매입건수\") AS DOUBLE) / NULLIF(t.total_cnt, 0)) * 100)' must be an aggregate expression or appear in GROUP BY clause",
+   "agent_sql": "WITH latest_month AS (\n    SELECT \"가맹점번호\",\n           \"직영점여부\",\n           \"전월할부매입건수\"\n    FROM (\n        SELECT \"가맹점번호\",\n               \"직영점여부\",\n               \"전월할부매입건수\",\n               ROW_NUMBER() OVER (PARTITION BY \"가맹점번호\" ORDER BY \"기준년월일\" DESC) AS rn\n        FROM \"tmdaaus01\"\n        WHERE \"기준년월\" = '202602'\n    ) sub\n    WHERE rn = 1\n),\ntotal AS (\n    SELECT SUM(\"전월할부매입건수\") AS total_cnt\n    FROM latest_month\n)\nSELECT lm.\"직영점여부\",\n       SUM(lm.\"전월할부매입건수\") AS \"전월할부매입건수\",\n       CAST(SUM(lm.\"전월할부매입건수\") AS DOUBLE) / NULLIF(t.total_cnt, 0) * 100 AS \"비중_퍼센트\"\nFROM latest_month lm\nCROSS JOIN total t\nGROUP BY lm.\"직영점여부\"\nORDER BY \"전월할부매입건수\" DESC\nLIMIT 1000000;"
+  }
+ ],
+ "prose_failures": [
+  {
+   "id": "cs-golden-v2-0044",
+   "question": "2026년 7월 기준 가맹점 상태구분별 가맹점 수를 알려줘",
+   "agent_response": "가맹점의 **상태구분**을 나타내는 컬럼명을 알려주시면, 해당 컬럼별로 2026‑07 기준 가맹점 수를 집계하는 SQL을 제공해 드리겠습니다. 현재 스키마에 포함된 컬럼 중에는 “가맹점 상태구분”에 해당하는 명확한 컬럼이 없으므로, 정확한 컬럼명을 알려주시면 정확한 쿼리를 생성할 수 있습니다."
+  },
+  {
+   "id": "cs-golden-v2-0045",
+   "question": "2026년 7월 기준 배달이 가능한 가맹점이 몇 개인지 알려줘",
+   "agent_response": "배달 가능 여부를 판단할 수 있는 컬럼이 현재 스키마에 명시되어 있지 않습니다.  \n배달이 가능한 가맹점을 구분하는 컬럼명(예: “배달가능여부”, “배달서비스코드” 등)이나 해당 정보를 담고 있는 테이블을 알려주시면, 요청하신 **2026‑07 기준 배달 가능 가맹점 수**를 구하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0046",
+   "question": "2026년 7월 기준 포장이 가능한 가맹점이 몇 개인지 알려줘",
+   "agent_response": "사용자님께서 요청하신 **“포장이 가능한 가맹점”** 여부를 판단할 수 있는 컬럼이 현재 스키마에 명시되어 있지 않습니다.  \n\n예시로는 `포장가능여부`, `포장서비스코드` 등의 컬럼명이 있을 수 있으나, 실제 테이블에 존재하는 정확한 컬럼명이나 코드값을 알려주시면 해당 조건을 반영한 2026‑07 기준 가맹점 수 조회 SQL을 작성해 드릴 수 있습니다.  \n\n해당 컬럼명을 알려주시면 감사하겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0047",
+   "question": "2026년 7월 기준 주차가 가능한 가맹점이 몇 개인지 알려줘",
+   "agent_response": "해당 질의에서 “주차가 가능한” 여부를 판단할 수 있는 컬럼이 현재 스키마에 정의되어 있지 않습니다.  \n주차 가능 여부를 나타내는 컬럼명(예: `주차가능여부`, `주차구분코드` 등)과 해당 컬럼에서 “가능”을 의미하는 값(예: `'Y'`, `'가능'`, `1` 등)을 알려주시면, **2026년 7월 기준 가맹점 수**를 구하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0048",
+   "question": "2026년 7월 기준 예약이 가능한 가맹점이 몇 개인지 알려줘",
+   "agent_response": "예약 가능 여부를 판단할 수 있는 컬럼이 현재 스키마에 명시되어 있지 않습니다.  \n예약 가능 여부를 나타내는 컬럼명(예: \"예약가능여부\", \"예약상태코드\" 등)이나 해당 조건에 사용할 값들을 알려주시면, **2026‑07 기준 예약이 가능한 가맹점 수**를 조회하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0049",
+   "question": "2026년 7월 기준 평일 24시간 운영하는 가맹점이 몇 개인지 알려줘",
+   "agent_response": "24시간 영업 여부를 판단할 수 있는 컬럼이 현재 제공된 스키마(`tmdaa5e11`, `tbdaadt01`, `tbdaaus01` 등)에는 포함되어 있지 않습니다.  \n해당 정보를 제공해 주시면 아래와 같은 형태의 쿼리를 작성해 드릴 수 있습니다.\n\n예시)  \n1) 영업시작시각·영업종료시각 컬럼명  \n2) “운영시간구분코드” 등 24시간 영업을 표시하는 코드값  \n3) 혹은 24시간 영업을 추정할 수 있는 다른 기준(예: 매출 패턴, 휴폐업 여부 등)\n\n위 중 어느 항목에 해당하는지 알려 주시겠어요?"
+  },
+  {
+   "id": "cs-golden-v2-0050",
+   "question": "2026년 7월 기준 직영점인 가맹점이 몇 개인지 알려줘",
+   "agent_response": "직영점을 구분하는 컬럼이 현재 스키마에 명시되어 있지 않습니다.  \n직영점을 식별할 수 있는 컬럼명(예: “가맹점구분코드”, “점포유형코드” 등)과 해당 값(예: ‘직영’, ‘01’ 등)을 알려주시면, 2026년 7월 기준 직영점 가맹점 수를 구하는 SQL을 작성해드릴 수 있습니다."
+  },
+  {
+   "id": "cs-golden-v2-0171",
+   "question": "2026년 7월 가맹점 미수금 등록금액과 회수금액을 알려줘",
+   "agent_response": "해당 요청에 필요한 **“가맹점 미수금 등록금액”** 과 **“가맹점 회수금액”** 이 저장된 테이블명 및 컬럼명을 알려 주시겠습니까?  \n현재 제공된 스키마( tmdaa5e11, tbdaadt01, tbdaaus01, tmdaa5d01, tbdaadb17, tbdaabt30  등) 에는 해당 컬럼이 존재하지 않으며, 정확한 테이블·컬럼 정보를 알려 주셔야 2026년 7월(기준년월 = '202607')에 대한 조회 SQL을 생성할 수 있습니다."
+  },
+  {
+   "id": "cs-golden-v2-0174",
+   "question": "2026년 7월 기준 가맹점 월 승인한도금액이 큰 가맹점 20곳을 알려줘",
+   "agent_response": "해당 요청에서 사용하려는 **“가맹점 월 승인한도금액”** 은 현재 제공된 스키마(`tbdaa1d12`, `tddaa3l01`, `tbdaaat53`, `tbmaisd06`, `tbmewcm94`)에 포함된 컬럼이나 정의된 canonical metric이 없습니다.  \n\n따라서 정확한 쿼리를 생성하려면 다음 정보가 필요합니다.\n\n1. **월 승인한도금액** 이 저장된 테이블명  \n2. 해당 컬럼명(예: `월승인한도금액`, `승인한도_월합계` 등)  \n3. 가맹점을 식별할 수 있는 컬럼(예: `가맹점번호`, `가맹점명` 등)\n\n위 정보를 알려 주시면, 2026년 7월 기준으로 금액이 큰 가맹점 20곳을 반환하는 Athena/Trino SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0266",
+   "question": "2025년 6월 30일 기준 채권잔액을 회원자격 기준으로 집계해줘",
+   "agent_response": "회원자격을 나타내는 컬럼이 `tddaa3l01` 테이블에 존재하지 않습니다.  \n회원자격(예: 등급, 등급코드, 회원구분 등) 정보를 담고 있는 정확한 컬럼명 또는 해당 컬럼이 포함된 테이블명을 알려주시면, **2025‑06‑30** 기준 `채권잔액`을 그 기준으로 집계하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0315",
+   "question": "2026년 3월 가맹점매출금액을 가맹점상태 기준으로 집계해줘",
+   "agent_response": "가맹점의 **상태**를 나타내는 컬럼이 어떤 테이블에, 어떤 이름으로 존재하는지 알려주시면 해당 컬럼을 기준으로 2026‑03 월 매출을 집계하는 SQL을 작성해 드릴 수 있습니다.  \n예시) `tbdaadt01.\"휴폐업여부\"` 또는 `tbdaadt01.\"가맹점상태구분코드\"` 등.  \n  \n해당 컬럼명을 알려 주세요."
+  },
+  {
+   "id": "cs-golden-v2-0321",
+   "question": "2025년 3월 상품중분류별 금월할부이용금액을 알려줘",
+   "agent_response": "해당 요청에서 사용하려는 **“상품중분류”** 라는 컬럼은 현재 제공된 스키마(`tbdaa1d12`, `tmdaa3e16` 등)에는 존재하지 않습니다.  \n\n가능한 대체 옵션을 알려주시면 정확한 SQL을 생성해 드릴 수 있습니다.\n\n1. **상품중분류구분코드**와 같은 컬럼이 포함된 테이블이 있나요? (예: `tbdaa1d12`에 존재한다고 생각하시는 경우)  \n2. 다른 이름(예: `가맹점업종코드`, `업종코드` 등)으로 저장된 컬럼을 사용하시겠습니까?  \n3. 혹은 “상품중분류” 대신 다른 분류 기준(예: 가맹점업종, 카드상품군 등)으로 조회를 원하시나요?\n\n원하시는 분류 컬럼명을 알려주시면,  \n**2025년 3월**에 대한 **금월할부이용금액**을 해당 분류별로 집계하는 Athena SQL을 제공해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0338",
+   "question": "2026년 7월 31일 기준 연체연회비를 회원자격 기준으로 집계해줘",
+   "agent_response": "사용자님의 요청에서 **“회원자격”**이라는 컬럼을 기준으로 연체연회비를 집계하고 싶다고 하셨는데, 현재 제공된 스키마( `tddaa3l01`, `tbdaa1d12` 등 )에는 `회원자격` 이라는 필드가 존재하지 않습니다.  \n\n해당 집계에 사용할 `회원자격` 컬럼이 어느 테이블에 존재하는지, 혹은 `회원자격` 을 정의하기 위해 다른 컬럼(예: 고객 등급, 카드 등급 등)과 매핑이 필요한지 알려주시면, 그에 맞는 Athena (Trino) SQL을 생성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0339",
+   "question": "현재 기준 카드등급별 통합한도금액을 알려줘",
+   "agent_response": "현재 제공된 스키마 (tbdaa1d12 등)에는 **“카드등급”**이라는 컬럼이 정의되어 있지 않습니다.  \n카드등급 정보를 포함하고 있는 테이블명과 해당 컬럼명을 알려주시면, **현재 기준(월 최신 스냅샷) 카드등급별 통합한도금액**을 구하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0341",
+   "question": "2025년 9월 회원자격별 금월이용합계건수를 알려줘",
+   "agent_response": "회원자격에 해당하는 컬럼이 명확하지 않습니다.  \n예를 들어 **개인기업구분코드**, **고객상태구분코드**, **기업규모구분코드** 등 중 어느 컬럼을 “회원자격”으로 사용하시겠습니까? 해당 컬럼을 알려주시면 2025년 9월에 대한 금월이용합계건수를 구하는 SQL을 제공해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0368",
+   "question": "2026년 3월 31일 기준 연체료를 회원자산관리부점 기준으로 집계해줘",
+   "agent_response": "연체료를 회원자산관리부점(​부점)별로 집계하려면 `카드연체일별(tddaa3l01)` 테이블과 `부점(tbdaacb02)` 테이블을 연결할 수 있는 공통 키가 필요합니다.  \n\n현재 메타데이터에는 다음과 같은 가능한 연결 경로가 정의되어 있지 않으므로, 아래 정보를 알려주시면 정확한 SQL을 생성할 수 있습니다.\n\n1. **회원(또는 고객) ↔ 부점** 매핑 컬럼  \n   - `tddaa3l01` 에서 부점과 연결될 수 있는 컬럼(예: `고객식별자`, `회원일련번호`, `관계관리번호` 등)  \n   - `tbdaacb02` 에서 해당 컬럼과 매핑되는 컬럼(예: `부점코드`, `관계관리번호` 등)\n\n2. **부점 코드 컬럼명** (예: `부점코드` 가 정확한 컬럼명인지 여부)\n\n위 두 가지 정보를 제공해 주시면, **2026‑03‑31 기준 연체료**를 **부점별**로 집계하는 Athena(Trino) SQL을 바로 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0373",
+   "question": "2025년 9월 30일 기준 연체수수료를 연체관리부점 기준으로 집계해줘",
+   "agent_response": "연체수수료는 **tddaa3l01** 테이블에 존재하지만, 해당 테이블에는 “연체관리부점”을 나타내는 컬럼이 정의되어 있지 않습니다.  \n연체관리부점별로 집계하려면 연체 정보와 부점을 연결할 수 있는 컬럼(예: 부점코드, 연체관리부점코드 등) 또는 해당 컬럼을 포함하고 있는 다른 테이블을 알려주셔야 안전 조인 경로를 만들 수 있습니다.  \n\n연체관리부점을 어떤 테이블·컬럼으로 연결하고 싶으신지 알려주시면, 그에 맞는 Athena SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0399",
+   "question": "현재 기준 할부요율그룹별 통합한도금액을 알려줘",
+   "agent_response": "해당 요청에 사용하려는 **“할부요율그룹”** 컬럼이 현재 제공된 스키마 (tbdaa1d12, tddaa3l01, transaction_stop, special_debt, loss_provision) 에는 존재하지 않습니다.  \n\n정확한 SQL 작성을 위해 아래 정보를 알려주시기 바랍니다.\n\n1. **할부요율그룹** 컬럼이 포함된 테이블명  \n2. 컬럼명(예: `할부요율그룹코드`, `할부요율구분` 등)  \n\n해당 정보를 주시면 **현재 기준(실행일이 속한 기준년월)** 에 대한 **그룹별 통합한도금액**을 조회하는 SQL을 생성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0404",
+   "question": "현재 기준 CA한도별 CA한도금액을 알려줘",
+   "agent_response": "해당 질의에서 요청하신 **“CA한도”** 라는 구분은 현재 제공된 스키마(특히 `tbdaa1d12` 테이블)에는 존재하지 않는 컬럼입니다.  \n\nCA한도가 어떤 컬럼(예: 한도구분코드, 특정 한도 유형 코드 등)인지, 혹은 별도의 정의가 있는지 알려주시면 해당 기준에 따라 CA한도별 CA한도금액을 계산하는 SQL을 제공해드릴 수 있습니다.  \n\n추가 정보를 알려주시면 감사하겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0414",
+   "question": "현재 기준 카드등급별 부서사업장이용한도금액을 알려줘",
+   "agent_response": "현재 제공된 스키마 (tbdaa1d12, card_delinquency_daily, transaction_stop, special_debt, loss_provision)에는 **카드등급**을 나타내는 컬럼과 **부서·사업장**을 식별할 수 있는 컬럼이 존재하지 않습니다.  \n\n해당 지표를 구하려면 다음 중 어느 테이블에 해당 컬럼이 포함되어 있는지 알려주시면 감사하겠습니다.\n\n* 카드등급 컬럼 (예: `카드등급코드`, `카드구분키번호` 등)  \n* 부서·사업장 식별 컬럼 (예: `부서코드`, `사업장코드`, `고객관리번호` 등)\n\n위 컬럼이 포함된 테이블명과 컬럼명을 제공해 주시면, **현재 기준(실행일이 속한 기준년월)** 에 대한 카드등급별·부서사업장별 이용한도금액을 반환하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0419",
+   "question": "현재 기준 연회비면제별 유효신용카드수를 알려줘",
+   "agent_response": "해당 질의에서 사용하려는 **“연회비면제”** 상태를 나타내는 컬럼이 현재 제공된 스키마(`tbdaaat03`, `tmdaa1d12` 등)에는 존재하지 않습니다.  \n연회비면제 여부를 저장하고 있는 테이블명과 컬럼명을 알려주시면, **현재 기준(202608 기준년월)** 에 대한 **연회비면제별 유효신용카드수**를 구하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0424",
+   "question": "현재 기준 회원자격별 결제단위수를 알려줘",
+   "agent_response": "회원자격을 구분하는 컬럼(예: 회원구분코드, 회원등급코드 등)이 현재 스키마에 명시되어 있지 않습니다.  \n어떤 컬럼을 기준으로 “회원자격별”을 구분하면 될지 알려주시면, 해당 기준에 따라 현재 기준(2026‑08‑10, 기준년월 202608) 회원별 결제단위수 합계를 제공하는 SQL을 작성해 드리겠습니다."
+  },
+  {
+   "id": "cs-golden-v2-0429",
+   "question": "현재 기준 CA요율그룹별 유효체크카드수를 알려줘",
+   "agent_response": "CA 요율 그룹이 어떤 테이블의 어떤 컬럼에 저장되어 있는지 알려주시면, 해당 그룹별로 유효체크카드수 (​tbdaaat03 의 \"유효체크카드수\"​ 또는 tmdaa1d12 의 \"유효기업체크카드수\"​)를 집계하는 SQL을 작성해 드릴 수 있습니다. 해당 컬럼명을 알려주시겠어요?"
+  },
+  {
+   "id": "cs-golden-v2-0434",
+   "question": "현재 기준 부서사업장이용한도금액을 통합한도 기준으로 집계해줘",
+   "agent_response": "해당 요청에 사용하려는 **“부서사업장이용한도금액”** 은 현재 제공된 스키마(특히 tbdaa1d12 테이블)에는 존재하지 않는 컬럼입니다.  \n\n통합한도(기업총한도·잔여한도·사용한도) 기준으로 집계하려면  \n\n1. **대상 부서·사업장을 어떤 기준(예: 사업자등록번호, 기업명 등)으로 지정**하시겠습니까?  \n2. **부서·사업장의 이용한도** 를 어떤 테이블·컬럼에서 가져와야 하는지(예: 별도 부서 테이블이 있다면) 알려주시면 감사하겠습니다.  \n\n위 정보를 제공해 주시면, 해당 조건에 맞는 Athena (Trino) SQL을 생성해 드리겠습니다."
+  }
+ ]
+}

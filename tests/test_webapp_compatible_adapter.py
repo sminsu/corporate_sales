@@ -35,6 +35,10 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
                         "title": "도메인 라우팅",
                         "question_type": "need_sql",
                         "selected_domain": "sales",
+                        "domain_candidates": [
+                            {"domain": "sales", "score": 0.91},
+                            {"domain": "merchant", "score": 0.42},
+                        ],
                     },
                 },
             ),
@@ -52,6 +56,7 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
                         "sql": "SELECT * FROM sales_table",
                         "columns": ["amount"],
                         "row_count": 3,
+                        "validation_result": "valid",
                     },
                 },
             ),
@@ -90,6 +95,7 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
         self.assertEqual(events[1][1]["data"]["question"], "매출 알려줘")
         self.assertEqual(events[1][1]["data"]["question_type"], "need_sql")
         self.assertEqual(events[1][1]["data"]["selected_domain"], "sales")
+        self.assertEqual(events[1][1]["data"]["domain_candidates"][0]["domain"], "sales")
         self.assertNotIn("sub_queries", events[1][1]["data"])
         self.assertEqual(events[2][1]["message"], "SQL을 생성/검증하고 조회 결과를 확인하고 있습니다...")
         self.assertEqual(events[2][1]["data"]["operation"], "sql_execution_review")
@@ -100,6 +106,7 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
         self.assertEqual(events[2][1]["data"]["columns"], ["amount"])
         self.assertEqual(events[2][1]["data"]["column_count"], 1)
         self.assertEqual(events[2][1]["data"]["row_count"], 3)
+        self.assertEqual(events[2][1]["data"]["validation_result"], "valid")
         self.assertNotIn("documents_by_sub_query", events[2][1]["data"])
         self.assertEqual(events[3][1]["message"], "조회 결과를 답변으로 정리하고 있습니다...")
         self.assertEqual(events[3][1]["data"]["operation"], "answer_generation")
@@ -119,6 +126,18 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
                         "phase": "question_analysis",
                         "title": "질문 분석",
                         "question_type": "need_sql",
+                    },
+                },
+            ),
+            sse(
+                "text2sql_progress",
+                {
+                    "message": "검색 후보 탐색을 위한 내부 질의를 정제했습니다.",
+                    "data": {
+                        "text2sql_step": "refine_search_query",
+                        "query": "매출 알려줘",
+                        "phase": "query_refinement",
+                        "title": "질의 정제",
                     },
                 },
             ),
@@ -182,12 +201,23 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
 
         self.assertEqual(
             [event for event, _ in events],
-            ["start", "search_plan", "search_plan", "search_plan", "aggregate_review", "response", "done"],
+            ["start", "search_plan", "search_plan", "search_plan", "search_plan", "aggregate_review", "response", "done"],
         )
         search_plan_steps = [data["data"]["text2sql_step"] for event, data in events if event == "search_plan"]
-        self.assertEqual(search_plan_steps, ["classify_question", "route_domain", "select_tool"])
+        self.assertEqual(
+            search_plan_steps,
+            ["classify_question", "refine_search_query", "route_domain", "select_tool"],
+        )
         search_plan_messages = [data["data"]["progress_message"] for event, data in events if event == "search_plan"]
-        self.assertEqual(search_plan_messages, ["질문 의도를 분석했습니다.", "질문에 맞는 업무 도메인을 선택했습니다.", "실행 경로를 선택했습니다."])
+        self.assertEqual(
+            search_plan_messages,
+            [
+                "질문 의도를 분석했습니다.",
+                "검색 후보 탐색을 위한 내부 질의를 정제했습니다.",
+                "질문에 맞는 업무 도메인을 선택했습니다.",
+                "실행 경로를 선택했습니다.",
+            ],
+        )
         response_payload = next(data for event, data in events if event == "response")
         self.assertEqual(response_payload["data"]["text2sql_step"], "generate_answer")
         self.assertEqual(response_payload["data"]["progress_message"], "조회 결과를 요약 답변으로 정리했습니다.")
@@ -260,7 +290,17 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
         chunks = [
             sse("start", {"message": "질문을 분석 중입니다...", "data": {"session_id": "sess_1", "message_id": 2}}),
             sse("progress", {"step": "start", "title": "요청 접수", "message": "이전 결과를 불러왔습니다."}),
-            sse("progress", {"step": "followup_route", "title": "후속 의도 판단", "message": "후속 요청을 기존 결과 분석으로 분류했습니다."}),
+            sse(
+                "progress",
+                {
+                    "step": "followup_route",
+                    "title": "후속 의도 판단",
+                    "message": "후속 요청을 기존 결과 분석으로 분류했습니다.",
+                    "query": "이상치 찾아줘",
+                    "followup_mode": "analysis",
+                    "requires_sql": False,
+                },
+            ),
             sse("progress", {"step": "generate_answer", "title": "답변 생성", "message": "기존 결과를 기반으로 답변을 생성합니다."}),
             sse(
                 "result",
@@ -283,6 +323,8 @@ class WebAppCompatibleAdapterTest(unittest.TestCase):
 
         self.assertEqual([event for event, _ in events], ["start", "search_plan", "aggregate_review", "response", "done"])
         self.assertEqual(events[1][1]["data"]["question"], "이상치 찾아줘")
+        self.assertEqual(events[1][1]["data"]["followup_mode"], "analysis")
+        self.assertFalse(events[1][1]["data"]["requires_sql"])
         self.assertEqual(events[2][1]["data"]["operation"], "sql_execution_review")
         self.assertEqual(events[3][1]["data"]["operation"], "answer_generation")
         self.assertEqual(events[-1][1]["data"]["answer"], "후속 답변")

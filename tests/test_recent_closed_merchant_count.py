@@ -67,9 +67,9 @@ def test_recent_closed_merchant_sql_uses_first_closed_observation_without_llm() 
     }
     assert 'MIN(a."기준년월일") AS "최초폐업관측일"' in sql
     assert 'COALESCE(a."휴폐업여부", \'0\') <> \'0\'' in sql
-    assert "DATE_ADD('MONTH', -12, CURRENT_DATE)" in sql.upper()
+    assert "DATE_ADD('MONTH', -12, DATE_ADD('DAY', -1, CURRENT_TIMESTAMP AT TIME ZONE 'ASIA/SEOUL'))" in sql.upper()
     assert 'COUNT(DISTINCT f."가맹점번호")' in sql
-    assert "CONCAT('%', '교촌 치킨', '%')" in sql
+    assert "CONCAT('%', '교촌%치킨', '%')" in sql
     assert "REGEXP_REPLACE" in sql
     assert _validate_sql_against_schema(sql, ["tbdaaus01"]) == []
 
@@ -93,7 +93,7 @@ def test_recent_six_month_closed_merchant_sql_is_completed_without_llm() -> None
         "가맹점명": "교촌치킨",
         "조회기간개월수": 6,
     }
-    assert "DATE_ADD('MONTH', -6, CURRENT_DATE)" in result["final_sql"].upper()
+    assert "DATE_ADD('MONTH', -6, DATE_ADD('DAY', -1, CURRENT_TIMESTAMP AT TIME ZONE 'ASIA/SEOUL'))" in result["final_sql"].upper()
     assert _validate_sql_against_schema(result["final_sql"], ["tbdaaus01"]) == []
 
 

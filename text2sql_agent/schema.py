@@ -4,15 +4,22 @@ import functools
 import json
 import os
 import re
+from datetime import datetime
 from decimal import Decimal
 
 import sqlparse
 import yaml
 
 from .config import DB_SCHEMA, DB_SCHEMA_PREFIX, SCHEMA_PATH
-from .db import _validate_read_only_sql
+from .db import _sql_identifier_view, _validate_read_only_sql
 from .llm import _call_llm, _normalize_llm_text
+from .time_policy import format_accumulation_policy, kst_today, previous_day_ymd
 from .tools.verified_queries import load_external_verified_queries
+from .v2.column_synonyms import phrase_in_text as _v2_phrase_in_text
+from .v2.vq_output_guard import (
+    grouping_axis_terms as _v2_grouping_axis_terms,
+    vq_output_gap as _v2_vq_output_gap,
+)
 
 
 def _memoize_by_schema_identity(func):
@@ -56,10 +63,33 @@ def _is_semantic_table_visible(table: dict) -> bool:
     return str(table.get("semantic_visibility") or "default").lower() != "restricted"
 
 
+# '상세주소' 패턴은 개인의 자택·직장 주소를 막으려고 있다. 가맹점 사업장과 당사
+# 부점의 소재지는 같은 등급이 아닌데 패턴에 함께 걸려서, "가맹점 도로명 주소"를
+# 물으면 답할 컬럼이 하나도 남지 않았다. 테이블별 restricted_columns 는 그대로
+# 우선하므로, 특정 테이블에서 막아야 하면 거기에 적으면 된다.
+_SENSITIVE_COLUMN_EXCEPTIONS = frozenset(
+    {"가맹점상세주소", "한글부점상세주소", "영문부점상세주소"}
+)
+
+
+def _is_sensitive_column_name(column_name: object) -> bool:
+    """이름만으로 판단하는 민감 컬럼 여부.
+
+    SQL 검증도 이 패턴을 따로 참조하고 있어, 예외를 한 곳에만 넣으면 두 판정이
+    어긋난다. 이름 기준 판단은 전부 이 함수를 지난다.
+    """
+    name = str(column_name or "")
+    if name in _SENSITIVE_COLUMN_EXCEPTIONS:
+        return False
+    return bool(_SENSITIVE_COLUMN_RE.search(name))
+
+
 def _is_restricted_column(table: dict, column_name: object) -> bool:
     name = str(column_name or "")
     restricted = {str(value).lower() for value in table.get("restricted_columns", [])}
-    return name.lower() in restricted or bool(_SENSITIVE_COLUMN_RE.search(name))
+    if name.lower() in restricted:
+        return True
+    return _is_sensitive_column_name(name)
 
 
 def _visible_columns(table: dict, section: str) -> list[dict]:
@@ -145,6 +175,9 @@ def build_table_summary(schema: dict) -> str:
             desc = desc.replace(str(restricted_name), "[제한컬럼]")
         grain = t.get("grain", "")
         lines.append(f"- **{name}** ({t.get('physical_table', name)}): {desc} [grain: {grain}]")
+        accumulation_summary = format_accumulation_policy(t.get("accumulation_policy"))
+        if accumulation_summary:
+            lines.append(f"  accumulation_policy: {accumulation_summary}")
         dims = _visible_columns(t, "dimensions")
         if dims:
             dim_names = [d["name"] for d in dims[:8]]
@@ -179,6 +212,7 @@ def build_metrics_summary(
     question: str = "",
     domain_name: str = "",
     max_count: int = 8,
+    table_names: list[str] | None = None,
 ) -> str:
     """Return a bounded, canonical metric context.
 
@@ -224,6 +258,18 @@ def build_metrics_summary(
                 scored.append((exact, overlap, -position, metric))
         scored.sort(reverse=True, key=lambda item: item[:3])
         metrics = [metric for _, _, _, metric in scored]
+
+    # 고른 테이블에서 계산할 수 없는 지표는 SQL 생성 근거가 못 된다. "가맹점주" 라는
+    # 낱말 하나로 브랜드가맹점주수(tbdaaus01)가 올라와, 마스터만 보면 되는 질문에
+    # 스냅샷 레시피를 통째로 쥐여 주고 있었다.
+    if table_names:
+        allowed = {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        metrics = [
+            metric
+            for metric in metrics
+            if not metric.get("source_table")
+            or _normalized_table_name(metric.get("source_table")) in allowed
+        ]
 
     metrics = metrics[: max(0, max_count)]
     if not metrics:
@@ -336,12 +382,413 @@ def _tokenize_text(text: str) -> set[str]:
 
 _GENERIC_RETRIEVAL_TOKENS = {
     "가맹점", "거래", "고객", "기준", "기업", "금액", "기간", "매출", "분석", "보여줘",
-    "사용", "상태", "알려줘", "월별", "이용", "전체", "조회", "특정", "현황", "회원", "카드",
+    "법인", "사업체", "업체", "회사",
+    "과거", "당시", "사용", "상태", "시점별", "알려줘", "연도별", "월별", "이용", "일별",
+    "전체", "조회", "지금", "최근", "최신", "특정", "현재", "현시점", "현황", "회원", "카드",
+    "목록", "명단", "리스트", "찾아줘",
+    "이용금액", "사용금액", "매출금액", "카드이용금액", "카드사용금액",
 }
 
 
 def _compact_text(value: object) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣_]", "", str(value or "").lower())
+
+
+_HISTORICAL_PERIOD_RE = re.compile(
+    r"(?:"
+    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|20\d{2}[./-]\d{1,2}|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)|\d{1,2}\s*월|"
+    r"(?:최근|지난)\s*(?:\d+|일|반)\s*(?:개월|달|년)|"
+    r"당시|과거|월별|일별|연도별|시점별|기간별|분기|상반기|하반기|"
+    r"어제|내일|지난|전월|전년|작년|올해"
+    r")"
+)
+
+_SOURCE_POLICY_EXPLICIT_PERIOD_RE = re.compile(
+    r"(?:"
+    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|20\d{2}[./-]\d{1,2}|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)|\d{1,2}\s*월|"
+    r"분기|상반기|하반기|작년|지난해|전년|당시|저번\s*달|지난\s*달|전월"
+    r")"
+)
+
+
+# 계약 match 가 문자열로 못 적는 조건. phrase_hit 은 두 글자 미만을 버리므로
+# "2026년" 을 가리키는 표면형을 리스트에 적을 방법이 없다 — '년' 한 글자는 늘
+# 탈락한다. 연·월을 숫자로 못 박았는지는 정규식으로만 물을 수 있어서, 그룹 안에
+# 이 토큰을 넣어 "이 그룹은 절대 기간으로도 만족된다" 를 선언한다.
+#
+# 상대 기간(전년·작년·지난달)은 일부러 뺐다. 컬럼 이름 안의 '전년'
+# (전년가맹점신용판매매출금액)이 기간으로 읽히면, 이번 달을 보는 질문이 월 실적
+# 아카이브로 새어 나간다.
+_ABSOLUTE_PERIOD_RE = re.compile(
+    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|20\d{2}[./-]\d{1,2}|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)"
+)
+
+CONTRACT_MATCH_PREDICATES = {
+    "@absolute_period": lambda question: bool(_ABSOLUTE_PERIOD_RE.search(question or "")),
+    # 결과가 한 행인 계약은 축을 지목한 질문에 못 쓴다. 축 이름을 excluded 에
+    # 하나씩 적으면 새 축이 생길 때마다 새는 자리가 된다.
+    "@grouped_by_axis": lambda question: bool(_v2_grouping_axis_terms(question or "")),
+}
+
+
+_EXPLICIT_DAY_RE = re.compile(
+    r"(?<!\d)(20\d{2})[-./]?([01]\d)[-./]?([0-3]\d)(?!\d)|"
+    r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일"
+)
+
+
+def _explicit_day_values(question: str) -> set[str]:
+    values: set[str] = set()
+    for match in _EXPLICIT_DAY_RE.finditer(question or ""):
+        year, month, day = match.groups()[:3] if match.group(1) else match.groups()[3:]
+        value = f"{year}{int(month):02d}{int(day):02d}"
+        try:
+            datetime.strptime(value, "%Y%m%d")
+        except ValueError:
+            continue
+        values.add(value)
+    return values
+
+
+def _explicit_previous_day_is_live_snapshot(question: str) -> bool:
+    """Treat a lone explicit KST D-1 date as the available live snapshot."""
+    if _explicit_day_values(question) != {previous_day_ymd(kst_today())}:
+        return False
+    remaining = _EXPLICIT_DAY_RE.sub(" ", question or "")
+    return not _SOURCE_POLICY_EXPLICIT_PERIOD_RE.search(remaining)
+
+
+def _explicit_period_is_live_snapshot(question: str) -> bool:
+    """Treat an explicitly written current month or KST D-1 as live state."""
+    if _explicit_previous_day_is_live_snapshot(question):
+        return True
+    if not re.search(r"현재|현재\s*기준|오늘|전일|어제|최신|지금", question or ""):
+        return False
+    current_ym = kst_today().strftime("%Y%m")
+    explicit_months = {
+        f"{match.group(1)}{int(match.group(2)):02d}"
+        for match in re.finditer(r"(20\d{2})\s*년\s*(\d{1,2})\s*월", question or "")
+        if 1 <= int(match.group(2)) <= 12
+    }
+    explicit_months.update(
+        re.findall(r"(?<!\d)(20\d{2}(?:0[1-9]|1[0-2]))(?!\d)", question or "")
+    )
+    return bool(explicit_months) and explicit_months == {current_ym}
+
+
+def _has_historical_period_expression(question: str) -> bool:
+    """Whether a question explicitly asks for a historical/as-of attribute."""
+    text = question or ""
+    if _explicit_previous_day_is_live_snapshot(text):
+        text = _EXPLICIT_DAY_RE.sub(" ", text)
+    return bool(_HISTORICAL_PERIOD_RE.search(text))
+
+
+def source_tables_for_question(entry: dict, question: str) -> list[str]:
+    """Resolve a declarative current/monthly source policy for one question."""
+    policy = entry.get("source_table_policy")
+    fallback = entry.get("source_tables")
+    if fallback is None:
+        fallback = [entry.get("source_table")] if entry.get("source_table") else []
+    if not isinstance(policy, dict):
+        return [str(value) for value in fallback or [] if value]
+
+    current_terms = policy.get("current_snapshot_when") or []
+    current_snapshot = any(
+        _phrase_in_text(question, term) for term in current_terms
+    )
+    # A concrete as-of month wins even when Korean uses "현재" to mean
+    # "as of that month" (for example, "2026년 4월 현재").  Generic
+    # "과거 이용 + 현재 상태", however, is a mixed live/history request.
+    explicit_period = bool(_SOURCE_POLICY_EXPLICIT_PERIOD_RE.search(question or ""))
+    if _explicit_period_is_live_snapshot(question):
+        explicit_period = False
+        current_snapshot = True
+    if not current_snapshot and re.search(r"과거", question or ""):
+        explicit_period = True
+    key = "period_snapshot" if explicit_period else "current_snapshot" if current_snapshot else "default"
+    selected = policy.get(key) or policy.get("default") or fallback or []
+    if isinstance(selected, str):
+        selected = [selected]
+    return [str(value) for value in selected if value]
+
+
+def _phrase_in_text(question: str, phrase: object) -> bool:
+    """Match a Korean business phrase without crossing adjacent word boundaries.
+
+    v2: 구분자와 중첩 조사에 둔감한 매처로 교체했다. 이전 구현은
+      - phrase 에 적힌 토큰 사이에서만 구분자를 허용해서 '기업카드신용한도금액' 이
+        "기업카드 신용한도금액" 을 놓쳤고,
+      - 조사를 한 개만 허용해서 "회원자격별로"(별+로)를 놓쳤다.
+    이 매처는 _rule_rank_tables() 의 테이블 선택과 _table_details() 의 컬럼 선택에
+    함께 쓰이므로, 여기가 프롬프트에 어떤 컬럼이 들어가는지를 결정한다.
+    """
+    return _v2_phrase_in_text(question, phrase)
+
+
+def semantic_attribute_candidates(
+    schema: dict,
+    question: str,
+    domain_name: str = "",
+    max_count: int = 6,
+) -> list[dict]:
+    """Return reusable semantic attributes relevant to the question.
+
+    Attributes model business roles such as merchant owner, corporate customer,
+    or payment institution independently from any one query template.  This
+    keeps physical-column selection and code-value resolution in the semantic
+    layer while returning only a small prompt context for local models.
+    """
+    scored: list[tuple[int, int, int, dict]] = []
+    for position, attribute in enumerate(schema.get("semantic_attributes", [])):
+        domains = attribute.get("domains", attribute.get("domain", []))
+        if isinstance(domains, str):
+            domains = [domains]
+        if domain_name and domains and domain_name not in domains:
+            continue
+        terms = [
+            attribute.get("name", ""),
+            attribute.get("korean_name", ""),
+            *attribute.get("aliases", []),
+        ]
+        exact = max(
+            (
+                len(compact)
+                for term in terms
+                if (compact := _compact_text(term))
+                and len(compact) >= 2
+                and _phrase_in_text(question, term)
+            ),
+            default=0,
+        )
+        overlap, _specific = _retrieval_overlap(
+            question,
+            _join_texts(
+                terms,
+                attribute.get("business_definition"),
+                attribute.get("source_mappings", []),
+                attribute.get("value_semantics", {}),
+                attribute.get("semantic_cautions", []),
+            ),
+        )
+        value_hit = 0
+        for raw_value in (attribute.get("value_semantics") or {}).values():
+            value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
+            value_terms = [
+                value_info.get("label", ""),
+                *value_info.get("aliases", []),
+            ]
+            value_hit = max(
+                value_hit,
+                max(
+                    (
+                        len(compact)
+                        for term in value_terms
+                        if (compact := _compact_text(term))
+                        and len(compact) >= 2
+                        and _phrase_in_text(question, term)
+                    ),
+                    default=0,
+                ),
+            )
+        # Attribute routing requires an explicit attribute phrase or a full
+        # code label.  Free-text overlap with definitions/cautions is too broad
+        # for selecting physical codebook tables.
+        if exact or value_hit:
+            scored.append((max(exact, value_hit), overlap, -position, attribute))
+    scored.sort(key=lambda item: item[:3], reverse=True)
+    return [attribute for _, _, _, attribute in scored[: max(0, max_count)]]
+
+
+def resolve_semantic_attribute_value(
+    schema: dict,
+    attribute_or_parameter: str,
+    question: str,
+) -> str:
+    """Resolve a code value from a semantic attribute's labels and aliases."""
+    q_compact = _compact_text(question)
+    matches: list[tuple[int, str]] = []
+
+    def occurrences(term: str) -> list[tuple[int, int]]:
+        spans = []
+        start = 0
+        while term and (index := q_compact.find(term, start)) >= 0:
+            spans.append((index, index + len(term)))
+            start = index + 1
+        return spans
+
+    def semantic_value_terms(attribute: dict) -> set[str]:
+        return {
+            compact
+            for raw_value in (attribute.get("value_semantics") or {}).values()
+            for value_info in [raw_value if isinstance(raw_value, dict) else {"label": raw_value}]
+            for term in [value_info.get("label", ""), *value_info.get("aliases", [])]
+            if (compact := _compact_text(term))
+        }
+
+    def attribute_cues(attribute: dict) -> set[str]:
+        value_terms = semantic_value_terms(attribute)
+        return {
+            compact
+            for term in [
+                attribute.get("name", ""),
+                attribute.get("korean_name", ""),
+                attribute.get("parameter_name", ""),
+                *attribute.get("aliases", []),
+            ]
+            if (compact := _compact_text(term)) and compact not in value_terms
+        }
+
+    for attribute in schema.get("semantic_attributes", []):
+        names = {
+            str(attribute.get("name") or ""),
+            str(attribute.get("parameter_name") or ""),
+        }
+        if attribute_or_parameter not in names:
+            continue
+        target_cue_hit = any(cue in q_compact for cue in attribute_cues(attribute))
+        foreign_attributes = [
+            other for other in schema.get("semantic_attributes", []) if other is not attribute
+        ]
+        foreign_terms = {
+            term for other in foreign_attributes for term in semantic_value_terms(other)
+        }
+        for code, raw_value in (attribute.get("value_semantics") or {}).items():
+            value_info = raw_value if isinstance(raw_value, dict) else {"label": raw_value}
+            terms = [value_info.get("label", ""), *value_info.get("aliases", [])]
+            for term in terms:
+                compact = _compact_text(term)
+                if len(compact) < 2:
+                    continue
+                # The same label can be a valid value in multiple business
+                # codebooks (for example 주부, 지점, 은행, 기타).  A bare
+                # duplicate is ambiguous, so resolve it only when the question
+                # names this attribute explicitly.
+                if compact in foreign_terms and not target_cue_hit:
+                    continue
+                target_spans = occurrences(compact)
+                shadow_spans = [
+                    span
+                    for foreign in foreign_terms
+                    if len(foreign) > len(compact) and compact in foreign
+                    for span in occurrences(foreign)
+                ]
+                if any(
+                    not any(start <= target_start and target_end <= end for start, end in shadow_spans)
+                    for target_start, target_end in target_spans
+                ):
+                    matches.append((len(compact), str(code)))
+    return max(matches)[1] if matches else ""
+
+
+def build_semantic_attributes_summary(
+    schema: dict,
+    question: str = "",
+    domain_name: str = "",
+    max_count: int = 6,
+    table_names: list[str] | None = None,
+) -> str:
+    """Render a bounded question-specific semantic attribute context.
+
+    ``table_names`` 를 주면 그 테이블에 있는 원천만 적는다. SQL 생성 단계는 이미
+    고른 테이블로만 쓸 수 있는데, 속성이 같은 컬럼을 가진 다른 테이블까지 나열하면
+    (가맹점 주대표자 → tbdaadt01·tbdaaus01·tmdaa5d01·tmdaaus01) 그중 하나를 베껴
+    와서, 가맹점 도로명 주소처럼 마스터에만 있는 답이 엉뚱한 스냅샷에서 나온다.
+    """
+    if question:
+        attributes = semantic_attribute_candidates(
+            schema,
+            question,
+            domain_name=domain_name,
+            max_count=max_count,
+        )
+        index = {
+            str(attribute.get("name") or ""): attribute
+            for attribute in schema.get("semantic_attributes", [])
+        }
+        bound = []
+        for contract in semantic_query_contract_candidates(
+            schema,
+            question,
+            domain_name=domain_name,
+            max_count=2,
+        ):
+            for name in contract.get("semantic_attributes", []):
+                attribute = index.get(str(name))
+                if attribute and attribute not in bound:
+                    bound.append(attribute)
+        attributes = (bound + [item for item in attributes if item not in bound])[: max(0, max_count)]
+    else:
+        attributes = list(schema.get("semantic_attributes", []))[: max(0, max_count)]
+    if not attributes:
+        return "(질문과 직접 관련된 semantic attribute 없음)"
+
+    allowed_tables = (
+        {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        if table_names
+        else None
+    )
+    lines = []
+    for attribute in attributes:
+        name = attribute.get("korean_name") or attribute.get("name") or ""
+        lines.append(f"- **{name}**: {attribute.get('business_definition', '')}")
+        if attribute.get("aliases"):
+            lines.append(
+                "  aliases: [" + ", ".join(str(value) for value in attribute.get("aliases", [])) + "]"
+            )
+        if attribute.get("parameter_name"):
+            lines.append(f"  parameter_name: {attribute.get('parameter_name')}")
+        if attribute.get("codebook_status"):
+            lines.append(f"  codebook_status: {attribute.get('codebook_status')}")
+        if attribute.get("value_semantics_provenance"):
+            lines.append(
+                "  value_semantics_provenance: "
+                + str(attribute.get("value_semantics_provenance"))
+            )
+        if attribute.get("codebook_validity"):
+            lines.append(
+                "  codebook_validity: "
+                + json.dumps(attribute.get("codebook_validity"), ensure_ascii=False)
+            )
+        if attribute.get("source_selection"):
+            lines.append(
+                "  source_selection: "
+                + json.dumps(attribute.get("source_selection"), ensure_ascii=False)
+            )
+        mappings = attribute.get("source_mappings", [])
+        if allowed_tables is not None:
+            mappings = [
+                mapping
+                for mapping in mappings
+                if str(mapping.get("table") or "").rsplit(".", 1)[-1].lower()
+                in allowed_tables
+            ]
+        if mappings:
+            lines.append("  source_mappings:")
+            for mapping in mappings[:8]:
+                table = mapping.get("table", "")
+                columns = mapping.get("columns", mapping.get("column", []))
+                if isinstance(columns, str):
+                    columns = [columns]
+                role = mapping.get("role", "")
+                role_note = f", role={role}" if role else ""
+                lines.append(f"    - {table}: {', '.join(str(value) for value in columns)}{role_note}")
+        if attribute.get("value_semantics"):
+            lines.append(
+                "  value_semantics: "
+                + json.dumps(attribute.get("value_semantics"), ensure_ascii=False)
+            )
+        if attribute.get("filter_expression"):
+            lines.append(f"  filter_expression: {attribute.get('filter_expression')}")
+        if attribute.get("semantic_cautions"):
+            lines.append(
+                "  semantic_cautions: "
+                + "; ".join(str(value) for value in attribute.get("semantic_cautions", []))
+            )
+    return "\n".join(lines)
 
 
 def _retrieval_overlap(question: str, evidence: str) -> tuple[int, bool]:
@@ -352,7 +799,18 @@ def _retrieval_overlap(question: str, evidence: str) -> tuple[int, bool]:
     for concise requests such as ``연체 알려줘``.
     """
     evidence_lower = str(evidence or "").lower()
-    question_tokens = _tokenize_text(question)
+    generic_suffixes = {
+        "의", "은", "는", "이", "가", "을", "를", "에", "에서", "에게",
+        "로", "으로", "와", "과", "도", "만", "별", "중", "인",
+    }
+    question_tokens = set()
+    for token in _tokenize_text(question):
+        normalized = token
+        for generic in sorted(_GENERIC_RETRIEVAL_TOKENS, key=len, reverse=True):
+            if token.startswith(generic) and token[len(generic) :] in generic_suffixes:
+                normalized = generic
+                break
+        question_tokens.add(normalized)
     matched = {token for token in question_tokens if token in evidence_lower}
     specific = any(token not in _GENERIC_RETRIEVAL_TOKENS and len(token) >= 2 for token in matched)
     return len(matched), specific
@@ -407,7 +865,38 @@ def _score_by_question(question: str, *texts: object) -> int:
     return score
 
 
-def _format_query_reference(ref: dict) -> str:
+def resolve_query_reference_for_question(ref: dict, question: str) -> dict:
+    """Render only the cadence sources applicable to this reference request."""
+    policy = ref.get("source_table_policy")
+    if not isinstance(policy, dict):
+        return ref
+
+    governed = {
+        _normalized_table_name(table)
+        for key in ("default", "current_snapshot", "period_snapshot")
+        for table in (policy.get(key) or [])
+        if table
+    }
+    selected = source_tables_for_question(ref, question)
+    primary = str(ref.get("primary_table") or "")
+    joins = [str(table) for table in ref.get("join_tables", []) if table]
+    unrelated_joins = [
+        table for table in joins if _normalized_table_name(table) not in governed
+    ]
+
+    resolved = dict(ref)
+    if _normalized_table_name(primary) in governed and selected:
+        resolved["primary_table"] = selected[0]
+        resolved["join_tables"] = list(
+            dict.fromkeys([*selected[1:], *unrelated_joins])
+        )
+    else:
+        resolved["join_tables"] = list(dict.fromkeys([*selected, *unrelated_joins]))
+    return resolved
+
+
+def _format_query_reference(ref: dict, question: str = "") -> str:
+    ref = resolve_query_reference_for_question(ref, question)
     lines = [f"- **{ref.get('intent', '')}**"]
     says = ", ".join(ref.get("when_user_says", [])[:3])
     if says:
@@ -420,6 +909,11 @@ def _format_query_reference(ref: dict) -> str:
         lines.append(f"  join_rule: {ref['join_rule']}")
     if ref.get("verified_query"):
         lines.append(f"  verified_query: {ref['verified_query']}")
+    if ref.get("source_table_policy"):
+        lines.append(
+            "  source_table_policy: "
+            + json.dumps(ref.get("source_table_policy"), ensure_ascii=False)
+        )
     if ref.get("source_lineage"):
         lines.append("  source_lineage: " + json.dumps(ref.get("source_lineage"), ensure_ascii=False))
     cols = ref.get("recommended_columns", {})
@@ -442,17 +936,31 @@ def _format_query_reference(ref: dict) -> str:
     return "\n".join(lines)
 
 
-def _semantic_query_contract_score(question: str, contract: dict) -> int:
+def _match_phrase_weight(value: object) -> int:
+    """점수용 길이. 조건 토큰은 글자 수에 뜻이 없어 최소 표면형(두 글자)으로 센다."""
+    if str(value) in CONTRACT_MATCH_PREDICATES:
+        return 2
+    return len(_compact_text(value))
+
+
+def _semantic_query_contract_score(schema: dict, question: str, contract: dict) -> int:
     """Score a compositional semantic contract using declarative phrase groups."""
     compact = _compact_text(question)
     match = contract.get("match") if isinstance(contract.get("match"), dict) else {}
 
     def phrase_hit(value: object) -> bool:
+        predicate = CONTRACT_MATCH_PREDICATES.get(str(value))
+        if predicate is not None:
+            return predicate(question)
         normalized = _compact_text(value)
         return bool(normalized and len(normalized) >= 2 and normalized in compact)
 
     excluded = match.get("excluded", [])
     if any(phrase_hit(value) for value in excluded):
+        return 0
+    if match.get("exclude_explicit_period") and _has_historical_period_expression(question):
+        return 0
+    if match.get("require_explicit_period") and not _has_historical_period_expression(question):
         return 0
 
     required = match.get("required", [])
@@ -464,13 +972,18 @@ def _semantic_query_contract_score(question: str, contract: dict) -> int:
         hits = [value for value in phrases if phrase_hit(value)]
         if not hits:
             return 0
-        score += 12 + max(len(_compact_text(value)) for value in hits)
+        score += 12 + max(_match_phrase_weight(value) for value in hits)
 
     for group in match.get("optional", []):
         phrases = group if isinstance(group, list) else [group]
         hits = [value for value in phrases if phrase_hit(value)]
         if hits:
-            score += 3 + max(len(_compact_text(value)) for value in hits)
+            score += 3 + max(_match_phrase_weight(value) for value in hits)
+
+    for attribute_name in match.get("required_attribute_values", []):
+        if not resolve_semantic_attribute_value(schema, str(attribute_name), question):
+            return 0
+        score += 18
 
     for example in contract.get("examples", []):
         normalized = _compact_text(example)
@@ -495,24 +1008,33 @@ def semantic_query_contract_candidates(
             continue
         if routing_only and str(contract.get("routing_strength") or "medium").lower() != "high":
             continue
-        score = _semantic_query_contract_score(question, contract)
+        score = _semantic_query_contract_score(schema, question, contract)
         if score > 0:
             scored.append((score, -position, contract))
     scored.sort(key=lambda item: item[:2], reverse=True)
     return [contract for _, _, contract in scored[: max(0, max_count)]]
 
 
-def _format_semantic_query_contract(contract: dict) -> str:
+def _format_semantic_query_contract(contract: dict, question: str = "") -> str:
+    contract = dict(contract)
+    if contract.get("source_table_policy"):
+        contract["source_tables"] = source_tables_for_question(contract, question)
     lines = [f"- **{contract.get('name', '')}** (domain={contract.get('domain', '')})"]
     if contract.get("description"):
         lines.append(f"  definition: {contract.get('description')}")
     if contract.get("support_status"):
         lines.append(f"  support_status: {contract.get('support_status')}")
     fields = (
+        ("execution_mode", "execution_mode"),
+        ("reference_query", "reference_query"),
         ("source_tables", "source_tables"),
+        ("source_table_policy", "source_table_policy"),
+        ("require_all_selected_tables", "require_all_selected_tables"),
+        ("sql_shape", "sql_shape"),
         ("metric_names", "canonical_metrics"),
         ("result_grain", "result_grain"),
         ("dimensions", "dimensions"),
+        ("semantic_attributes", "semantic_attributes"),
         ("entity_binding", "entity_binding"),
         ("name_filter", "name_filter"),
         ("time_policy", "time_policy"),
@@ -545,7 +1067,9 @@ def find_relevant_semantic_query_contracts(
     )
     if not contracts:
         return "(질문과 직접 관련된 semantic query contract 없음)"
-    return "\n\n".join(_format_semantic_query_contract(contract) for contract in contracts)
+    return "\n\n".join(
+        _format_semantic_query_contract(contract, question) for contract in contracts
+    )
 
 
 def find_relevant_references(
@@ -553,10 +1077,19 @@ def find_relevant_references(
     question: str,
     max_count: int = 2,
     domain_name: str = "",
+    table_names: list[str] | None = None,
 ) -> str:
     refs = schema.get("query_references", [])
     if not refs:
         return "(관련 reference 없음)"
+    # 레시피가 사는 집(primary_table)이 고른 테이블이 아니면 그 레시피는 쓸 수 없다.
+    # 폐업 가맹점 수 reference(tbdaaus01)가 "가맹점주"·브랜드명만 겹쳐 올라와,
+    # 과거 월 라우팅에 tmdaaus01 로 바뀐 완제품 SQL 이 프롬프트에 실렸다.
+    allowed_tables = (
+        {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        if table_names
+        else None
+    )
     scored = []
     q_compact = _compact_text(question)
     for position, ref in enumerate(refs):
@@ -566,6 +1099,12 @@ def find_relevant_references(
         }
         ref_tables.discard("")
         if not _entry_matches_domain(schema, ref, domain_name, ref_tables):
+            continue
+        if (
+            allowed_tables is not None
+            and ref.get("primary_table")
+            and _normalized_table_name(ref.get("primary_table")) not in allowed_tables
+        ):
             continue
         exact_length = 0
         for phrase in ref.get("when_user_says", []):
@@ -589,7 +1128,7 @@ def find_relevant_references(
     top = exact[:max_count] if exact else [ref for _, _, _, ref in scored[:max_count]]
     if not top:
         return "(질문과 직접 관련된 reference 없음)"
-    return "\n\n".join(_format_query_reference(ref) for ref in top)
+    return "\n\n".join(_format_query_reference(ref, question) for ref in top)
 
 
 def _sql_table_names(sql: str) -> set[str]:
@@ -608,12 +1147,25 @@ def find_relevant_queries(
     question: str,
     max_count: int = 1,
     domain_name: str = "",
+    table_names: list[str] | None = None,
 ) -> str:
     vqs = schema.get("verified_queries", [])
+    # 아래 주석대로 이 예시는 거의 그대로 복사된다. 고른 테이블을 하나도 읽지 않는
+    # 예시는 복사될수록 답에서 멀어진다("가맹점주" 하나로 올라온 가맹점주수 SQL).
+    allowed_tables = (
+        {str(name).rsplit(".", 1)[-1].lower() for name in table_names}
+        if table_names
+        else None
+    )
     scored = []
     q_compact = _compact_text(question)
     for position, vq in enumerate(vqs):
-        if not _entry_matches_domain(schema, vq, domain_name, _sql_table_names(vq.get("sql", ""))):
+        if str(vq.get("runtime_mode") or "executable").lower() == "reference_only":
+            continue
+        vq_tables = _sql_table_names(vq.get("sql", ""))
+        if not _entry_matches_domain(schema, vq, domain_name, vq_tables):
+            continue
+        if allowed_tables is not None and vq_tables and not vq_tables & allowed_tables:
             continue
         vq_compact = _compact_text(vq.get("question"))
         exact_length = len(vq_compact) if len(vq_compact) >= 4 and vq_compact in q_compact else 0
@@ -632,6 +1184,11 @@ def find_relevant_queries(
             for tag in vq.get("tags", [])
             if len(_compact_text(tag)) >= 2 and _compact_text(tag) in q_compact
         )
+        # v2: 프롬프트에 붙는 참고 SQL은 로컬 모델이 거의 그대로 베낀다. 질문이
+        # 요구한 기간·축·지표를 못 내놓는 예시는 붙이지 않는다. 붙여 놓으면
+        # "카드등급별 할부연체원금" 질문에 카드등급별 연체율 SQL이 그대로 나온다.
+        if _v2_vq_output_gap(question, vq, column_names=_schema_column_names(schema)):
+            continue
         if exact_length or overlap >= 2 or tag_hits >= 2 or (specific and tag_hits >= 1):
             scored.append((exact_length, tag_hits, overlap, -position, vq))
     scored.sort(key=lambda item: item[:4], reverse=True)
@@ -644,6 +1201,28 @@ def find_relevant_queries(
         lines.append(f"Q: {vq['question']}")
         lines.append(f"SQL:\n{vq['sql'].strip()}\n")
     return "\n".join(lines)
+
+
+_COLUMN_NAMES_CACHE_KEY = "_v2_column_names_cache"
+
+
+def _schema_column_names(schema: dict) -> frozenset[str]:
+    """Dimension/measure 컬럼명 전체. VQ 출력 계약 검사에 쓴다.
+
+    캐시는 스키마 딕셔너리 안에 담는다. id(schema) 를 키로 쓰면 임시 스키마가
+    GC 된 뒤 같은 id 를 재사용한 다른 스키마에 엉뚱한 값이 붙는다.
+    """
+    cached = schema.get(_COLUMN_NAMES_CACHE_KEY)
+    if cached is None:
+        cached = frozenset(
+            str(column.get("name") or "")
+            for table in schema.get("tables", [])
+            for section in ("dimensions", "measures")
+            for column in (table.get(section) or [])
+            if column.get("name")
+        )
+        schema[_COLUMN_NAMES_CACHE_KEY] = cached
+    return cached
 
 
 def _join_texts(*values: object) -> str:
@@ -930,6 +1509,23 @@ def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
                 contract.get("time_policy", {}),
             )
         )
+    attribute_texts = []
+    for attribute in schema.get("semantic_attributes", []):
+        domains = attribute.get("domains", attribute.get("domain", []))
+        if isinstance(domains, str):
+            domains = [domains]
+        if domains and domain_name not in domains:
+            continue
+        attribute_texts.append(
+            _join_texts(
+                attribute.get("name"),
+                attribute.get("korean_name"),
+                attribute.get("aliases", []),
+                attribute.get("business_definition"),
+                attribute.get("source_mappings", []),
+                attribute.get("value_semantics", {}),
+            )
+        )
     return _join_texts(
         domain.get("name"),
         domain.get("business_scope"),
@@ -939,6 +1535,7 @@ def _build_domain_embedding_text(schema: dict, domain: dict) -> str:
         metric_texts,
         entity_texts,
         contract_texts,
+        attribute_texts,
     )
 
 
@@ -968,22 +1565,57 @@ def _keyword_rule_domain_scores(schema: dict, question: str) -> dict[str, float]
     return scores
 
 
+# 한 도메인만 선언한 차원·지표 컬럼을 질문이 이름째 부르면 그 자체가 도메인을
+# 고르는 단서다. 여러 도메인이 함께 선언한 이름(회원일련번호·가맹점번호처럼)은
+# 약한 단서로만 센다. 지표 이름 적중(10.0)과 같은 급으로 둔다.
+_DOMAIN_EXCLUSIVE_ENTITY_TERM_WEIGHT = 10.0
+_SHARED_ENTITY_TERM_WEIGHT = 3.0
+
+
+@_memoize_by_schema_identity
+def _entity_terms_by_domain_count(schema: dict) -> dict[str, int]:
+    """How many domains declare each entity dimension/fact name."""
+    counts: dict[str, int] = {}
+    entity_index = _entity_by_name(schema)
+    for domain in schema.get("canonical_domains", []):
+        declared = {
+            str(term)
+            for entity_name in domain.get("primary_entities", [])
+            for term in (
+                *entity_index.get(entity_name, {}).get("canonical_dimensions", []),
+                *entity_index.get(entity_name, {}).get("canonical_facts", []),
+            )
+            if term
+        }
+        for term in declared:
+            counts[term] = counts.get(term, 0) + 1
+    return counts
+
+
 def _metric_entity_domain_scores(schema: dict, question: str) -> dict[str, float]:
-    q_lower = question.lower()
+    """Score domains by the metrics and entity columns the question names.
+
+    v2: 두 군데를 고쳤다. 사용자는 컬럼 이름을 띄어 쓰고("유효 기업개별카드 수")
+    선언 이름은 붙여 쓴다(유효기업개별카드수). 원본은 raw substring 으로 비교해서
+    선언 이름은 하나도 못 맞히고, 대신 use_when 문장을 낱말로 쪼갠 "카드"·"개별"·
+    "월" 같은 조각이 3점씩 붙었다. "26년 4월 유효 기업개별카드 수 알려줘" 가
+    회원(회원일련번호) 도메인인 customer_card_portfolio 로 갔고, 그 도메인 컨텍스트가
+    기업고객(고객식별자) 대신 회원 마스터를 기본 테이블로 제시했다.
+    """
     q_tokens = _tokenize_text(question)
     scores: dict[str, float] = {}
     entity_index = _entity_by_name(schema)
+    domain_counts = _entity_terms_by_domain_count(schema)
     for metric in schema.get("canonical_metrics", []):
         domain = metric.get("domain", "")
         if not domain:
             continue
         score = scores.get(domain, 0.0)
-        metric_name = str(metric.get("name", "")).lower()
-        if metric_name and metric_name in q_lower:
+        metric_name = str(metric.get("name", ""))
+        if metric_name and _phrase_in_text(question, metric_name):
             score += 10.0
         for synonym in metric.get("synonyms", []):
-            synonym_lower = str(synonym).lower()
-            if synonym_lower and synonym_lower in q_lower:
+            if synonym and _phrase_in_text(question, str(synonym)):
                 score += 7.0
             synonym_tokens = _tokenize_text(str(synonym))
             if synonym_tokens and q_tokens.intersection(synonym_tokens):
@@ -996,19 +1628,32 @@ def _metric_entity_domain_scores(schema: dict, question: str) -> dict[str, float
         score = scores.get(domain_name, 0.0)
         for entity_name in domain.get("primary_entities", []):
             entity = entity_index.get(entity_name, {})
-            entity_terms = [
+            declared_terms = [
                 entity.get("name", ""),
                 entity.get("korean_name", ""),
                 entity.get("physical_table", ""),
                 *entity.get("canonical_dimensions", []),
                 *entity.get("canonical_facts", []),
-                *_join_texts(entity.get("use_when", [])).split(),
             ]
-            for term in entity_terms:
-                term_lower = str(term).lower()
-                if term_lower and term_lower in q_lower:
-                    score += 3.0
-            entity_token_overlap = q_tokens.intersection(_tokenize_text(_join_texts(entity_terms)))
+            for term in declared_terms:
+                name = str(term)
+                if not name or name.lower() in _GENERIC_RETRIEVAL_TOKENS:
+                    continue
+                if _phrase_in_text(question, name):
+                    score += (
+                        _DOMAIN_EXCLUSIVE_ENTITY_TERM_WEIGHT
+                        if domain_counts.get(name) == 1
+                        else _SHARED_ENTITY_TERM_WEIGHT
+                    )
+            # use_when 은 문장이다. 낱말 하나가 질문에 있다는 사실은 토큰 겹침
+            # 상한(8개) 안에서만 센다.
+            entity_token_overlap = q_tokens.intersection(
+                _tokenize_text(
+                    _join_texts(
+                        [*declared_terms, *_join_texts(entity.get("use_when", [])).split()]
+                    )
+                )
+            )
             score += min(len(entity_token_overlap), 8) * 0.8
         scores[domain_name] = score
     return scores
@@ -1034,7 +1679,8 @@ def _weighted_domain_scores(
             "metric_entity_score": round(metric_entity, 4),
             "embedding_score": round(embedding, 4),
         })
-    candidates.sort(key=lambda item: item["score"], reverse=True)
+    # 후보 이름을 set 에서 꺼내 담으므로, 점수가 같으면 실행마다 순서가 달라진다.
+    candidates.sort(key=lambda item: (-item["score"], item["domain"]))
     return candidates
 
 
@@ -1047,7 +1693,10 @@ def _needs_domain_adjudication(candidates: list[dict]) -> bool:
     second = candidates[1]["score"]
     if top <= 0:
         return True
-    if top < 5.0:
+    # 이 하한은 use_when 문장 조각까지 점수로 세던 시절의 눈금이었다. 선언 이름만
+    # 세도록 바꾸면서 점수대가 내려갔고, 근거가 뚜렷한 질문까지 LLM 판정으로
+    # 넘어갔다.
+    if top < 2.0:
         return True
     return (top - second) <= max(2.0, top * 0.12)
 
@@ -1173,7 +1822,7 @@ def _validate_qualified_columns(sql: str) -> list[str]:
             continue
         seen.add(key)
         table_labels = ", ".join(sorted(candidate_tables))
-        if _SENSITIVE_COLUMN_RE.search(column_name) or any(
+        if _is_sensitive_column_name(column_name) or any(
             _is_restricted_column(known_tables.get(table_name, {}), column_name)
             for table_name in candidate_tables
         ):
@@ -1223,14 +1872,60 @@ def _extract_cte_names(sql: str) -> set[str]:
 
 def _extract_schema_tables(sql: str) -> set[str]:
     cte_names = _extract_cte_names(sql)
-    if _SCHEMA_TABLE_RE is not None:
-        return {match.group(1).lower() for match in _SCHEMA_TABLE_RE.finditer(sql) if match.group(1).lower() not in cte_names}
-    # prefix가 없을 때는 FROM/JOIN 뒤의 식별자를 테이블 후보로 본다.
-    return {
-        match.group(2).lower()
-        for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", sql, re.IGNORECASE)
-        if match.group(2).lower() not in {"select", *cte_names}
-    }
+    # FROM/JOIN 실물 테이블을 하나의 패턴으로 추출한다. 예전
+    # DB_SCHEMA 전용 regex는 card_system."tbdaaus01" 처럼 테이블명을
+    # 인용한 SQL을 놓쳐 적재 주기·민감 컬럼 검증을 통째로 우회했다.
+    table_pattern = re.compile(
+        r'\b(?:FROM|JOIN)\s+'
+        r'(?:(?:"(?P<quoted_schema>[A-Za-z_][A-Za-z0-9_]*)"|'
+        r'(?P<plain_schema>[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*)?'
+        r'(?:"(?P<quoted_table>[A-Za-z_][A-Za-z0-9_]*)"|'
+        r'(?P<plain_table>[A-Za-z_][A-Za-z0-9_]*))',
+        re.IGNORECASE,
+    )
+    tables: set[str] = set()
+    for match in table_pattern.finditer(sql or ""):
+        table_name = (match.group("quoted_table") or match.group("plain_table")).lower()
+        schema_name = (match.group("quoted_schema") or match.group("plain_schema") or "").lower()
+        if table_name in {"select", *cte_names} and not schema_name:
+            continue
+        if _SCHEMA_TABLE_RE is not None and schema_name and schema_name != DB_SCHEMA.lower():
+            # 다른 스키마의 동명 테이블을 현재 semantic schema로
+            # 잘못 검증하지 않는다.
+            continue
+        tables.add(table_name)
+    return tables
+
+
+_SELECT_STAR_SOURCE_RE = re.compile(
+    r'\bSELECT\s+\*\s+FROM\s+'
+    r'(?:(?P<schema>"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?'
+    r'(?:"(?P<quoted>[A-Za-z_][A-Za-z0-9_]*)"|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))',
+    re.IGNORECASE,
+)
+
+
+def _has_unsafe_select_star(sql: str, known_tables: dict[str, dict]) -> bool:
+    """Reject result wildcards and wildcards that read a physical table."""
+    statements = sqlparse.parse(_sql_identifier_view(sql))
+    if statements:
+        in_select = False
+        for token in statements[0].tokens:
+            if not in_select:
+                if token.ttype is sqlparse.tokens.DML and token.normalized == "SELECT":
+                    in_select = True
+                continue
+            if token.ttype in sqlparse.tokens.Keyword and token.normalized == "FROM":
+                break
+            if token.ttype is sqlparse.tokens.Wildcard:
+                return True
+
+    cte_names = _extract_cte_names(sql)
+    for match in _SELECT_STAR_SOURCE_RE.finditer(sql):
+        table = (match.group("quoted") or match.group("plain")).lower()
+        if table in known_tables and (match.group("schema") or table not in cte_names):
+            return True
+    return False
 
 
 def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[str]:
@@ -1259,30 +1954,60 @@ def _validate_sql_against_schema(sql: str, selected_tables: list[str]) -> list[s
     # 스키마 prefix가 설정된 경우에만 prefix 누락을 검증한다.
     if DB_SCHEMA_PREFIX:
         prefix_lower = DB_SCHEMA_PREFIX.lower()
+        lowered = stripped.lower()
+
+        def is_prefixed(name: str) -> bool:
+            """prefix 가 붙어 있는지. ``card_system."tbdaa1d12"`` 도 붙은 것으로 본다.
+
+            따옴표를 허용하지 않으면 Athena 에서 정상인 SQL 을 "prefix가 없습니다"
+            로 반려하고, 모델은 이미 붙여 놓은 prefix 를 고칠 수 없어 재시도를 다
+            태운다.
+            """
+            schema_name = re.escape(prefix_lower.removesuffix("."))
+            return bool(
+                re.search(rf'"?{schema_name}"?\s*\.\s*"?{re.escape(name)}"?', lowered)
+            )
+
         for table in selected_tables:
             table_lower = str(table).lower()
             if table_lower.startswith(prefix_lower):
                 table_lower = table_lower[len(prefix_lower):]
             if len(table_lower) < 4:
                 continue
-            if table_lower in stripped.lower() and f"{prefix_lower}{table_lower}" not in stripped.lower():
+            if table_lower in lowered and not is_prefixed(table_lower):
                 issues.append(f"테이블 '{table}'에 {DB_SCHEMA_PREFIX} prefix가 없습니다.")
 
         for match in re.finditer(r"\b(FROM|JOIN)\s+([a-zA-Z0-9_]+)\b", stripped, re.IGNORECASE):
             table = match.group(2)
-            if table.lower() != "select" and f"{prefix_lower}{table.lower()}" not in stripped.lower():
+            if table.lower() != "select" and not is_prefixed(table.lower()):
                 if table.lower() in known_tables:
                     issues.append(f"테이블 '{table}'은 {DB_SCHEMA_PREFIX}{table} 형태로 사용해야 합니다.")
 
-    if re.search(r"\bSELECT\s+\*", stripped, re.IGNORECASE):
+    if _has_unsafe_select_star(stripped, known_tables):
         issues.append("SELECT * 대신 필요한 컬럼만 명시하세요.")
     return issues
 
 
-def _result_summary(columns: list, rows: list[tuple], max_top_values: int = 5) -> str:
+def _result_summary(
+    columns: list,
+    rows: list[tuple],
+    max_top_values: int = 5,
+    total_row_count: int | None = None,
+) -> str:
     if not columns or not rows:
         return "(조회 데이터 없음)"
-    lines = [f"- row_count: {len(rows)}"]
+    # 합계·평균은 넘겨받은 행만 집계한 값이다. 원본이 더 크면 그 사실을 같이
+    # 적어야 부분 합계가 전체 합계로 답변에 실리지 않는다.
+    # total_row_count=None 은 조회 한도에 걸려 전체 건수를 세지 못한 경우다.
+    if total_row_count == len(rows):
+        lines = [f"- row_count: {len(rows)} (전체 건수)"]
+    else:
+        lines = [
+            f"- row_count: {total_row_count} (전체 건수)"
+            if total_row_count is not None
+            else "- row_count: 조회 한도에 걸려 미확인 (건수는 결과 범위 안내를 따를 것)",
+            f"- 아래 합계·평균·최소·최대는 상위 {len(rows)}행만 집계한 값입니다.",
+        ]
     for idx, column in enumerate(columns):
         values = [row[idx] for row in rows if idx < len(row) and row[idx] is not None]
         numeric_values = [float(v) for v in values if isinstance(v, (int, float, Decimal))]

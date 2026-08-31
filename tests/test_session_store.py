@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 SESSION_STORE_PATH = Path(__file__).resolve().parents[1] / "text2sql_agent" / "session_store.py"
@@ -12,11 +13,37 @@ session_store_module = module_from_spec(spec)
 spec.loader.exec_module(session_store_module)
 
 InMemorySessionStore = session_store_module.InMemorySessionStore
+PostgresSessionStore = session_store_module.PostgresSessionStore
 RetentionPolicy = session_store_module.RetentionPolicy
 SessionOwnershipError = session_store_module.SessionOwnershipError
 
 
 class SessionStoreTest(unittest.TestCase):
+    def test_postgres_status_does_not_run_schema_ddl(self) -> None:
+        store = PostgresSessionStore()
+
+        with patch.object(store, "_get_pool") as get_pool:
+            status = store.status()
+
+        self.assertEqual(status["schema"], "corporate_sales")
+        get_pool.assert_not_called()
+
+    def test_postgres_delete_sql_is_disabled_without_permission(self) -> None:
+        store = PostgresSessionStore()
+        store.delete_enabled = False
+        cursor = Mock()
+
+        store._delete_expired_rows(cursor)
+        store._prune_sessions_for_user(cursor, "user-a")
+        store._prune_messages_for_session(cursor, "session-a")
+
+        cursor.execute.assert_not_called()
+        with patch.object(store, "_conn") as get_connection:
+            self.assertFalse(store.delete_session("session-a", "user-a"))
+            self.assertEqual(store.prune_empty_sessions("user-a"), 0)
+            self.assertFalse(store.delete_saved_query("query-a", "user-a"))
+        get_connection.assert_not_called()
+
     def test_sessions_are_scoped_by_user(self) -> None:
         store = InMemorySessionStore()
         session = store.get_or_create_session(None, "user-a", "manual")
@@ -89,6 +116,22 @@ class SessionStoreTest(unittest.TestCase):
 
         self.assertIsNone(store.get_result("r1", "user-a"))
         self.assertIsNone(store.get_file("t1"))
+
+    def test_postgres_message_is_masked_on_write_but_not_in_the_response(self) -> None:
+        store = PostgresSessionStore()
+        session = {"id": "sess-1", "user_id": "user-a", "title": "새 대화"}
+        cursor = Mock()
+        connection = Mock()
+        connection.cursor.return_value = cursor
+
+        with patch.object(store, "_conn", return_value=connection), patch.object(store, "_put"):
+            store.append_message(session, {"role": "user", "content": "내 번호 010-9904-0959 로 연락 줘"})
+
+        insert_params = cursor.execute.call_args_list[0].args[1]
+        self.assertEqual(insert_params[3], "내 번호 [전화번호] 로 연락 줘")
+        self.assertEqual(session["title"], "내 번호 [전화번호] 로 연락 줘")
+        # 화면으로 나가는 사본은 원문이라야 방금 보낸 질문이 그대로 보인다.
+        self.assertEqual(session["messages"][0]["content"], "내 번호 010-9904-0959 로 연락 줘")
 
 
 if __name__ == "__main__":
