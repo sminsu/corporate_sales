@@ -1047,6 +1047,14 @@ def _accumulation_policy_instruction(table_names: list[str] | None = None) -> st
                 f"      일자 요청도 적재 기준 조건은 `{column}`의 YYYYMM으로 축약합니다. "
                 "업무 발생일은 분석·집계 축으로 쓸 수 있지만 적재 월 조건을 생략하지 않습니다."
             )
+            # 위 문장만 있으면 모델이 사용자의 기간을 적재 축 하나로 다 써버린다.
+            # "지역별 신규 가맹점수" 가 tmdaa5d01."기준년월" = 'YYYYMM' 하나로 나가
+            # 그 달에 살아있던 전체 가맹점을 셌다. 신규는 event_date 술어다.
+            lines.append(
+                "      질문이 사건(신규·재가입·해지·발급)을 가리키면 그 기간은 해당 "
+                f"event_date 컬럼의 조건으로 따로 겁니다. `{column}` 조건은 읽을 월을 "
+                "고르는 것이지 사건이 일어난 달을 뜻하지 않으므로, 둘을 함께 겁니다."
+            )
             live_source = live_source_for(name)
             if live_source:
                 lines.append(
@@ -1721,6 +1729,10 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     recent_closed_name = _extract_recent_closed_merchant_name_by_rule(text)
     if recent_closed_name:
         return recent_closed_name
+    # 기간이 이름에 딸려 들어가지 않게 지운다. 지운 뒤의 문장으로 "기간을 말했나"
+    # 를 물으면 통째로 지워지는 표현("2026년 1월")은 늘 기간 없음이 되어, 아래
+    # 기간 게이트가 "도미노피자 2026년 1월 매출액" 의 이름을 못 뽑았다.
+    dated = _has_time_expression(text)
     text = re.sub(r"20\d{2}\s*년\s*\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?", " ", text)
     text = re.sub(r"(?<!\d)20\d{4}(?:\d{2})?(?!\d)", " ", text)
     text = re.sub(r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?=기준|월)(?!\d)", " ", text)
@@ -1740,6 +1752,10 @@ def _extract_merchant_name_by_rule(question: str) -> str:
     }
     invalid_candidate_context = re.compile(
         r"최근|지난|이번|저번|전월|매출|(?:일|주|월|분기|반기|연도|년도|날짜|기간|업종|가맹점|기업|회사|지역|등급)별|법인카드|기업카드|"
+        # 기간을 지운 자리에 남는 토막. "2026년 1월부터 5월까지 가맹점 …" 에서
+        # 앞의 연·월만 지워져 '부터 5월까지' 가 이름으로 잡히고, 가맹점명이
+        # required 인 계약이 그 토막으로 authoritative 가 됐다.
+        r"부터|까지|\d+\s*월|"
         r"폐업|휴폐업|해지|일년|\d+\s*년|\d+\s*(?:개월|달)|반년"
     )
     for pattern in patterns:
@@ -1760,7 +1776,7 @@ def _extract_merchant_name_by_rule(question: str) -> str:
         ):
             return candidate
 
-    if not re.search(r"매출(?:액|금액)?|매출\s*추이", text) or not _has_time_expression(text):
+    if not re.search(r"매출(?:액|금액)?|매출\s*추이", text) or not dated:
         return ""
 
     time_phrase = (
@@ -4766,6 +4782,52 @@ def _missing_vq_required_params(vq_params_def: dict, params: dict) -> list[dict]
     return _as_clarifications(missing)
 
 
+# 두 기간을 비교하는 검증 쿼리는 두 기간이 서로 달라야 한다. 질문이 같은 반기를 두 번
+# 부르면("2026년 상반기 전체 이용금액 대비 2026년 상반기 이용금액") 파라미터 추출은
+# 성공하고 SQL 도 문법상 유효한데, WHERE 대상기간이용금액 < 기준기간이용금액 이 자기
+# 자신과의 비교가 되어 늘 0건이다. 0건은 사용자에게 "그런 기업이 없다" 로 읽히므로,
+# 앞의 반기를 전년으로 지어내지 말고 대비 기준을 되묻는다. 기준값 없는 '높은/낮은' 을
+# 되묻는 _missing_magnitude_criterion_params 와 같은 자리다.
+_COMPARISON_PERIOD_PAIRS = (
+    ("기준기간_시작", "기준기간_종료"),
+    ("대상기간_시작", "대상기간_종료"),
+)
+
+
+def _degenerate_comparison_period_params(
+    vq_params_def: dict, params: dict, user_provided: dict | None = None
+) -> list[dict]:
+    """비교 대상 두 기간이 같은 기간으로 읽혔을 때 물어볼 대비 기준 기간."""
+    declared = set(vq_params_def or {})
+    if not all(name in declared for pair in _COMPARISON_PERIOD_PAIRS for name in pair):
+        return []
+    baseline, target = (
+        tuple(str(params.get(name) or "") for name in pair)
+        for pair in _COMPARISON_PERIOD_PAIRS
+    )
+    if not all(baseline) or not all(target) or baseline != target:
+        return []
+    # 되묻기에 답해 기준 기간을 직접 지정했으면 그 선택을 따른다. 같은 값을 다시
+    # 넣어도 무한히 되묻지 않는다.
+    if _COMPARISON_PERIOD_PAIRS[0][0] in (user_provided or {}):
+        return []
+    period = f"{baseline[0]}~{baseline[1]}"
+    reason = (
+        f"질문이 {period} 한 기간만 지정해서 대비 기준과 비교 대상이 같아졌습니다. "
+        "같은 기간끼리 비교하면 하락한 기업회원이 하나도 나오지 않습니다. "
+        "대비 기준이 되는 기간을 지정해 주세요."
+    )
+    return [
+        {
+            "name": name,
+            "label": f"대비 기준 기간 {'시작' if name.endswith('시작') else '종료'} 기준년월 (YYYYMM)",
+            "description": reason,
+            "type": "string",
+        }
+        for name in _COMPARISON_PERIOD_PAIRS[0]
+    ]
+
+
 def extract_and_apply_params(state: Text2SQLState) -> dict:
     question = state["question"]
     routing_question = _retrieval_question(state)
@@ -4912,6 +4974,9 @@ JSON:"""
             str((pristine_vq or {}).get("sql") or base_sql),
         )
     missing = _missing_vq_required_params(vq_params_def, extracted)
+    missing += _degenerate_comparison_period_params(
+        vq_params_def, extracted, state.get("user_provided_params", {}) or {}
+    )
     if missing:
         provided_params = dict(extracted)
         if (state.get("user_provided_params", {}) or {}).get("_cadence_hint"):
@@ -6576,7 +6641,9 @@ def generate_sql(state: Text2SQLState) -> dict:
 7. 기준년월 'YYYYMM', 기준년월일 'YYYYMMDD'. 8. {_schema_prefix_rule()}
 9. 질의 작성 Reference가 질문과 맞으면 reference의 primary_table, filter, join_rule을 우선 적용.
 10. 질문에 없는 테이블명은 절대 만들지 말고, 위 테이블 상세/Reference/도메인 컨텍스트에 있는 실테이블만 사용.
-11. "신규/가입/등록 고객"은 tbdaaat01.최초등록년월일 기준으로 해석.
+11. "신규/가입/등록/재가입/해지"는 상태가 아니라 사건입니다. 질문의 기간은 그 사건의 년월일 컬럼에 겁니다.
+    고객·회원은 tbdaaat01.최초등록년월일, 가맹점은 신규 가맹점신규년월일 · 재가입 가맹점재가입년월일 · 해지 가맹점해지년월일 입니다.
+    월 스냅샷·월 집계 테이블에서 읽어도 적재 축(기준년월) 조건은 그대로 두고 사건 조건을 SUBSTR("가맹점신규년월일", 1, 6) = 'YYYYMM' 형태로 함께 겁니다. 적재 축 조건은 읽을 월을 고를 뿐 사건이 일어난 달을 뜻하지 않습니다.
 12. "여성 고객"은 성별구분코드 = '2'를 기본값으로 사용.
 13. 상세 목록 조회는 요청 개수가 없으면 LIMIT {DEFAULT_QUERY_ROW_LIMIT}을 적용합니다. 집계 결과는 의미있는 순서로 정렬하고, CTE와 서브쿼리를 포함해 SELECT * 는 쓰지 않습니다.
 13-1. 요청 지표 하나만 덜렁 내지 말고, 그 값을 읽는 데 필요한 컬럼을 함께 SELECT 합니다. SELECT * 를 쓰라는 뜻이 아니라 아래 네 가지를 빠뜨리지 말라는 뜻입니다.
@@ -6706,6 +6773,52 @@ def _validate_ranked_axis_grain(question: str, sql: str) -> list[str]:
         f"'{axis}' 단위 순위 결과가 {'·'.join(leaked)} 기준으로 쪼개져 있습니다. "
         f"GROUP BY 축을 '{axis}' 하나로 두고 1행씩 내세요."
     ]
+
+
+# 번호·식별자로 끝나는 컬럼은 전부 숫자·영숫자 식별자다. 여기에 한글 이름을 비교하면
+# 이름 컬럼이 없는 테이블로 라우팅된 모델이 대신 쓴 것이다("쿠팡 상반기 이용금액" →
+# 매출전표 팩트에는 가맹점명이 없어 LOWER("가맹점번호") LIKE '%쿠팡%' 가 나왔다).
+# 한글 두 글자 이상만 본다 — 차량번호가 품는 한 글자 한글은 정상 값이다.
+_NAME_LITERAL_ON_ID_COLUMN_RE = re.compile(
+    r'(?:(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\.)?"?'
+    r'(?P<column>[가-힣A-Za-z0-9_]*(?:번호|식별자))"?\s*\)*'
+    r'\s*(?:=|\bLIKE\b)\s*'
+    # {가맹점번호} 같은 치환 전 플레이스홀더는 값이 아니다.
+    r"(?:LOWER|UPPER)?\s*\(?\s*'(?P<value>[^'{}]*[가-힣]{2,}[^'{}]*)'",
+    re.IGNORECASE,
+)
+
+
+def _validate_name_literal_id_columns(sql: str, selected_tables: list[str]) -> list[str]:
+    """Reject a Korean name literal compared against an identifier column."""
+    matches = list(_NAME_LITERAL_ON_ID_COLUMN_RE.finditer(sql or ""))
+    if not matches:
+        return []
+
+    by_table, _ = _table_column_index()
+    alternatives = [
+        f"{table}.{column}"
+        for table in dict.fromkeys(
+            str(name).rsplit(".", 1)[-1] for name in selected_tables or []
+        )
+        for column in sorted(by_table.get(table, set()))
+        if column.endswith("명") and not column.endswith(("코드명", "구분명"))
+    ]
+    hint = f" 이름은 {'·'.join(alternatives[:4])}에 있습니다." if alternatives else ""
+
+    issues: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for match in matches:
+        column = match.group("column")
+        value = match.group("value").strip("%")
+        if (column, value) in seen:
+            continue
+        seen.add((column, value))
+        issues.append(
+            f"{column}은(는) 식별번호 컬럼이라 '{value}' 같은 이름으로 찾을 수 없습니다."
+            f"{hint}"
+        )
+    return issues
 
 
 def _validate_corporate_entity_grain(question: str, sql: str) -> list[str]:
@@ -7249,6 +7362,7 @@ def validate_sql(state: Text2SQLState) -> dict:
     issues.extend(_validate_recent_month_semantics(question, sql))
     issues.extend(_validate_requested_row_constraints(question, sql))
     issues.extend(_validate_corporate_entity_grain(question, sql))
+    issues.extend(_validate_name_literal_id_columns(sql, selected_tables))
     issues.extend(_validate_ranked_axis_grain(question, sql))
     issues.extend(_validate_sales_slip_net_amount(sql))
     issues.extend(_availability_policy_issues(retrieval_question, sql, selected_tables))

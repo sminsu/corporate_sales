@@ -272,10 +272,40 @@ def _fix_merchant_risk_monthly_load(query: dict) -> None:
     )
 
 
+def _add_like_escape(query: dict) -> list[str]:
+    """like_string 값은 `%`·`_` 를 이스케이프해서 치환되는데(tools/sql_builders.py),
+    Presto/Athena 는 ESCAPE 절이 없으면 `\\` 를 리터럴로 읽어 그 값이 영영 매칭되지
+    않는다. 이스케이프한 값을 받는 LIKE 에는 ESCAPE 절을 붙인다."""
+    parameters = query.get("parameters") or {}
+    like_params = [
+        name for name, info in parameters.items()
+        if str((info or {}).get("type")) == "like_string"
+    ]
+    if not like_params:
+        return []
+    placeholders = ["{" + name + "}" for name in like_params]
+    fixed: list[str] = []
+    lines = str(query.get("sql") or "").splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        body = line.rstrip("\n")
+        if "LIKE" not in body or "ESCAPE" in body:
+            continue
+        if not any(placeholder in body for placeholder in placeholders):
+            continue
+        lines[index] = body + " ESCAPE '\\'" + line[len(body):]
+        fixed.append(body.strip())
+    if fixed:
+        query["sql"] = "".join(lines)
+    return fixed
+
+
 def apply_fixes(document: dict) -> dict:
     queries = document.get("verified_queries") or []
     by_name = {str(query.get("name")): query for query in queries}
-    stats = {"tables_fixed": [], "casts_fixed": [], "cadence_fixed": [], "codebook_fixed": []}
+    stats = {
+        "tables_fixed": [], "casts_fixed": [], "cadence_fixed": [],
+        "codebook_fixed": [], "like_escape_fixed": [],
+    }
 
     for name, wrong, right in TABLE_FIXES:
         query = _query(by_name, name)
@@ -331,6 +361,10 @@ def apply_fixes(document: dict) -> dict:
             raise SystemExit(f"{name}: 가맹점거래정지여부 조건을 찾지 못했다")
         stats["codebook_fixed"].append(f"{name}: {wrong} -> {right}")
 
+    for query in queries:
+        for clause in _add_like_escape(query):
+            stats["like_escape_fixed"].append(f"{query.get('name')}: {clause}")
+
     return stats
 
 
@@ -376,6 +410,9 @@ def main() -> None:
         print(f"  {line}")
     print(f"codebook fixes ({len(stats['codebook_fixed'])}):")
     for line in stats["codebook_fixed"]:
+        print(f"  {line}")
+    print(f"like escape fixes ({len(stats['like_escape_fixed'])}):")
+    for line in stats["like_escape_fixed"]:
         print(f"  {line}")
 
     if warnings:

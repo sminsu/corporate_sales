@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from text2sql_agent import workflow
+from text2sql_agent.tools.sql_builders import ALL_VALUES_SENTINEL, _coerce_sql_param
 from text2sql_agent.schema import (
     SCHEMA,
     _validate_sql_against_schema,
@@ -21,6 +22,12 @@ LIMIT_THRESHOLD_QUESTION = "2026년 6월 총한도 2천만원 이상이고 한�
 USAGE_DECLINE_QUESTION = (
     "현재기준 유효한 기업카드를 보유한 기업 회원중 2025년 상반기 전체 이용금액 대비 "
     "2026년 상반기 이용 금액이 하락한 기업회원의 상위 100개와 이용금액을 봅아줘"
+)
+# 같은 반기를 대비 기준과 비교 대상 양쪽으로 부른 질문. 추출은 성공하고 SQL 도 유효한데
+# 자기 자신과의 비교라 늘 0건이다.
+SAME_HALF_YEAR_DECLINE_QUESTION = (
+    "현재기준 유효한 기업카드를 보유한 기업 회원중 2026년 상반기 전체 이용금액 대비 "
+    "2026년 상반기 이용금액이 하락한 기업회원 상위 100개와 이용금액 알려줘"
 )
 
 
@@ -109,7 +116,11 @@ def test_limit_status_sql_uses_latest_snapshot_and_named_company_filter() -> Non
     assert 'ROW_NUMBER() OVER (PARTITION BY a."고객식별자"' in sql
     assert 'c."기업총한도금액" - c."기업총잔여한도금액"' in sql
     assert 'AS "한도소진율_퍼센트"' in sql
-    assert "LIKE '%__ALL__%'" not in sql
+    # 기업명 미지정이면 sentinel 비교가 참이 되어 기업 필터가 통과해야 한다.
+    # like_string 이스케이프가 걸리면 '\_\_ALL\_\_' 이 되어 늘 0건이 나온다.
+    assert "'__ALL__' = '__ALL__'" in sql
+    assert "\\_\\_ALL\\_\\_" not in sql
+    assert "ESCAPE '\\'" in sql
 
     assert named_result["extracted_params"] == {"기준년월": "202606", "기업명": "쿠팡"}
     assert "CONCAT('%', '쿠팡', '%')" in named_sql
@@ -132,7 +143,11 @@ def test_monthly_average_sql_uses_calendar_months_and_amount_threshold() -> None
     assert 'PARTITION BY a."고객식별자", a."기준년월"' in sql
     assert 'a."기준년월" BETWEEN \'202601\' AND \'202606\'' in sql
     assert '/ NULLIF(CAST(MAX(p."평균산정월수") AS DOUBLE), 0.0)' in sql
-    assert "LIKE '%__ALL__%'" not in sql
+    # 기업명 미지정이면 sentinel 비교가 참이 되어 기업 필터가 통과해야 한다.
+    # like_string 이스케이프가 걸리면 '\_\_ALL\_\_' 이 되어 늘 0건이 나온다.
+    assert "'__ALL__' = '__ALL__'" in sql
+    assert "\\_\\_ALL\\_\\_" not in sql
+    assert "ESCAPE '\\'" in sql
 
     assert threshold_result["extracted_params"]["월평균금액"] == 50_000_000
     assert 'WHERE a."월평균이용금액" >= 50000000' in threshold_sql
@@ -185,3 +200,77 @@ def test_current_valid_members_half_year_usage_decline_preserves_requested_row_l
     assert 'ORDER BY c."하락금액" DESC' in sql
     assert sql.rstrip().endswith("LIMIT 100")
     assert _validate_sql_against_schema(sql, ["tbdaa1d12", "tmdaa1d12"]) == []
+
+
+def test_like_string_escapes_wildcards_but_not_the_all_sentinel() -> None:
+    info = {"type": "like_string"}
+
+    # 실제 검색어의 LIKE 와일드카드는 이스케이프한다(ESCAPE '\\' 와 짝).
+    assert _coerce_sql_param("기업명", "50%_주식회사", info) == "50\\%\\_주식회사"
+
+    # "필터 없음" sentinel 은 이스케이프하면 `= '__ALL__'` 분기가 깨져 늘 0건이 된다.
+    assert _coerce_sql_param("기업명", ALL_VALUES_SENTINEL, info) == ALL_VALUES_SENTINEL
+
+
+def _decline_params(user_provided: dict) -> dict:
+    capability = workflow._select_verified_query_capability(
+        SAME_HALF_YEAR_DECLINE_QUESTION, {}
+    )
+    assert capability is not None
+    with patch.object(workflow, "_call_llm", side_effect=RuntimeError("offline")):
+        return workflow.extract_and_apply_params(
+            {
+                "question": SAME_HALF_YEAR_DECLINE_QUESTION,
+                **capability,
+                "user_provided_params": user_provided,
+            }
+        )
+
+
+def test_same_half_year_on_both_sides_asks_for_the_baseline_period() -> None:
+    """0건을 내보내는 대신 대비 기준을 되묻는다.
+
+    라우팅·파라미터 추출·SQL 문법은 다 통과한다. 두 기간이 같아서
+    WHERE 대상기간이용금액 < 기준기간이용금액 이 어떤 행도 만족시키지 못하는데,
+    사용자에게는 "하락한 기업이 없다" 로 읽힌다.
+    """
+    result = _decline_params({})
+
+    assert result["param_stage"] == "need_params"
+    assert [item["name"] for item in result["missing_params"]] == [
+        "기준기간_시작",
+        "기준기간_종료",
+    ]
+    reason = result["missing_params"][0]["description"]
+    assert "202601~202606" in reason
+    assert "하락한 기업회원이 하나도 나오지 않습니다" in reason
+    # 앞의 반기를 전년으로 지어내지 않는다.
+    assert result["extracted_params"]["기준기간_시작"] == "202601"
+
+
+def test_answered_baseline_period_completes_the_decline_query() -> None:
+    result = _decline_params({"기준기간_시작": "202501", "기준기간_종료": "202506"})
+    sql = result["final_sql"]
+
+    assert result["param_stage"] == "done"
+    assert result["extracted_params"] == {
+        "기준기간_시작": "202501",
+        "기준기간_종료": "202506",
+        "대상기간_시작": "202601",
+        "대상기간_종료": "202606",
+        "limit": 100,
+    }
+    assert "'202501'" in sql and "'202601'" in sql
+    assert sql.rstrip().endswith("LIMIT 100")
+
+
+def test_repeating_the_same_period_is_taken_as_the_answer() -> None:
+    """되묻기에 같은 값을 다시 답하면 그 선택을 따른다. 무한 되묻기에 빠지지 않는다."""
+    result = _decline_params({"기준기간_시작": "202601", "기준기간_종료": "202606"})
+
+    assert result["param_stage"] == "done"
+
+
+def test_two_distinct_half_years_are_untouched() -> None:
+    """기간이 서로 다른 질문은 되묻지 않는다."""
+    assert _build_verified_sql(USAGE_DECLINE_QUESTION)["param_stage"] == "done"

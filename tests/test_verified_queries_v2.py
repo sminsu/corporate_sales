@@ -45,10 +45,17 @@ def _inline_sql(queries: list[dict]) -> list[tuple[str, str]]:
     return [(str(q.get("name")), str(q.get("sql"))) for q in queries if str(q.get("sql") or "").strip()]
 
 
+# v2 가 새로 세운 참고 SQL. 이 목록에 없는 추가·삭제는 드리프트다.
+V2_ADDED_QUERIES = ("merchant_sales_by_region_comparison",)
+
+
 @requires_v1
 def test_query_set_is_preserved(v2_queries: list[dict]) -> None:
     v1_names = [str(q.get("name")) for q in _queries(V1_QUERIES)]
-    assert [str(q.get("name")) for q in v2_queries] == v1_names
+    v2_names = [str(q.get("name")) for q in v2_queries]
+
+    assert [name for name in v2_names if name not in V2_ADDED_QUERIES] == v1_names
+    assert [name for name in v2_names if name in V2_ADDED_QUERIES] == list(V2_ADDED_QUERIES)
 
 
 def test_no_postgres_casts_remain(v2_queries: list[dict]) -> None:
