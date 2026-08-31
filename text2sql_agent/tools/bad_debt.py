@@ -24,7 +24,7 @@ BAD_DEBT_QUERIES = {
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
     WHERE 기준년월 = '{기준년월}'
-      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%') ESCAPE '\\'
       AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 cm AS (
@@ -49,7 +49,7 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
     WHERE 기준년월 = '{기준년월}'
-      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%') ESCAPE '\\'
       AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 cm AS (
@@ -74,7 +74,7 @@ FROM join_s GROUP BY 기준년월, 구분 ORDER BY 기준년월, 구분""",
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
     WHERE 기준년월 = '{기준년월}'
-      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%') ESCAPE '\\'
       AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 sd06 AS (
@@ -103,7 +103,7 @@ FROM sd06_a GROUP BY 구분 ORDER BY 구분""",
     SELECT DISTINCT "기업고객식별자"
     FROM card_system.tmdaa5d01
     WHERE 기준년월 = '{기준년월}'
-      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%')
+      AND LOWER("가맹점명") LIKE LOWER('%{가맹점명}%') ESCAPE '\\'
       AND "기업고객식별자" IS NOT NULL{partition_tmdaa5d01_기준년월}
 ),
 cm_start AS (

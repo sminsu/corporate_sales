@@ -41,6 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]   # v2 적용본 루트
 V1_ROOT = PROJECT_ROOT.parent / "corporate_sales_fable"   # 변환 원본(v1 저장소)
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from text2sql_agent.schema import CONTRACT_MATCH_PREDICATES  # noqa: E402
 from text2sql_agent.v2.column_synonyms import compact, derive_column_synonyms  # noqa: E402
 from text2sql_agent.time_policy import TABLE_ACCUMULATION_POLICIES  # noqa: E402
 from text2sql_agent.v2.sql_contract import (  # noqa: E402
@@ -2283,7 +2284,8 @@ CORPORATE_CARD_OWNER_FILTER = (
 # 유효 여부는 '1'/'0' 코드다. 골든셋 SQL 이 이미 이 규약으로 쓰여 있다.
 CORPORATE_CARD_VALID_FILTER = (
     '(tbdaaat05."유효신용카드여부" = \'1\' OR tbdaaat05."유효체크카드여부" = \'1\')'
-    ' — 유효 카드만 셀 때'
+    ' — 카드 종류를 말하지 않은 유효 카드. 신용만 물으면 "유효신용카드여부" = \'1\','
+    ' 체크·직불만 물으면 "유효체크카드여부" = \'1\' 하나만 건다'
 )
 CARD_LEVEL_CARD_HOLDING_MAPPING = {
     "entity": "member_card",
@@ -3018,6 +3020,693 @@ def apply_merchant_suspension_flag_semantics(schema: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 10-10. 질문이 지목한 값까지 필터를 좁힌다 (2026-08-26 사용자 확인)
+#
+# 세 자리 모두 "거를 컬럼은 프롬프트에 있는데 어느 값을 걸지가 선언되어 있지 않다"
+# 는 같은 모양이다. 값이 안 적혀 있으면 모델은 라벨 글자가 겹치는 쪽이나 먼저
+# 선언된 쪽을 집는다.
+#
+# 1) "유효한 기업회원의 체크카드·직불카드 이용금액" 에 유효신용카드여부 = '1' 이
+#    걸렸다. 유효 여부는 카드 종류마다 컬럼이 따로다 — 카드·회원 단위는
+#    유효신용카드여부·유효체크카드여부, 기업 단위는 유효기업신용카드수·
+#    유효기업체크카드수. 어느 쪽을 걸지는 어디에도 없고 신용 쪽이 먼저 선언돼 있다.
+#    종류를 지목한 질문은 그 종류만 걸어야 모집단이 안 바뀐다. 유효직불카드 컬럼은
+#    없으므로 직불도 체크 쪽을 쓴다.
+#
+# 2) "기업신용매출건수" 에 상품중분류구분코드 = 'CP51' 하나만 걸렸다. 기업신용은
+#    CP51(기업신용카드)·CP52(기업정부구매카드) 두 코드다. 코드북 별칭이 이미 두
+#    코드에 '기업신용' 을 달아 두는데(10-8 이전부터), 라벨에 '신용' 이 든 코드가
+#    CP51 하나뿐이라 모델이 라벨을 보고 CP52 를 빠뜨린다. 별칭은 컬럼을 프롬프트에
+#    올릴 뿐이라 코드 집합 자체를 따로 선언해야 한다.
+#
+# 3) 가맹점이 모수인 질의에 가맹점상태구분코드가 안 걸렸다. 거래정지('2')·해지('3')
+#    가맹점이 섞이면 가맹점 수도 가맹점별 매출도 함께 부풀려진다. 정상('1')만 모수로
+#    삼는다. 폐업이 곧 모수인 지표만 빼 둔다 — 걸면 늘 0건이 된다.
+# ---------------------------------------------------------------------------
+
+# 10-10-1. 유효 여부는 카드 종류마다 컬럼이 따로다.
+CORPORATE_DAILY_TABLE = "tbdaa1d12"
+VALID_CARD_FLAG_COLUMNS = ("유효신용카드여부", "유효체크카드여부")
+VALID_CARD_COUNT_COLUMNS = ("유효기업신용카드수", "유효기업체크카드수")
+VALID_CARD_KIND_CAUTION = (
+    "유효 여부는 카드 종류마다 컬럼이 따로다. 체크카드·직불카드를 물으면 "
+    "\"유효체크카드여부\" = '1' (기업 단위는 유효기업체크카드수 > 0)만, 신용카드를 물으면 "
+    "신용 쪽 컬럼만 건다. 종류를 말하지 않은 포괄적인 유효 기업카드만 둘을 함께 본다. "
+    "유효직불카드 컬럼은 없으므로 직불도 체크 쪽 컬럼으로 판정한다."
+)
+VALID_CARD_KIND_GLOSSARY = {
+    "term": "유효카드",
+    "canonical": "신용은 유효신용카드여부 = '1', 체크·직불은 유효체크카드여부 = '1'",
+    "description": (
+        "'유효한' 은 카드가 살아 있다는 뜻이고, 어느 컬럼으로 판정할지는 질문이 지목한 "
+        "카드 종류가 정한다. 체크카드 이용금액을 물었는데 유효신용카드여부로 거르면 "
+        "모집단이 신용카드 보유자로 바뀌어 답이 달라진다. 유효직불카드 컬럼은 없다."
+    ),
+    "aliases": [
+        "유효한 카드",
+        "유효 카드",
+        "유효신용카드",
+        "유효체크카드",
+        "유효한 기업회원",
+        "유효 기업회원",
+        "유효한 기업",
+    ],
+    "sql_hint": (
+        "체크·직불 질의는 \"유효체크카드여부\" = '1' (카드·회원 단위) 또는 "
+        "COALESCE(\"유효기업체크카드수\", 0) > 0 (기업 단위) 하나만 건다. 신용 질의는 같은 "
+        "자리에 신용 컬럼을 쓴다. 종류를 말하지 않은 질의만 "
+        "(\"유효신용카드여부\" = '1' OR \"유효체크카드여부\" = '1')."
+    ),
+}
+CORPORATE_CARD_HOLDING_TERM = "기업카드보유"
+CORPORATE_CARD_HOLDING_KIND_NOTE = (
+    " 이 합계는 카드 종류를 말하지 않은 질의의 정의다. 신용·체크 중 하나를 지목하면 "
+    "그 컬럼 하나만 쓴다."
+)
+
+
+def apply_valid_card_kind_filter(schema: dict) -> int:
+    """Pick the valid-card column that matches the card kind the question named."""
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    for table_name, columns in (
+        (CARD_MASTER_TABLE, VALID_CARD_FLAG_COLUMNS),
+        (CORPORATE_DAILY_TABLE, VALID_CARD_COUNT_COLUMNS),
+    ):
+        table = tables.get(table_name)
+        if table is None:
+            raise SystemExit(f"테이블 없음: {table_name}")
+        for name in columns:
+            if _table_column(table, name) is None:
+                raise SystemExit(f"{table_name} 에 {name} 컬럼이 없다")
+
+    attribute = next(
+        (
+            item
+            for item in schema.get("semantic_attributes") or []
+            if item.get("name") == "corporate_card_holding"
+        ),
+        None,
+    )
+    if attribute is None:
+        raise SystemExit("corporate_card_holding 속성 없음")
+    cautions = attribute.setdefault("semantic_cautions", [])
+    if VALID_CARD_KIND_CAUTION in cautions:
+        raise SystemExit("유효 카드 종류 주의사항이 이미 있다")
+    cautions.append(VALID_CARD_KIND_CAUTION)
+    added = 1
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    term = VALID_CARD_KIND_GLOSSARY["term"]
+    if any(item.get("term") == term for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {term}")
+    glossary.append(deepcopy(VALID_CARD_KIND_GLOSSARY))
+    added += 1
+
+    # 기업카드보유는 신용+체크 합을 canonical 로 든다. 종류를 지목한 질문에서 이 용어가
+    # 프롬프트 맨 앞에 올라가면 합계 쪽이 새 용어를 이긴다. 갈린다는 사실을 여기에도 적는다.
+    holding = next(
+        (item for item in glossary if item.get("term") == CORPORATE_CARD_HOLDING_TERM),
+        None,
+    )
+    if holding is None:
+        raise SystemExit(f"용어 없음: {CORPORATE_CARD_HOLDING_TERM}")
+    description = str(holding.get("description") or "")
+    if CORPORATE_CARD_HOLDING_KIND_NOTE.strip() in description:
+        raise SystemExit(f"{CORPORATE_CARD_HOLDING_TERM} 에 이미 종류 주석이 있다")
+    holding["description"] = description + CORPORATE_CARD_HOLDING_KIND_NOTE
+    return added + 1
+
+
+# 10-10-2. 기업신용 매출은 상품중분류 두 코드다.
+PRODUCT_CLASS_COLUMN = "상품중분류구분코드"
+CORPORATE_CREDIT_PRODUCT_CODES = ("CP51", "CP52")
+CARD_KIND_PRODUCT_CLASS_CAUTION = (
+    "카드 종류로 매출을 가르는 키는 상품중분류구분코드다. 기업신용은 "
+    "IN ('CP51','CP52'), 기업체크는 = 'CP53', 기업직불은 = 'CP54' 다. 라벨에 '신용' 이 든 "
+    "코드는 CP51 하나뿐이라 CP52(기업정부구매카드)를 빠뜨리기 쉽다. "
+    "CP55~CP57(기업순구매·역구매·후납우편)은 신용에 넣지 않는다."
+)
+# 전표 한 장을 세고 더하는 두 지표가 카드 종류 질의를 함께 받는다.
+CARD_KIND_PRODUCT_CLASS_METRICS = ("매출건수", "카드매출금액")
+CORPORATE_CREDIT_GLOSSARY = {
+    "term": "기업신용매출",
+    "canonical": "상품중분류구분코드 IN ('CP51','CP52')",
+    "description": (
+        "기업신용 매출은 기업신용카드(CP51)와 기업정부구매카드(CP52) 두 코드를 함께 센다. "
+        "CP52 는 라벨에 '신용' 이 없어 빠지기 쉽다. 기업체크는 CP53, 기업직불은 CP54 "
+        "한 코드씩이고, CP55~CP57 은 어느 쪽에도 넣지 않는다."
+    ),
+    "aliases": [
+        "기업신용",
+        "법인신용매출",
+        "기업신용매출건수",
+        "기업신용매출금액",
+        "신용카드매출",
+    ],
+    "sql_hint": (
+        "\"상품중분류구분코드\" IN ('CP51','CP52') 로 건다. 체크는 = 'CP53', 직불은 = 'CP54' 다."
+    ),
+}
+
+
+def apply_corporate_credit_product_class_filter(schema: dict) -> int:
+    """Declare that 기업신용 매출 spans both CP51 and CP52, not the labelled one."""
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    slip = tables.get("tbdaabt30")
+    if slip is None:
+        raise SystemExit("테이블 없음: tbdaabt30")
+    column = _table_column(slip, PRODUCT_CLASS_COLUMN)
+    if column is None:
+        raise SystemExit(f"tbdaabt30 에 {PRODUCT_CLASS_COLUMN} 컬럼이 없다")
+    semantics = column.get("value_semantics") or {}
+    aliases = column.get("value_aliases") or {}
+    for code in CORPORATE_CREDIT_PRODUCT_CODES:
+        if code not in semantics:
+            raise SystemExit(f"{PRODUCT_CLASS_COLUMN} 코드북에 {code} 가 없다")
+        if "기업신용" not in (aliases.get(code) or []):
+            raise SystemExit(f"{PRODUCT_CLASS_COLUMN} {code} 에 '기업신용' 별칭이 없다")
+
+    metrics = {
+        str(item.get("name") or ""): item
+        for item in schema.get("canonical_metrics", [])
+    }
+    added = 0
+    for name in CARD_KIND_PRODUCT_CLASS_METRICS:
+        metric = metrics.get(name)
+        if metric is None:
+            raise SystemExit(f"지표 없음: {name}")
+        cautions = metric.setdefault("semantic_cautions", [])
+        if CARD_KIND_PRODUCT_CLASS_CAUTION in cautions:
+            raise SystemExit(f"{name} 에 이미 카드 종류 주의사항이 있다")
+        cautions.append(CARD_KIND_PRODUCT_CLASS_CAUTION)
+        added += 1
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    term = CORPORATE_CREDIT_GLOSSARY["term"]
+    if any(item.get("term") == term for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {term}")
+    glossary.append(deepcopy(CORPORATE_CREDIT_GLOSSARY))
+    return added + 1
+
+
+# 10-10-3. 가맹점이 모수면 정상('1') 상태만 센다.
+MERCHANT_STATUS_COLUMN = "가맹점상태구분코드"
+MERCHANT_STATUS_VALUES = {"1": "정상", "2": "거래정지", "3": "해지"}
+# 폐업·해지가 곧 모수인 지표. 정상만 남기면 늘 0건이 된다.
+MERCHANT_STATUS_EXEMPT_METRICS = frozenset({"최근기간폐업가맹점수"})
+# 브랜드 활성가맹점수 참조는 코드값을 "참고문서 가정" 이라 적어 두고 검증을 미뤄
+# 두었다. 사용자가 확정했으므로 그 문장을 걷어낸다 — 규칙이 모델에게 값을 의심하라고
+# 말하는 동안은 필터가 붙어도 흔들린다.
+MERCHANT_STATUS_REFERENCE_INTENT = "브랜드_활성가맹점수"
+MERCHANT_STATUS_UNVERIFIED_RULE = "가맹점상태구분코드 1은 참고문서 가정이므로 운영 코드값을 검증한다."
+MERCHANT_STATUS_CONFIRMED_RULE = (
+    "활성 조건은 \"가맹점상태구분코드\" = '1' 이다. 거래정지는 '2', 해지는 '3' 이다."
+)
+MERCHANT_STATUS_GLOSSARY = {
+    "term": "가맹점 모수",
+    "canonical": "가맹점상태구분코드 = '1' (정상)",
+    "description": (
+        "가맹점을 세거나 가맹점별로 집계하는 질의는 정상('1') 가맹점만 모수로 삼는다. "
+        "거래정지('2')·해지('3')가 섞이면 가맹점 수도 가맹점별 매출도 함께 부풀려진다. "
+        "상태별로 나눠 달라고 말한 질의만 이 필터를 빼고 상태 코드를 축으로 세운다."
+    ),
+    "aliases": [
+        "가맹점 수",
+        "가맹점수",
+        "가맹점 개수",
+        "가맹점별",
+        "정상 가맹점",
+        "가맹점 상태",
+    ],
+    "sql_hint": (
+        "\"가맹점상태구분코드\" = '1' 을 WHERE 에 건다. 이 컬럼은 tbdaadt01·tbdaaus01· "
+        "tmdaa5d01·tmdaa5e11·tmdaaus01 에 모두 있다. 해지 가맹점을 물으면 = '3' 으로 뒤집는다."
+    ),
+}
+
+
+def _merchant_status_tables(schema: dict) -> dict[str, dict]:
+    """가맹점상태구분코드를 든 테이블. 코드북 값까지 같은지 확인한다."""
+    found: dict[str, dict] = {}
+    for table in schema.get("tables", []):
+        column = _table_column(table, MERCHANT_STATUS_COLUMN)
+        if column is None:
+            continue
+        semantics = column.get("value_semantics") or {}
+        if semantics != MERCHANT_STATUS_VALUES:
+            raise SystemExit(
+                f"{table.get('name')}.{MERCHANT_STATUS_COLUMN}: "
+                f"value_semantics 가 {MERCHANT_STATUS_VALUES} 가 아니다"
+            )
+        found[str(table.get("name") or "")] = table
+    if not found:
+        raise SystemExit(f"{MERCHANT_STATUS_COLUMN} 를 든 테이블이 없다")
+    return found
+
+
+def apply_merchant_status_filter(schema: dict) -> int:
+    """Scope merchant-population metrics to 정상 merchants."""
+    status_tables = _merchant_status_tables(schema)
+
+    added = 0
+    for metric in schema.get("canonical_metrics", []):
+        name = str(metric.get("name") or "")
+        table = str(metric.get("source_table") or "").rsplit(".", 1)[-1]
+        if table not in status_tables or name in MERCHANT_STATUS_EXEMPT_METRICS:
+            continue
+        required = metric.setdefault("required_filters", [])
+        value = f"{table}.\"{MERCHANT_STATUS_COLUMN}\" = '1' — 정상 가맹점만"
+        if value in required:
+            raise SystemExit(f"{name} 에 이미 가맹점 상태 필터가 있다")
+        required.append(value)
+        added += 1
+    if not added:
+        raise SystemExit("가맹점 상태 필터를 받을 지표가 없다")
+
+    reference = next(
+        (
+            item
+            for item in schema.get("query_references") or []
+            if item.get("intent") == MERCHANT_STATUS_REFERENCE_INTENT
+        ),
+        None,
+    )
+    if reference is None:
+        raise SystemExit(f"참조 없음: {MERCHANT_STATUS_REFERENCE_INTENT}")
+    rules = reference.get("rules")
+    if not isinstance(rules, list) or MERCHANT_STATUS_UNVERIFIED_RULE not in rules:
+        raise SystemExit(
+            f"{MERCHANT_STATUS_REFERENCE_INTENT} 에 미검증 코드값 규칙이 없다"
+        )
+    rules[rules.index(MERCHANT_STATUS_UNVERIFIED_RULE)] = MERCHANT_STATUS_CONFIRMED_RULE
+    added += 1
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    term = MERCHANT_STATUS_GLOSSARY["term"]
+    if any(item.get("term") == term for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {term}")
+    glossary.append(deepcopy(MERCHANT_STATUS_GLOSSARY))
+    return added + 1
+
+
+# ---------------------------------------------------------------------------
+# 10-11. 지역 축을 들고 있는 테이블을 선언한다 (2026-08-27 사용자 확인)
+#
+# "도미노피자 2026년 매출액 광역시도별 증감내역" 이 지역 없이 답했다. 세 가지가
+# 겹쳐 있었다.
+#
+# 1) 시도·시군구 컬럼(한글시도명·한글시군구명·법정동명·행정동명)은 가맹점요약
+#    tbdaaus01·tmdaaus01 두 곳에만 있는데, 그 사실을 말하는 속성이 없다. 주소
+#    속성(merchant_address)은 가맹점상세주소라는 한 덩어리 문자열만 가리켜서
+#    지역으로 묶는 데 쓸 수 없다.
+# 2) 표면형이 없다. 어절 경계 매칭이라 "광역시도별" 의 '시도' 는 앞에 '광역' 이
+#    붙어 동의어 '시도' 에 안 걸린다. 사용자가 부르는 말(광역시도·광역시·지역·
+#    소재지·권역)이 컬럼 동의어에 하나도 없어서, 테이블이 후보에 들어도 지역
+#    컬럼이 프롬프트 컬럼 예산에서 잘렸다.
+# 3) 매출 지표는 가맹점월실적(tmdaa5e11)에 있다. 지역으로 쪼개려면 가맹점요약을
+#    기준년월+가맹점번호로 조인해야 하는데 그 말이 어디에도 없다.
+#
+# '구별' 은 "구별하다" 와 같은 두 글자다. 동의어·alias 매칭은 어절 경계를 보므로
+# "구별해서" 는 안 걸리고 "서울 구별 매출" 만 걸린다. 띄어 쓴 "구별 없이" 하나는
+# 여전히 걸리는데, 지역을 묻지 않은 그 질문이 가맹점요약을 후보로 올릴 뿐이라
+# 그대로 뒀다. 부분 문자열로 보는 계약 match 쪽은 excluded 로 따로 막는다.
+# ---------------------------------------------------------------------------
+MERCHANT_REGION_TABLES = ("tbdaaus01", "tmdaaus01")
+MERCHANT_REGION_COLUMNS = [
+    "한글시도명",
+    "한글시군구명",
+    "법정동명",
+    "행정동명",
+    "법정시군구코드",
+]
+# 사용자가 지역 단계를 부르는 말. 단계마다 컬럼이 다르므로 표면형도 단계별로 붙인다.
+MERCHANT_REGION_COLUMN_SYNONYMS = {
+    "한글시도명": ("광역시도", "광역시도명", "광역시", "광역자치단체", "도별", "지역", "소재지", "권역"),
+    "한글시군구명": ("기초자치단체", "시군구별", "시별", "군별", "구별"),
+    "법정동명": ("동별",),
+    "행정동명": ("동별",),
+}
+MERCHANT_REGION_ATTRIBUTE = {
+    "name": "merchant_region",
+    "korean_name": "가맹점 지역",
+    "domains": ["merchant_sales", "corporate_sales_targeting"],
+    "business_definition": (
+        "가맹점 소재지를 행안부 행정구역으로 끊어 놓은 축. 시도(광역)·시군구·동 "
+        "세 단계이며 가맹점요약 테이블만 들고 있다"
+    ),
+    "aliases": [
+        "가맹점 지역",
+        "가맹점지역",
+        "지역",
+        "지역별",
+        "광역시도",
+        "광역시도별",
+        "광역시",
+        "광역자치단체",
+        "시도",
+        "시도별",
+        "도별",
+        "시군구",
+        "시군구별",
+        "시별",
+        "군별",
+        "구별",
+        "동별",
+        "행정구역",
+        "권역",
+        "소재지",
+        "가맹점 소재지",
+    ],
+    "source_mappings": [
+        {
+            "entity": "merchant_daily_enrichment",
+            "table": "tbdaaus01",
+            "columns": list(MERCHANT_REGION_COLUMNS),
+            "role": "current_merchant_region",
+        },
+        {
+            "entity": "merchant_monthly_enrichment",
+            "table": "tmdaaus01",
+            "columns": list(MERCHANT_REGION_COLUMNS),
+            "role": "monthly_merchant_region",
+        },
+    ],
+    "source_selection": {
+        "default_role_prefix": "current_",
+        "period_role_prefix": "monthly_",
+        "current_terms": ["이번 달", "이번달", "당월", "현재", "최신", "지금", "오늘"],
+        "open_month_uses_current": True,
+    },
+    "semantic_cautions": [
+        "지역 단계마다 컬럼이 다르다. 광역시도·도별은 한글시도명, 시군구·시·군·구별은 한글시군구명, 동별은 법정동명·행정동명이다.",
+        "시군구·동으로 묶을 때는 한글시도명을 함께 GROUP BY 한다. 같은 이름의 구(강남구·중구)가 시도마다 있어 시도 없이 묶으면 서로 다른 지역이 한 행으로 합쳐진다.",
+        "지역 컬럼은 가맹점요약(tbdaaus01·tmdaaus01)에만 있다. 가맹점기본(tbdaadt01)·가맹점월실적(tmdaa5e11)·전표(tbdaabt30)에는 없다.",
+        "매출·매입 지표를 지역으로 쪼갤 때는 가맹점월실적(tmdaa5e11)과 가맹점월말요약(tmdaaus01)을 기준년월+가맹점번호로 조인한다. 전표(tbdaabt30)에는 가맹점요약으로 가는 조인 경로가 없다.",
+        "가맹점상세주소를 SUBSTR 로 잘라 시도를 만들지 않는다. 행안부 기준으로 맵핑된 한글시도명이 이미 있다.",
+    ],
+}
+MERCHANT_REGION_GLOSSARY = {
+    "term": "지역별",
+    "canonical": "한글시도명(광역시도) · 한글시군구명(시군구) · 법정동명·행정동명(동)",
+    "description": (
+        "지역·광역시도·도·시군구·동은 모두 가맹점 소재지의 행정구역 축이고, "
+        "가맹점요약(tbdaaus01·tmdaaus01)만 이 컬럼들을 들고 있다. "
+        "가맹점 주소(가맹점상세주소)는 한 덩어리 문자열이라 지역으로 묶는 데 쓰지 않는다."
+    ),
+    "aliases": ["지역", "광역시도별", "광역시별", "도별", "시도별", "시군구별", "권역별", "소재지별"],
+    "sql_hint": (
+        "지역별 매출은 tmdaa5e11 을 tmdaaus01 과 "
+        '"기준년월" = "기준년월" AND "가맹점번호" = "가맹점번호" 로 조인하고 '
+        "한글시도명으로 GROUP BY 한다. 시군구까지 쪼갤 때는 한글시도명, 한글시군구명 두 개로 묶는다."
+    ),
+}
+
+
+def apply_merchant_region_semantics(schema: dict) -> int:
+    """Give 지역별/광역시도별 questions the columns and the join that hold the axis."""
+    attributes = schema.get("semantic_attributes")
+    if not isinstance(attributes, list):
+        raise SystemExit("semantic_attributes 없음")
+    if any(item.get("name") == MERCHANT_REGION_ATTRIBUTE["name"] for item in attributes):
+        raise SystemExit(f"이미 있는 속성: {MERCHANT_REGION_ATTRIBUTE['name']}")
+
+    tables = {str(item.get("name") or ""): item for item in schema.get("tables", [])}
+    added = 0
+    for name in MERCHANT_REGION_TABLES:
+        table = tables.get(name)
+        if table is None:
+            raise SystemExit(f"테이블 없음: {name}")
+        for column_name in MERCHANT_REGION_COLUMNS:
+            column = _table_column(table, column_name)
+            if column is None:
+                raise SystemExit(f"{name} 에 {column_name} 컬럼이 없다")
+            synonyms = column.setdefault("synonyms", [])
+            for surface in MERCHANT_REGION_COLUMN_SYNONYMS.get(column_name, ()):
+                if surface not in synonyms:
+                    synonyms.append(surface)
+                    added += 1
+
+    # 지역 컬럼은 이 두 테이블에만 있다. 다른 테이블이 같은 이름을 들고 있으면
+    # 속성이 원천을 두 곳으로 못 박는 선언이 아니게 된다.
+    others = sorted(
+        str(table.get("name") or "")
+        for table in schema.get("tables", [])
+        if str(table.get("name") or "") not in MERCHANT_REGION_TABLES
+        and _table_column(table, "한글시도명") is not None
+    )
+    if others:
+        raise SystemExit(f"한글시도명이 가맹점요약 밖에도 있다: {', '.join(others)}")
+
+    anchor = next(
+        (
+            position
+            for position, item in enumerate(attributes)
+            if item.get("name") == "merchant_address"
+        ),
+        len(attributes) - 1,
+    )
+    attributes.insert(anchor + 1, deepcopy(MERCHANT_REGION_ATTRIBUTE))
+    added += 1
+
+    glossary = schema.get("glossary")
+    if not isinstance(glossary, list):
+        raise SystemExit("glossary 없음")
+    if any(item.get("term") == MERCHANT_REGION_GLOSSARY["term"] for item in glossary):
+        raise SystemExit(f"이미 있는 용어: {MERCHANT_REGION_GLOSSARY['term']}")
+    glossary.append(deepcopy(MERCHANT_REGION_GLOSSARY))
+    return added + 1
+
+
+# 지역 축을 쓰려면 지역 컬럼이 있는 테이블과 지표가 있는 테이블이 함께 후보에
+# 들어야 한다. 속성만으로는 tmdaaus01 하나만 올라오고 매출은 전표(tbdaabt30)에서
+# 찾으려다 조인 경로가 없어 지역이 사라진다. 계약이 두 테이블과 조인을 함께 못 박는다.
+#
+# match 는 어절 경계가 아니라 단순 부분 문자열이다. '도별' 은 "연도별 매출 추이" 에,
+# '동별' 은 "활동별" 에 걸려 여기 못 쓴다 — 어절 경계로 보는 속성 alias 쪽이 받는다.
+# '시별'·'구별' 은 겹치는 말이 "일시별"·"구별하다" 둘뿐이라 excluded 로 막고 쓴다.
+#
+# 지표 말은 '매출' 만 받는다. 전월매입금액은 tmdaaus01 이 제 컬럼으로 들고 있어
+# 조인이 필요 없는데, '매입' 을 받으면 "시도명별 전월 할부 매입금액" 이 이 계약에
+# 걸려 tmdaa5e11 을 1순위로 끌고 온다.
+MERCHANT_REGION_SALES_CONTRACT = {
+    "name": "merchant_monthly_sales_by_region",
+    "domain": "merchant_sales",
+    "execution_mode": "semantic_generation",
+    "routing_strength": "high",
+    "support_status": "generative",
+    "table_selection_mode": "authoritative",
+    "prompt_column_budget": 20,
+    "description": (
+        "가맹점 월실적의 매출을 가맹점 소재지 행정구역(시도·시군구·동)으로 나눠 집계한다. "
+        "지역 컬럼은 가맹점월말요약에만 있으므로 기준년월+가맹점번호로 조인한다."
+    ),
+    "match": {
+        "required": [
+            ["매출", "매출액", "매출금액"],
+            [
+                "광역시도",
+                "광역시",
+                "시도",
+                "시군구",
+                "지역별",
+                "소재지",
+                "권역",
+                "행정구역",
+                "시별",
+                "군별",
+                "구별",
+            ],
+        ],
+        "optional": [["증감", "증가", "감소", "추이", "비중", "순위", "상위", "교차"]],
+        # 지역이 아닌 '구별하다'·'일시별' 이 두 글자 축 표현에 걸린다. match 는
+        # 어절 경계를 안 보므로 여기서 따로 막는다.
+        "excluded": ["구별해", "구별하", "구별없이", "일시별"],
+    },
+    "examples": [
+        "도미노피자 2026년 매출액 광역시도별 증감내역 알려줘",
+        "지역별 가맹점 매출금액 보여줘",
+        "2026년 상반기 시군구별 가맹점 매출 상위 20곳",
+    ],
+    "source_tables": ["tmdaa5e11", "tmdaaus01"],
+    "metric_names": ["가맹점월매출금액"],
+    "semantic_attributes": ["merchant_region"],
+    "join_paths": ["merchant_enrichment_to_monthly_performance"],
+    "result_grain": "질문이 요청한 행정구역 축 조합 1행 (월별로 물으면 기준년월 × 축)",
+    "dimensions": ["기준년월", "한글시도명", "한글시군구명", "법정동명", "가맹점명", "브랜드명"],
+    "name_filter": {
+        "columns": ["가맹점명", "브랜드명"],
+        "default_match": "contains",
+        "exact_match_only_when_explicit": True,
+    },
+    "time_policy": {
+        "period": "질문의 기준년월 범위. '2026년' 은 202601~202612",
+        "year_over_year": "증감을 물으면 전년 같은 기간(2025년)을 같은 축으로 함께 집계한다",
+    },
+    "calculation": {
+        "region_sales": (
+            'SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) '
+            '+ COALESCE(tmdaa5e11."가맹점할부매출금액", 0))'
+        ),
+        "join": (
+            'tmdaaus01."기준년월" = tmdaa5e11."기준년월" '
+            'AND tmdaaus01."가맹점번호" = tmdaa5e11."가맹점번호"'
+        ),
+        "region_axis": (
+            "광역시도·도별은 한글시도명, 시군구·시·군·구별은 한글시도명+한글시군구명, "
+            "동별은 거기에 법정동명을 더해 GROUP BY 한다"
+        ),
+        "change": "기간별 집계를 CTE로 나눈 뒤 금액 차와 증감률(전년 대비)을 함께 낸다",
+    },
+    "ambiguity_policy": [
+        "시군구·동으로 묶을 때는 한글시도명을 함께 GROUP BY 한다. 같은 이름의 구가 시도마다 있다.",
+        "지역 컬럼은 tmdaaus01 에만 있다. tmdaa5e11·tbdaabt30 에서 지역을 찾거나 주소를 잘라 만들지 않는다.",
+        "한글시도명이 비어 있는 가맹점(왓섭 미매핑)은 '미상' 으로 따로 두고 다른 지역에 섞지 않는다.",
+    ],
+}
+
+
+def apply_merchant_region_sales_contract(schema: dict) -> int:
+    """Bind the sales table and the region table into one authoritative contract."""
+    contracts = schema.get("semantic_query_contracts")
+    if not isinstance(contracts, list):
+        raise SystemExit("semantic_query_contracts 없음")
+    name = MERCHANT_REGION_SALES_CONTRACT["name"]
+    if any(item.get("name") == name for item in contracts):
+        raise SystemExit(f"이미 있는 계약: {name}")
+
+    tables = {str(item.get("name") or "") for item in schema.get("tables", [])}
+    for table_name in MERCHANT_REGION_SALES_CONTRACT["source_tables"]:
+        if table_name not in tables:
+            raise SystemExit(f"테이블 없음: {table_name}")
+
+    # 계약이 이름을 댄 조인이 실제로 선언돼 있어야 프롬프트에 조인 SQL 이 실린다.
+    paths = {
+        str(path.get("name") or "")
+        for path in (schema.get("semantic_join_graph") or {}).get("safe_paths", [])
+    }
+    for path_name in MERCHANT_REGION_SALES_CONTRACT["join_paths"]:
+        if path_name not in paths:
+            raise SystemExit(f"조인 경로 없음: {path_name}")
+
+    metrics = {str(item.get("name") or "") for item in schema.get("canonical_metrics", [])}
+    for metric_name in MERCHANT_REGION_SALES_CONTRACT["metric_names"]:
+        if metric_name not in metrics:
+            raise SystemExit(f"지표 없음: {metric_name}")
+
+    contracts.append(deepcopy(MERCHANT_REGION_SALES_CONTRACT))
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# 10-12. 연·월을 숫자로 못 박은 질의도 계약에 걸리게 한다 (2026-08-27 사용자 확인)
+#
+# "도미노피자 2026년 매출액 알려줘" 가 가맹점월실적(tmdaa5e11)이 아니라 전표로
+# 갔다. 브랜드 월매출 계약(named_merchant_monthly_sales)이 기간 조건으로
+# ["최근","지난","월별","개월","년","기준"] 을 요구하는데, 계약 match 는 어절
+# 경계가 아니라 부분 문자열이고 두 글자 미만을 버린다. '년' 은 절대 안 걸리는
+# 죽은 항목이라 "2026년"·"2026년 1월" 은 그룹 전체를 통과하지 못했다.
+#
+# 그 그룹이 말하려던 건 "질문이 기간을 말했다" 하나다. 상대 기간(최근·지난·월별·
+# 개월)은 문자열로 적을 수 있고 절대 기간만 못 적으니, 그 자리에 조건 토큰
+# @absolute_period 를 넣어 그룹을 "이 표현들 중 하나 또는 연·월 숫자" 로 만든다.
+#
+# 기존 require_explicit_period 플래그는 안 쓴다. 그 플래그는 '전년'·'작년' 까지
+# 기간으로 보는데, 컬럼 이름 안의 '전년'(전년가맹점신용판매매출금액)이 기간으로
+# 읽히면 이번 달을 보는 질문이 월 실적 아카이브로 새어 나간다.
+#
+# 남은 계약의 한 글자 항목은 점수만 못 받을 뿐 뜻이 있는 그룹이 함께 받쳐 준다.
+# 그래도 지워 둔다 — 다음 사람이 그 항목을 근거로 읽으면 같은 자리를 또 판다.
+# ---------------------------------------------------------------------------
+# 계약 match 가 "연·월을 숫자로 못 박았나" 를 묻는 조건 토큰.
+ABSOLUTE_PERIOD_TOKEN = "@absolute_period"
+
+NAMED_MERCHANT_SALES_CONTRACT = "named_merchant_monthly_sales"
+# 이 계약이 대신 받던 기간 표현. 지우기 전에 무엇을 대체하는지 못 박아 둔다.
+NAMED_MERCHANT_SALES_PERIOD_GROUP = ["최근", "지난", "월별", "개월", "년", "기준"]
+NAMED_MERCHANT_SALES_PERIOD_GROUP_V2 = [
+    "최근",
+    "지난",
+    "월별",
+    "개월",
+    "기준",
+    ABSOLUTE_PERIOD_TOKEN,
+]
+# 결과가 기준년월 1행이라 축을 지목한 질문에는 못 쓴다. excluded 에 적힌 축 이름은
+# 업종·가맹점·점포·매장 넷뿐이라 지역·카드VAN사·표준산업 대분류가 다 새고 있었다.
+# 축 하나를 더 적는 대신 "축을 지목했나" 를 통째로 묻는다.
+GROUPED_BY_AXIS_TOKEN = "@grouped_by_axis"
+
+
+def apply_absolute_period_contract_match(schema: dict) -> int:
+    """Let "2026년" satisfy the period requirement that only spelled-out words did."""
+    contracts = {
+        str(item.get("name") or ""): item
+        for item in schema.get("semantic_query_contracts") or []
+    }
+    contract = contracts.get(NAMED_MERCHANT_SALES_CONTRACT)
+    if contract is None:
+        raise SystemExit(f"계약 없음: {NAMED_MERCHANT_SALES_CONTRACT}")
+    match = contract.get("match")
+    if not isinstance(match, dict):
+        raise SystemExit(f"{NAMED_MERCHANT_SALES_CONTRACT} match 없음")
+    required = match.get("required")
+    if not isinstance(required, list):
+        raise SystemExit(f"{NAMED_MERCHANT_SALES_CONTRACT} required 없음")
+    if NAMED_MERCHANT_SALES_PERIOD_GROUP not in required:
+        raise SystemExit(
+            f"{NAMED_MERCHANT_SALES_CONTRACT} 의 기간 그룹이 바뀌었다: {required}"
+        )
+    required[required.index(NAMED_MERCHANT_SALES_PERIOD_GROUP)] = list(
+        NAMED_MERCHANT_SALES_PERIOD_GROUP_V2
+    )
+
+    for token in (ABSOLUTE_PERIOD_TOKEN, GROUPED_BY_AXIS_TOKEN):
+        if token not in CONTRACT_MATCH_PREDICATES:
+            raise SystemExit(f"매처가 모르는 조건 토큰: {token}")
+
+    excluded = match.setdefault("excluded", [])
+    if GROUPED_BY_AXIS_TOKEN in excluded:
+        raise SystemExit(f"{NAMED_MERCHANT_SALES_CONTRACT} 에 축 토큰이 이미 있다")
+    excluded.append(GROUPED_BY_AXIS_TOKEN)
+
+    # 두 글자 미만은 phrase_hit 이 무조건 버린다. required 에 들어 있으면 그룹을
+    # 통째로 막고, optional·excluded 에 있으면 아무 일도 안 한다.
+    removed = 0
+    for name, item in contracts.items():
+        groups = item.get("match")
+        if not isinstance(groups, dict):
+            continue
+        for key in ("required", "optional"):
+            for group in groups.get(key) or []:
+                if not isinstance(group, list):
+                    continue
+                for phrase in [
+                    value
+                    for value in group
+                    if value not in CONTRACT_MATCH_PREDICATES and len(compact(value)) < 2
+                ]:
+                    group.remove(phrase)
+                    removed += 1
+                if not group:
+                    raise SystemExit(f"{name}.{key}: 한 글자만 있던 그룹이 비었다")
+        for phrase in [
+            value
+            for value in groups.get("excluded") or []
+            if value not in CONTRACT_MATCH_PREDICATES and len(compact(value)) < 2
+        ]:
+            groups["excluded"].remove(phrase)
+            removed += 1
+
+    return removed + 1
+
+
+# ---------------------------------------------------------------------------
 # 11~12. SQL 생성 계약
 # ---------------------------------------------------------------------------
 def apply_sql_contract(schema: dict) -> dict:
@@ -3131,6 +3820,12 @@ def main() -> None:
     member_identity_count = apply_member_master_identity_scope(schema)
     recent_period_count = apply_recent_period_average_comparison(schema)
     merchant_suspension_count = apply_merchant_suspension_flag_semantics(schema)
+    valid_card_kind_count = apply_valid_card_kind_filter(schema)
+    corporate_credit_code_count = apply_corporate_credit_product_class_filter(schema)
+    merchant_status_count = apply_merchant_status_filter(schema)
+    merchant_region_count = apply_merchant_region_semantics(schema)
+    merchant_region_count += apply_merchant_region_sales_contract(schema)
+    absolute_period_count = apply_absolute_period_contract_match(schema)
     contract_stats = apply_sql_contract(schema)
 
     metadata = schema.get("semantic_layer_metadata")
@@ -3170,6 +3865,11 @@ def main() -> None:
             "최근 3·6개월 실적은 tmdaa5e11 누적 컬럼 한 행에서 읽고 평균은 개월 수로 나누도록 질의 참조와 용어를 추가했다.",
             "회원 마스터(tbdaaat03)의 테이블 동의어에서 낱말 '회원' 을 걷어냈다. 모집단을 가리키는 말이 테이블을 지목하지 않는다.",
             "가맹점거래정지여부를 '0' 정상영업·'1' 거래정지로 통일했다. 활성가맹점 용어가 반대로 말하던 'N' 을 걷어냈다.",
+            "유효 카드 판정 컬럼을 카드 종류별로 갈랐다. 체크·직불 질의는 유효체크카드여부, 신용 질의는 유효신용카드여부 하나만 건다.",
+            "기업신용 매출의 상품중분류구분코드를 CP51·CP52 두 코드로 못 박았다. 라벨에 '신용' 이 없는 CP52 가 빠지던 자리다.",
+            "가맹점이 모수인 지표에 가맹점상태구분코드 = '1'(정상) 필터를 required_filters 로 걸었다. 폐업이 모수인 지표만 제외했다.",
+            "가맹점 지역(시도·시군구·동)을 가맹점요약 두 곳만 가리키는 semantic attribute 로 선언하고, 광역시도·지역·소재지 표면형을 컬럼에 달았다.",
+            "브랜드 월매출 계약의 기간 조건을 죽은 한 글자 목록에서 require_explicit_period 플래그로 바꿨다. \"2026년\" 이 그 계약에 걸린다.",
             "실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.",
         ]
 
@@ -3218,6 +3918,11 @@ def main() -> None:
     print(f"  corporate slip filters: {slip_count_filter_count} entries")
     print(f"  merchant fee revenue  : {merchant_fee_count} entries")
     print(f"  member master identity: {member_identity_count} entries")
+    print(f"  valid card kind split : {valid_card_kind_count} entries")
+    print(f"  corporate credit codes: {corporate_credit_code_count} entries")
+    print(f"  merchant status filter: {merchant_status_count} entries")
+    print(f"  merchant region axis  : {merchant_region_count} entries")
+    print(f"  absolute period match : {absolute_period_count} entries")
     print(f"  recent period average : {recent_period_count} entries")
     print(f"  merchant suspension   : {merchant_suspension_count} columns")
     print(f"  contract list sizes  : {contract_stats['before']} -> {contract_stats['after']}")

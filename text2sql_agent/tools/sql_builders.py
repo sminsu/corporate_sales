@@ -25,6 +25,11 @@ def _sanitize_param(value: str) -> str:
     return value
 
 
+# verified query 템플릿이 "필터 없음"을 표현하는 값. `'{기업명}' = '__ALL__'` 분기가
+# 참이 되어야 하므로 LIKE 이스케이프를 건너뛴다.
+ALL_VALUES_SENTINEL = "__ALL__"
+
+
 def _escape_like(value: str) -> str:
     value = _sanitize_param(value)
     value = value.replace("%", "\\%").replace("_", "\\_")
@@ -113,7 +118,8 @@ def _coerce_sql_param(name: str, value, param_info: dict | None = None):
     if param_type == "business_number_list":
         return render_athena_business_number_values(value)
     if param_type == "like_string":
-        return _escape_like(str(value))
+        raw = str(value)
+        return raw if raw == ALL_VALUES_SENTINEL else _escape_like(raw)
     return _sanitize_param(str(value))
 
 
@@ -771,7 +777,10 @@ ORDER BY 기준년월"""
 
 
 def _vq_sql_가맹점매출순위(params: dict) -> str:
-    conds = _period_conds(params, "a.기준년월")
+    # 가맹점이 모수인 집계는 정상('1') 상태만 센다. 거래정지('2')·해지('3')가 섞이면
+    # 매출 합계와 순위가 함께 부풀려진다.
+    conds = ["a.가맹점상태구분코드 = '1'"]
+    conds.extend(_period_conds(params, "a.기준년월"))
     conds.extend(_partition_conds_from_params("tmdaa5e11", params, alias="a"))
     if params.get("업종"):
         conds.append(f"b.업종대분류코드명 LIKE '%{_escape_like(params['업종'])}%' ESCAPE '\\'")
@@ -871,6 +880,8 @@ def _vq_sql_가맹점카드소지현황(params: dict) -> str:
     perf_partition_sql = "".join(f"\n      AND {cond}" for cond in perf_partition_conds)
 
     base_conds = [
+        # 영업추진 대상 추출이다. 거래정지·해지 가맹점은 모수에서 뺀다.
+        "a.가맹점상태구분코드 = '1'",
         "a.실적기준년월일 BETWEEN "
         "DATE_FORMAT(DATE_ADD('day', -9, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d') "
         "AND DATE_FORMAT(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul', '%Y%m%d')"
@@ -1105,6 +1116,7 @@ def _tool_sql_new_sales_targets_usage_amount_detail(params: dict) -> str:
       )
       AND a."year" = SUBSTRING('{기준년월}', 1, 4)
       AND a."month" = SUBSTRING('{기준년월}', 5, 2)
+      AND a.가맹점상태구분코드 = '1'
       AND COALESCE(a.가맹점총지급금액, 0) >= {월매출금액}
       AND a.가맹점사업주체구분코드 = '2'
       AND COALESCE(a.유효기업신용카드수, 0) = 0

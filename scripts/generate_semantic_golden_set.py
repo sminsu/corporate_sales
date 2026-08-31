@@ -72,7 +72,7 @@ STYLE_PREFIXES = [
     "데이터 확인 부탁해. ",
 ]
 
-CORE_TARGET_COUNT = 600
+CORE_TARGET_COUNT = 616
 COMPOSITION_TARGET_COUNT = 300
 EXCLUDED_DOMAINS = {"relationship_sales_management"}
 EXCLUDED_CORE_CONTRACTS = {"card_product_current_valid_corporate_count"}
@@ -390,8 +390,8 @@ def _core_cases() -> list[dict[str, Any]]:
         and str(contract["domain"]) not in EXCLUDED_DOMAINS
         and str(contract["name"]) not in EXCLUDED_CORE_CONTRACTS
     ]
-    if len(executable) != 35:
-        raise ValueError(f"expected 35 included executable contracts, found {len(executable)}")
+    if len(executable) != 36:
+        raise ValueError(f"expected 36 included executable contracts, found {len(executable)}")
 
     for contract in executable:
         target_count = CORE_TARGET_OVERRIDES.get(str(contract["name"]), 16)

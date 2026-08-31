@@ -94,6 +94,11 @@ semantic_layer_metadata:
   - 최근 3·6개월 실적은 tmdaa5e11 누적 컬럼 한 행에서 읽고 평균은 개월 수로 나누도록 질의 참조와 용어를 추가했다.
   - 회원 마스터(tbdaaat03)의 테이블 동의어에서 낱말 '회원' 을 걷어냈다. 모집단을 가리키는 말이 테이블을 지목하지 않는다.
   - 가맹점거래정지여부를 '0' 정상영업·'1' 거래정지로 통일했다. 활성가맹점 용어가 반대로 말하던 'N' 을 걷어냈다.
+  - 유효 카드 판정 컬럼을 카드 종류별로 갈랐다. 체크·직불 질의는 유효체크카드여부, 신용 질의는 유효신용카드여부 하나만 건다.
+  - 기업신용 매출의 상품중분류구분코드를 CP51·CP52 두 코드로 못 박았다. 라벨에 '신용' 이 없는 CP52 가 빠지던 자리다.
+  - 가맹점이 모수인 지표에 가맹점상태구분코드 = '1'(정상) 필터를 required_filters 로 걸었다. 폐업이 모수인 지표만 제외했다.
+  - 가맹점 지역(시도·시군구·동)을 가맹점요약 두 곳만 가리키는 semantic attribute 로 선언하고, 광역시도·지역·소재지 표면형을 컬럼에 달았다.
+  - 브랜드 월매출 계약의 기간 조건을 죽은 한 글자 목록에서 require_explicit_period 플래그로 바꿨다. "2026년" 이 그 계약에 걸린다.
   - 실제 스키마에 없는 평가·JCB 관련 컬럼 20개를 11개 테이블에서 제거했다.
 tables:
 - name: tbdaa1d12
@@ -7707,6 +7712,14 @@ tables:
     - 시도명
     - 한글시도
     - 시도
+    - 광역시도
+    - 광역시도명
+    - 광역시
+    - 광역자치단체
+    - 도별
+    - 지역
+    - 소재지
+    - 권역
   - name: 한글시군구명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 한글 시군구명을 나타낸다.
@@ -7714,16 +7727,23 @@ tables:
     - 시군구명
     - 한글시군구
     - 시군구
+    - 기초자치단체
+    - 시군구별
+    - 시별
+    - 군별
+    - 구별
   - name: 법정동명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 법정동명을 나타낸다. (법률로 지정된 구역 단위의 명)
     synonyms:
     - 법정동
+    - 동별
   - name: 행정동명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 행정동명을 나타낸다. (주민들의 거주지역을 행정상의 편의에 의하여 설정한 행정구역의 단위명)
     synonyms:
     - 행정동
+    - 동별
   - name: KB왓섭매핑여부
     data_type: VARCHAR
     description: KB와 왓섭에서 제공하는 가맹점 부가정보 매핑여부 를 관리한다. · · 가맹점 풍성화(왓섭) 기반의 데이터이다.
@@ -15486,6 +15506,14 @@ tables:
     - 시도명
     - 한글시도
     - 시도
+    - 광역시도
+    - 광역시도명
+    - 광역시
+    - 광역자치단체
+    - 도별
+    - 지역
+    - 소재지
+    - 권역
   - name: 한글시군구명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 한글 시군구명을 나타낸다.
@@ -15493,16 +15521,23 @@ tables:
     - 시군구명
     - 한글시군구
     - 시군구
+    - 기초자치단체
+    - 시군구별
+    - 시별
+    - 군별
+    - 구별
   - name: 법정동명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 법정동명을 나타낸다. (법률로 지정된 구역 단위의 명)
     synonyms:
     - 법정동
+    - 동별
   - name: 행정동명
     data_type: VARCHAR
     description: 행안부 기준으로 맵핑한 행정동명을 나타낸다. (주민들의 거주지역을 행정상의 편의에 의하여 설정한 행정구역의 단위명)
     synonyms:
     - 행정동
+    - 동별
   - name: KB왓섭매핑여부
     data_type: VARCHAR
     description: KB와 왓섭에서 제공하는 가맹점 부가정보 매핑여부 를 관리한다. · · 가맹점 풍성화(왓섭) 기반의 데이터이다.
@@ -17073,6 +17108,71 @@ semantic_attributes:
   - 도로명 주소를 물으면 가맹점상세주소를 주소표시구분코드·우편번호와 함께 내보내고, 도로명 번호 컬럼만으로 주소를 조립하지 않는다.
   - 지난 달 이전의 주소는 tmdaa5d01의 기준년월 행에서 읽는다. 마스터(tbdaadt01)는 최근 며칠만 보관하므로 과거 월을 최신 적재분으로 대체하지 않는다.
   - 전표(tbdaabt30)의 가맹점우편번호는 전표 시점의 사본이다. 가맹점 우편번호는 가맹점 마스터(tbdaadt01)의 우편번호를 쓴다.
+- name: merchant_region
+  korean_name: 가맹점 지역
+  domains:
+  - merchant_sales
+  - corporate_sales_targeting
+  business_definition: 가맹점 소재지를 행안부 행정구역으로 끊어 놓은 축. 시도(광역)·시군구·동 세 단계이며 가맹점요약 테이블만 들고 있다
+  aliases:
+  - 가맹점 지역
+  - 가맹점지역
+  - 지역
+  - 지역별
+  - 광역시도
+  - 광역시도별
+  - 광역시
+  - 광역자치단체
+  - 시도
+  - 시도별
+  - 도별
+  - 시군구
+  - 시군구별
+  - 시별
+  - 군별
+  - 구별
+  - 동별
+  - 행정구역
+  - 권역
+  - 소재지
+  - 가맹점 소재지
+  source_mappings:
+  - entity: merchant_daily_enrichment
+    table: tbdaaus01
+    columns:
+    - 한글시도명
+    - 한글시군구명
+    - 법정동명
+    - 행정동명
+    - 법정시군구코드
+    role: current_merchant_region
+  - entity: merchant_monthly_enrichment
+    table: tmdaaus01
+    columns:
+    - 한글시도명
+    - 한글시군구명
+    - 법정동명
+    - 행정동명
+    - 법정시군구코드
+    role: monthly_merchant_region
+  source_selection:
+    default_role_prefix: current_
+    period_role_prefix: monthly_
+    current_terms:
+    - 이번 달
+    - 이번달
+    - 당월
+    - 현재
+    - 최신
+    - 지금
+    - 오늘
+    open_month_uses_current: true
+  semantic_cautions:
+  - 지역 단계마다 컬럼이 다르다. 광역시도·도별은 한글시도명, 시군구·시·군·구별은 한글시군구명, 동별은 법정동명·행정동명이다.
+  - 시군구·동으로 묶을 때는 한글시도명을 함께 GROUP BY 한다. 같은 이름의 구(강남구·중구)가 시도마다 있어 시도 없이 묶으면 서로 다른 지역이 한 행으로 합쳐진다.
+  - 지역 컬럼은 가맹점요약(tbdaaus01·tmdaaus01)에만 있다. 가맹점기본(tbdaadt01)·가맹점월실적(tmdaa5e11)·전표(tbdaabt30)에는 없다.
+  - 매출·매입 지표를 지역으로 쪼갤 때는 가맹점월실적(tmdaa5e11)과 가맹점월말요약(tmdaaus01)을 기준년월+가맹점번호로 조인한다. 전표(tbdaabt30)에는 가맹점요약으로 가는 조인 경로가 없다.
+  - 가맹점상세주소를 SUBSTR 로 잘라 시도를 만들지 않는다. 행안부 기준으로 맵핑된 한글시도명이 이미 있다.
 - name: merchant_credit_sales
   korean_name: 가맹점 신용판매 매출금액
   domains:
@@ -17519,6 +17619,7 @@ semantic_attributes:
   - 현재·최신 보유는 tbdaa1d12 KST 전일 기준년월일, 명시한 과거 월은 tmdaa1d12 기준년월에서 읽는다.
   - 카드등급그룹·상품·브랜드·발급유형·카드거래매체처럼 카드 한 장의 속성으로 쪼개는 질의는 회원카드기본(tbdaaat05) 한 곳에서 센다. 기업고객 스냅샷의 유효기업신용카드수는 기업고객당 합계라 그 축으로 쪼갤 수 없고, 조인해도 좌수가 부풀려진다.
   - 카드 종류를 물으면 유효기업신용카드수·유효기업체크카드수를, 소유 형태를 물으면 유효기업개별카드수·유효기업공용카드수를 읽는다. 네 컬럼 모두 기업고객당 좌수라 고객×월 최신 1건으로 줄인 뒤 SUM 한다.
+  - 유효 여부는 카드 종류마다 컬럼이 따로다. 체크카드·직불카드를 물으면 "유효체크카드여부" = '1' (기업 단위는 유효기업체크카드수 > 0)만, 신용카드를 물으면 신용 쪽 컬럼만 건다. 종류를 말하지 않은 포괄적인 유효 기업카드만 둘을 함께 본다. 유효직불카드 컬럼은 없으므로 직불도 체크 쪽 컬럼으로 판정한다.
   source_selection:
     default_role_prefix: current_
     period_role_prefix: monthly_
@@ -17625,8 +17726,8 @@ semantic_attributes:
   - 수수료율(신용카드가맹점수수료율·체크카드수수료율)은 금액이 아니라 율이다. 실효 수수료율은 가맹점수입수수료를 매출금액으로 나눠 구한다.
   - 할부수수료·CA수수료·연체수수료는 카드 쪽 수수료로 원천이 다르다.
 canonical_metrics:
-- {name: 카드매출금액, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN tbdaabt30."매출금액" ELSE -tbdaabt30."매출금액" END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [카드매출, 국내이용금액, 카드이용금액, 총매출], unit: 원, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [매출금액을 그대로 SUM하면 취소·환급 전표까지 더해져 이용금액이 부풀려진다., '매출전표종류구분코드로 부호를 정한다: 정당(1)·취소정정(4)은 +, 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 -.']}
-- {name: 매출건수, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN 1 ELSE -1 END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: ["tbdaabt30.\"카드매출유형구분코드\" IN ('1','2','4') — 일반·할부·리볼빙", tbdaabt30."회원소속회사구분코드" = '1' AND tbdaabt30."가맹점소속회사구분코드" = '1' — 당사], synonyms: [거래건수, 이용건수, 전표건수], unit: 건, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [전표 건수도 순액이다. COUNT로 세면 취소전표가 건수를 늘린다., '매출전표종류구분코드가 정당(1)·취소정정(4)이면 +1, 정정(2)·취소(3)·청구보류(5)·체크환급(6)이면 -1로 더한다.', 기업 매출건수는 카드매출유형구분코드 일반(1)·할부(2)·리볼빙(4)만 센다. 현금서비스(3)·예수금(5)·선급급(6)·해외현금지급(7)·연회비(9)는 카드 매출이 아니다., 회원소속회사구분코드·가맹점소속회사구분코드를 당사('1')로 제한한다. 제휴사·공동망·해외회원 건은 당사 매출이 아니다., 해외 전표(tbdaabt08)는 회원소속회사구분코드를 갖고 있지 않다. 가맹점소속회사구분코드 = '1' 과 카드매출유형구분코드만 같은 규칙으로 적용한다., 이 필터는 WHERE 절에 걸리므로 같은 쿼리의 매출금액에도 함께 적용된다. 금액과 건수의 모집단을 다르게 두려면 건수만 CASE WHEN 안에서 세야 한다.]}
+- {name: 카드매출금액, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN tbdaabt30."매출금액" ELSE -tbdaabt30."매출금액" END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: [], synonyms: [카드매출, 국내이용금액, 카드이용금액, 총매출], unit: 원, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [매출금액을 그대로 SUM하면 취소·환급 전표까지 더해져 이용금액이 부풀려진다., '매출전표종류구분코드로 부호를 정한다: 정당(1)·취소정정(4)은 +, 정정(2)·취소(3)·청구보류(5)·체크환급(6)은 -.', "카드 종류로 매출을 가르는 키는 상품중분류구분코드다. 기업신용은 IN ('CP51','CP52'), 기업체크는 = 'CP53', 기업직불은 = 'CP54' 다. 라벨에 '신용' 이 든 코드는 CP51 하나뿐이라 CP52(기업정부구매카드)를 빠뜨리기 쉽다. CP55~CP57(기업순구매·역구매·후납우편)은 신용에 넣지 않는다."]}
+- {name: 매출건수, domain: card_usage, expression: 'SUM(CASE WHEN tbdaabt30."매출전표종류구분코드" IN (''1'',''4'') THEN 1 ELSE -1 END)', source_table: tbdaabt30, source_entity: domestic_sales, default_time_dimension: 기준년월, required_filters: ["tbdaabt30.\"카드매출유형구분코드\" IN ('1','2','4') — 일반·할부·리볼빙", tbdaabt30."회원소속회사구분코드" = '1' AND tbdaabt30."가맹점소속회사구분코드" = '1' — 당사], synonyms: [거래건수, 이용건수, 전표건수], unit: 건, aggregation_behavior: additive_at_declared_grain, semantic_cautions: [전표 건수도 순액이다. COUNT로 세면 취소전표가 건수를 늘린다., '매출전표종류구분코드가 정당(1)·취소정정(4)이면 +1, 정정(2)·취소(3)·청구보류(5)·체크환급(6)이면 -1로 더한다.', 기업 매출건수는 카드매출유형구분코드 일반(1)·할부(2)·리볼빙(4)만 센다. 현금서비스(3)·예수금(5)·선급급(6)·해외현금지급(7)·연회비(9)는 카드 매출이 아니다., 회원소속회사구분코드·가맹점소속회사구분코드를 당사('1')로 제한한다. 제휴사·공동망·해외회원 건은 당사 매출이 아니다., 해외 전표(tbdaabt08)는 회원소속회사구분코드를 갖고 있지 않다. 가맹점소속회사구분코드 = '1' 과 카드매출유형구분코드만 같은 규칙으로 적용한다., 이 필터는 WHERE 절에 걸리므로 같은 쿼리의 매출금액에도 함께 적용된다. 금액과 건수의 모집단을 다르게 두려면 건수만 CASE WHEN 안에서 세야 한다., "카드 종류로 매출을 가르는 키는 상품중분류구분코드다. 기업신용은 IN ('CP51','CP52'), 기업체크는 = 'CP53', 기업직불은 = 'CP54' 다. 라벨에 '신용' 이 든 코드는 CP51 하나뿐이라 CP52(기업정부구매카드)를 빠뜨리기 쉽다. CP55~CP57(기업순구매·역구매·후납우편)은 신용에 넣지 않는다."]}
 - name: 이용기업수
   domain: card_usage
   business_definition: 해당 기간에 카드 이용이 실제로 발생한 고유 기업 수
@@ -17736,7 +17837,7 @@ canonical_metrics:
   - 해외카드이용금액
   unit: 원
   aggregation_behavior: additive_at_declared_month_grain
-- {name: 가맹점월매출금액, domain: merchant_sales, expression: 'SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) + COALESCE(tmdaa5e11."가맹점할부매출금액", 0))', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점매출, 가맹점매출액, 점포매출, 월매출액, 가맹점매출금액, 가맹점 매출 금액, 월가맹점매출금액], unit: 원, aggregation_behavior: additive_at_declared_grain}
+- {name: 가맹점월매출금액, domain: merchant_sales, expression: 'SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) + COALESCE(tmdaa5e11."가맹점할부매출금액", 0))', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만], synonyms: [가맹점매출, 가맹점매출액, 점포매출, 월매출액, 가맹점매출금액, 가맹점 매출 금액, 월가맹점매출금액], unit: 원, aggregation_behavior: additive_at_declared_grain}
 - name: 가맹점월수입수수료
   domain: merchant_sales
   business_definition: 가맹점에서 거둔 월 수입수수료 금액
@@ -17746,6 +17847,7 @@ canonical_metrics:
   default_time_dimension: 기준년월
   required_filters:
   - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  - tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만
   semantic_cautions:
   - 가맹점 수수료 금액은 이 지표다. 전표(tbdaabt30)의 가맹점수수료는 전표 한 장의 수수료라 월 수수료 수입을 대신하지 못한다.
   - 수수료율(신용카드가맹점수수료율·체크카드수수료율 등)은 금액이 아니라 율이므로 이 지표로 바꾸지 않는다. 실효 수수료율은 이 지표를 매출금액으로 나눠 구한다.
@@ -17760,7 +17862,7 @@ canonical_metrics:
   - 가맹점수수료금액
   unit: 원
   aggregation_behavior: additive_at_declared_month_grain
-- {name: 가맹점수, domain: merchant_sales, expression: 'COUNT(DISTINCT tbdaadt01."가맹점번호")', source_table: tbdaadt01, source_entity: merchant, default_time_dimension: '', required_filters: [], synonyms: [점포수, 매장수, 가맹점개수], unit: 개, aggregation_behavior: distinct_count}
+- {name: 가맹점수, domain: merchant_sales, expression: 'COUNT(DISTINCT tbdaadt01."가맹점번호")', source_table: tbdaadt01, source_entity: merchant, default_time_dimension: '', required_filters: [tbdaadt01."가맹점상태구분코드" = '1' — 정상 가맹점만], synonyms: [점포수, 매장수, 가맹점개수], unit: 개, aggregation_behavior: distinct_count}
 - name: 결제금융기관별가맹점수
   domain: merchant_sales
   business_definition: 지정 가맹점·브랜드 중 선택한 대금지급 결제금융기관을 사용하는 고유 가맹점 수
@@ -17772,10 +17874,11 @@ canonical_metrics:
   required_filters:
   - tbdaadt01."현금카드결제기관구분코드" = :결제금융기관코드
   - merchant_search_name 부분일치
+  - tbdaadt01."가맹점상태구분코드" = '1' — 정상 가맹점만
   synonyms: [은행별 가맹점 수, 결제은행 가맹점 수, 가맹점 계좌 은행별 개수, KB국민은행 가맹점 수]
   unit: 개
   aggregation_behavior: distinct_count
-- {name: 신용카드가맹점수수료율, domain: merchant_sales, expression: 'AVG(tmdaa5e11."신용카드가맹점수수료율")', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [], synonyms: [가맹점수수료율, 수수료율], unit: '비율 0~1 (90% 는 0.9)', aggregation_behavior: derived_non_additive}
+- {name: 신용카드가맹점수수료율, domain: merchant_sales, expression: 'AVG(tmdaa5e11."신용카드가맹점수수료율")', source_table: tmdaa5e11, source_entity: merchant_monthly_performance, default_time_dimension: 기준년월, required_filters: [tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만], synonyms: [가맹점수수료율, 수수료율], unit: '비율 0~1 (90% 는 0.9)', aggregation_behavior: derived_non_additive}
 - name: 기업고객수
   domain: customer_card_portfolio
   business_definition: 개인기업구분코드가 기업인 고유 고객식별자 수
@@ -17811,7 +17914,7 @@ canonical_metrics:
   required_filters:
   - tbdaaat05."카드소유자구분코드" IN ('3','4','5') — 기업대표·기업개별·기업공용
   - tbdaaat05."개인기업구분코드" = '2'
-  - (tbdaaat05."유효신용카드여부" = '1' OR tbdaaat05."유효체크카드여부" = '1') — 유효 카드만 셀 때
+  - (tbdaaat05."유효신용카드여부" = '1' OR tbdaaat05."유효체크카드여부" = '1') — 카드 종류를 말하지 않은 유효 카드. 신용만 물으면 "유효신용카드여부" = '1', 체크·직불만 물으면 "유효체크카드여부" = '1' 하나만 건다
   - tbdaaat05."실적기준년월일" = 스냅샷 기준일 (현재 기준은 MAX)
   semantic_cautions:
   - 카드등급그룹·상품·브랜드·발급유형·카드거래매체처럼 카드 한 장의 속성으로 쪼개는 질의는 회원카드기본(tbdaaat05) 한 곳에서 센다. 기업고객 스냅샷의 유효기업신용카드수는 기업고객당 합계라 그 축으로 쪼갤 수 없고, 조인해도 좌수가 부풀려진다.
@@ -17853,7 +17956,7 @@ canonical_metrics:
 - {name: 기업한도소진율, domain: corporate_sales_targeting, expression: '1.0 - CAST(COALESCE(tbdaa1d12."기업총잔여한도금액", 0) AS DOUBLE) / NULLIF(CAST(tbdaa1d12."기업총한도금액" AS DOUBLE), 0.0)', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [tbdaa1d12."기업총한도금액" > 0, 현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [한도소진율, 한도사용률, 한도사용비율], unit: '비율 0~1 (90% 는 0.9)', aggregation_behavior: derived_non_additive}
 - {name: 기업잔여한도금액, domain: credit_risk, expression: 'SUM(COALESCE(tbdaa1d12."기업총잔여한도금액", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [잔여한도, 가용한도, 남은한도, 기업총잔여한도], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 기업한도사용금액, domain: credit_risk, expression: 'SUM(COALESCE(tbdaa1d12."기업총한도금액", 0) - COALESCE(tbdaa1d12."기업총잔여한도금액", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [사용한도, 한도사용금액, 소진한도, 사용중인한도], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
-- {name: 가맹점월지급금액, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tmdaaus01."가맹점총지급금액", 0))', source_table: tmdaaus01, source_entity: merchant_monthly_enrichment, default_time_dimension: 기준년월, required_filters: [가맹점별 월 최신 기준년월일 1건], synonyms: [가맹점총지급금액, 총지급액, 월지급금액, 정산지급금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
+- {name: 가맹점월지급금액, domain: corporate_sales_targeting, expression: 'SUM(COALESCE(tmdaaus01."가맹점총지급금액", 0))', source_table: tmdaaus01, source_entity: merchant_monthly_enrichment, default_time_dimension: 기준년월, required_filters: [가맹점별 월 최신 기준년월일 1건, tmdaaus01."가맹점상태구분코드" = '1' — 정상 가맹점만], synonyms: [가맹점총지급금액, 총지급액, 월지급금액, 정산지급금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 관리기업월이용금액, domain: relationship_sales_management, expression: 'SUM(COALESCE(tmdaa1d12."금월신용카드이용금액", 0) + COALESCE(tmdaa1d12."금월체크카드이용금액", 0))', source_table: tmdaa1d12, source_entity: corporate_customer_no_usage_snapshot, default_time_dimension: 기준년월, required_filters: [관리기업목록 파라미터의 사업자등록번호로 범위 제한, 고객별 월 최신 기준년월일 1건], synonyms: [관리기업이용추이, 담당기업이용금액, 최근6개월이용금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 관리기업연체원금, domain: relationship_sales_management, expression: 'SUM(COALESCE(tbdaa1d12."카드연체원금", 0) + COALESCE(tbdaa1d12."여신연체원금", 0))', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [관리기업목록 파라미터의 사업자등록번호로 범위 제한, 카드연체여부 = '1' OR 여신연체여부 = '1' OR 연체원금 > 0, 현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [관리기업연체금액, 담당기업연체원금], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
 - {name: 총여신한도금액, domain: credit_risk, expression: 'SUM(tbdaa1d12."기업총한도금액")', source_table: tbdaa1d12, source_entity: corporate_customer_daily, default_time_dimension: 기준년월일, required_filters: [현재 조회는 tbdaa1d12.기준년월일 = KST 전일(D-1); 명시 과거 월은 계약의 tmdaa1d12 원천 사용], synonyms: [기업한도, 여신한도, 총한도, 기업총한도, 한도금액], unit: 원, aggregation_behavior: snapshot_dedup_then_aggregate}
@@ -17955,6 +18058,7 @@ canonical_metrics:
   - tbdaaus01."기준년월일" = DATE_FORMAT(DATE_ADD('day', -1, CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul'), '%Y%m%d')
   - 대표고객식별자 IS NOT NULL
   - 가맹점명·외부가맹점명·브랜드명 중 하나에 가맹점명 파라미터 부분일치
+  - tbdaaus01."가맹점상태구분코드" = '1' — 정상 가맹점만
   name_filter:
     parameter: 가맹점명
     columns: [가맹점명, 외부가맹점명, 브랜드명]
@@ -17976,6 +18080,7 @@ canonical_metrics:
   - COALESCE(tbdaaus01."유효기업신용카드수", 0) + COALESCE(tbdaaus01."유효기업체크카드수", 0) > 0
   - tbdaaus01."대표고객식별자" IS NOT NULL
   - 가맹점명·외부가맹점명·브랜드명 중 하나에 가맹점명 파라미터 부분일치
+  - tbdaaus01."가맹점상태구분코드" = '1' — 정상 가맹점만
   name_filter:
     parameter: 가맹점명
     columns: [가맹점명, 외부가맹점명, 브랜드명]
@@ -18094,6 +18199,7 @@ canonical_metrics:
   default_time_dimension: 기준년월
   required_filters:
   - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  - tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만
   synonyms: [가맹점매출건수, 가맹점 매출 건수, 월가맹점매출건수]
   unit: 건
   aggregation_behavior: additive_at_declared_month_grain
@@ -18106,6 +18212,7 @@ canonical_metrics:
   default_time_dimension: 기준년월
   required_filters:
   - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  - tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만
   semantic_cautions:
   - 해외매출전표(tbdaabt08)는 전표 한 장 단위라 가맹점 월 실적을 대신하지 못하고, 가맹점 월스냅샷(tmdaa5d01)은 이 컬럼을 갖고 있지 않다.
   synonyms:
@@ -18123,6 +18230,7 @@ canonical_metrics:
   default_time_dimension: 기준년월
   required_filters:
   - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  - tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만
   semantic_cautions:
   - 해외매출전표(tbdaabt08)는 전표 한 장 단위라 가맹점 월 실적을 대신하지 못하고, 가맹점 월스냅샷(tmdaa5d01)은 이 컬럼을 갖고 있지 않다.
   synonyms:
@@ -18140,6 +18248,7 @@ canonical_metrics:
   default_time_dimension: 기준년월
   required_filters:
   - 질문의 기준년월로 tmdaa5e11."기준년월" 제한
+  - tmdaa5e11."가맹점상태구분코드" = '1' — 정상 가맹점만
   synonyms: [가맹점일시불매출금액, 가맹점 일시불 매출액, 일시불매출금액]
   unit: 원
   aggregation_behavior: additive_at_declared_month_grain
@@ -18343,7 +18452,6 @@ semantic_query_contracts:
       - 몇 개
     optional:
     - - 기준
-      - 월
       - 알려
     excluded:
     - 무실적
@@ -18678,7 +18786,7 @@ semantic_query_contracts:
     required:
     - [한도]
     optional:
-    - [현재, 기준, 총, 잔여, 가용, 소진율, 사용률, 알려, 조회]
+    - [현재, 기준, 잔여, 가용, 소진율, 사용률, 알려, 조회]
     excluded: [기업별, 법인별, 감액, 감소, 증액, 증가, 전월 대비, 전월대비, 추이, 미만, 이하, 초과, 이상]
   examples:
   - 쿠팡의 2026년 6월 한도를 알려줘
@@ -19017,7 +19125,7 @@ semantic_query_contracts:
     - [브랜드별, 카드브랜드별, 카드 브랜드별]
     - [유효좌수, 유효 좌수, 유효카드수, 유효 카드 수]
     optional:
-    - [기준, 월]
+    - [기준]
     excluded: [이용금액, 이용건수, 신규, 발급, 상품]
   examples:
   - 2026년 6월 기준 기업카드의 브랜드별 유효 좌수를 알고 싶어
@@ -19049,7 +19157,7 @@ semantic_query_contracts:
     - [카드좌수, 카드 좌수, 좌수, 몇좌]
     - [업체수, 업체 수, 기업수, 기업 수]
     optional:
-    - [경우, 기간, 월]
+    - [경우, 기간]
     excluded: [가맹점, 상품, 리스트, 목록]
   examples:
   - 기업카드 발급을 26년 1,2,3월에 하고 4,5,6월 안에 해지한 경우의 카드좌수와 업체수를 알려줘
@@ -19151,10 +19259,15 @@ semantic_query_contracts:
   match:
     required:
     - [매출, 매출액, 매출금액]
-    - [최근, 지난, 월별, 개월, 년, 기준]
+    - - 최근
+      - 지난
+      - 월별
+      - 개월
+      - 기준
+      - '@absolute_period'
     optional:
     - [가맹점, 브랜드, 점포, 매장]
-    excluded: [법인카드 이용금액, 기업카드 이용금액, 폐업, 휴폐업, 문 닫은, 가맹점 수, 가맹점수, 업종별, 가맹점별, 점포별, 매장별]
+    excluded: [법인카드 이용금액, 기업카드 이용금액, 폐업, 휴폐업, 문 닫은, 가맹점 수, 가맹점수, 업종별, 가맹점별, 점포별, 매장별, '@grouped_by_axis']
   examples:
   - 도미노 피자 최근 6개월 매출액 알려줘
   - 도미노피자 최근 1년 매출액 알려줘
@@ -19187,7 +19300,7 @@ semantic_query_contracts:
     required:
     - [매출, 매출액, 매출금액]
     - [가맹점주, 가맹점 주, 점주, 가맹점별, 각 가맹점, 점포별, 매장별]
-    - [기준, 월]
+    - [기준]
     - [최근 3개월, 최근3개월, 3개월]
     optional:
     - [가맹점, 브랜드]
@@ -19712,6 +19825,83 @@ semantic_query_contracts:
   - 카드등급은 카드등급그룹과 다른 축이다.
   - 카드등급명 codebook이 없는 경우 카드등급구분코드를 표시하고 이름을 임의 생성하지 않는다.
 
+- name: merchant_monthly_sales_by_region
+  domain: merchant_sales
+  execution_mode: semantic_generation
+  routing_strength: high
+  support_status: generative
+  table_selection_mode: authoritative
+  prompt_column_budget: 20
+  description: 가맹점 월실적의 매출을 가맹점 소재지 행정구역(시도·시군구·동)으로 나눠 집계한다. 지역 컬럼은 가맹점월말요약에만 있으므로 기준년월+가맹점번호로 조인한다.
+  match:
+    required:
+    - - 매출
+      - 매출액
+      - 매출금액
+    - - 광역시도
+      - 광역시
+      - 시도
+      - 시군구
+      - 지역별
+      - 소재지
+      - 권역
+      - 행정구역
+      - 시별
+      - 군별
+      - 구별
+    optional:
+    - - 증감
+      - 증가
+      - 감소
+      - 추이
+      - 비중
+      - 순위
+      - 상위
+      - 교차
+    excluded:
+    - 구별해
+    - 구별하
+    - 구별없이
+    - 일시별
+  examples:
+  - 도미노피자 2026년 매출액 광역시도별 증감내역 알려줘
+  - 지역별 가맹점 매출금액 보여줘
+  - 2026년 상반기 시군구별 가맹점 매출 상위 20곳
+  source_tables:
+  - tmdaa5e11
+  - tmdaaus01
+  metric_names:
+  - 가맹점월매출금액
+  semantic_attributes:
+  - merchant_region
+  join_paths:
+  - merchant_enrichment_to_monthly_performance
+  result_grain: 질문이 요청한 행정구역 축 조합 1행 (월별로 물으면 기준년월 × 축)
+  dimensions:
+  - 기준년월
+  - 한글시도명
+  - 한글시군구명
+  - 법정동명
+  - 가맹점명
+  - 브랜드명
+  name_filter:
+    columns:
+    - 가맹점명
+    - 브랜드명
+    default_match: contains
+    exact_match_only_when_explicit: true
+  time_policy:
+    period: 질문의 기준년월 범위. '2026년' 은 202601~202612
+    year_over_year: 증감을 물으면 전년 같은 기간(2025년)을 같은 축으로 함께 집계한다
+  calculation:
+    region_sales: SUM(COALESCE(tmdaa5e11."가맹점일시불매출금액", 0) + COALESCE(tmdaa5e11."가맹점할부매출금액", 0))
+    join: tmdaaus01."기준년월" = tmdaa5e11."기준년월" AND tmdaaus01."가맹점번호" = tmdaa5e11."가맹점번호"
+    region_axis: 광역시도·도별은 한글시도명, 시군구·시·군·구별은 한글시도명+한글시군구명, 동별은 거기에 법정동명을 더해 GROUP BY 한다
+    change: 기간별 집계를 CTE로 나눈 뒤 금액 차와 증감률(전년 대비)을 함께 낸다
+  ambiguity_policy:
+  - 시군구·동으로 묶을 때는 한글시도명을 함께 GROUP BY 한다. 같은 이름의 구가 시도마다 있다.
+  - 지역 컬럼은 tmdaaus01 에만 있다. tmdaa5e11·tbdaabt30 에서 지역을 찾거나 주소를 잘라 만들지 않는다.
+  - 한글시도명이 비어 있는 가맹점(왓섭 미매핑)은 '미상' 으로 따로 두고 다른 지역에 섞지 않는다.
 semantic_join_graph:
   safe_paths:
   - {name: customer_to_member, from_entity: customer, to_entity: member, join_type: one_to_many, sql: 'tbdaaat01."회원일련번호" = tbdaaat03."회원일련번호"', use_when: [고객의 회원·카드 보유 현황], caution: "회원 조인 뒤 고객 수는 DISTINCT로 집계", from_table: tbdaaat01, to_table: tbdaaat03, confidence: curated, provenance: workbook_grain_and_reference_queries}
@@ -20005,7 +20195,7 @@ glossary:
   sql_hint: "현재 카드수 0과 과거 이용이력을 함께 확인하고 마지막 이용월을 계산한다."
 - term: "기업카드보유"
   canonical: "유효기업신용카드수 + 유효기업체크카드수 > 0"
-  description: "신용/체크는 카드 종류 축이고 개별/공용은 소유 형태 축이므로 네 컬럼을 모두 더하지 않는다."
+  description: "신용/체크는 카드 종류 축이고 개별/공용은 소유 형태 축이므로 네 컬럼을 모두 더하지 않는다. 이 합계는 카드 종류를 말하지 않은 질의의 정의다. 신용·체크 중 하나를 지목하면 그 컬럼 하나만 쓴다."
   aliases: ["기업카드 소지", "법인카드 보유"]
   sql_hint: "COALESCE(유효기업신용카드수,0) + COALESCE(유효기업체크카드수,0) > 0"
 - term: "한도소진율"
@@ -20129,6 +20319,52 @@ glossary:
   - 3개월 평균 매출
   - 6개월 평균 매출
   sql_hint: 최근 3개월 평균은 "최근3개월가맹점매출금액" / 3, 6개월 평균은 "최근6개월가맹점매출금액" / 6 이다. 월별 행을 모아 AVG 하지 않는다.
+- term: 유효카드
+  canonical: 신용은 유효신용카드여부 = '1', 체크·직불은 유효체크카드여부 = '1'
+  description: "'유효한' 은 카드가 살아 있다는 뜻이고, 어느 컬럼으로 판정할지는 질문이 지목한 카드 종류가 정한다. 체크카드 이용금액을 물었는데 유효신용카드여부로 거르면 모집단이 신용카드 보유자로 바뀌어 답이 달라진다. 유효직불카드 컬럼은 없다."
+  aliases:
+  - 유효한 카드
+  - 유효 카드
+  - 유효신용카드
+  - 유효체크카드
+  - 유효한 기업회원
+  - 유효 기업회원
+  - 유효한 기업
+  sql_hint: 체크·직불 질의는 "유효체크카드여부" = '1' (카드·회원 단위) 또는 COALESCE("유효기업체크카드수", 0) > 0 (기업 단위) 하나만 건다. 신용 질의는 같은 자리에 신용 컬럼을 쓴다. 종류를 말하지 않은 질의만 ("유효신용카드여부" = '1' OR "유효체크카드여부" = '1').
+- term: 기업신용매출
+  canonical: 상품중분류구분코드 IN ('CP51','CP52')
+  description: 기업신용 매출은 기업신용카드(CP51)와 기업정부구매카드(CP52) 두 코드를 함께 센다. CP52 는 라벨에 '신용' 이 없어 빠지기 쉽다. 기업체크는 CP53, 기업직불은 CP54 한 코드씩이고, CP55~CP57 은 어느 쪽에도 넣지 않는다.
+  aliases:
+  - 기업신용
+  - 법인신용매출
+  - 기업신용매출건수
+  - 기업신용매출금액
+  - 신용카드매출
+  sql_hint: "\"상품중분류구분코드\" IN ('CP51','CP52') 로 건다. 체크는 = 'CP53', 직불은 = 'CP54' 다."
+- term: 가맹점 모수
+  canonical: 가맹점상태구분코드 = '1' (정상)
+  description: 가맹점을 세거나 가맹점별로 집계하는 질의는 정상('1') 가맹점만 모수로 삼는다. 거래정지('2')·해지('3')가 섞이면 가맹점 수도 가맹점별 매출도 함께 부풀려진다. 상태별로 나눠 달라고 말한 질의만 이 필터를 빼고 상태 코드를 축으로 세운다.
+  aliases:
+  - 가맹점 수
+  - 가맹점수
+  - 가맹점 개수
+  - 가맹점별
+  - 정상 가맹점
+  - 가맹점 상태
+  sql_hint: "\"가맹점상태구분코드\" = '1' 을 WHERE 에 건다. 이 컬럼은 tbdaadt01·tbdaaus01· tmdaa5d01·tmdaa5e11·tmdaaus01 에 모두 있다. 해지 가맹점을 물으면 = '3' 으로 뒤집는다."
+- term: 지역별
+  canonical: 한글시도명(광역시도) · 한글시군구명(시군구) · 법정동명·행정동명(동)
+  description: 지역·광역시도·도·시군구·동은 모두 가맹점 소재지의 행정구역 축이고, 가맹점요약(tbdaaus01·tmdaaus01)만 이 컬럼들을 들고 있다. 가맹점 주소(가맹점상세주소)는 한 덩어리 문자열이라 지역으로 묶는 데 쓰지 않는다.
+  aliases:
+  - 지역
+  - 광역시도별
+  - 광역시별
+  - 도별
+  - 시도별
+  - 시군구별
+  - 권역별
+  - 소재지별
+  sql_hint: 지역별 매출은 tmdaa5e11 을 tmdaaus01 과 "기준년월" = "기준년월" AND "가맹점번호" = "가맹점번호" 로 조인하고 한글시도명으로 GROUP BY 한다. 시군구까지 쪼갤 때는 한글시도명, 한글시군구명 두 개로 묶는다.
 
 # =============================================================================
 # 6. QUERY REFERENCES - 질의별 컬럼/필터/조인 선택 지침
@@ -20573,7 +20809,7 @@ query_references:
     브랜드검색: "\"가맹점명\" LIKE '%' || :가맹점명 || '%' ESCAPE '\\'"
     가맹점수: "COUNT(DISTINCT \"가맹점번호\")"
   rules:
-  - "가맹점상태구분코드 1은 참고문서 가정이므로 운영 코드값을 검증한다."
+  - "활성 조건은 \"가맹점상태구분코드\" = '1' 이다. 거래정지는 '2', 해지는 '3' 이다."
 
   verified_query: brand_active_merchant_count
   source_lineage:

@@ -16,7 +16,10 @@ from .llm import _call_llm, _normalize_llm_text
 from .time_policy import format_accumulation_policy, kst_today, previous_day_ymd
 from .tools.verified_queries import load_external_verified_queries
 from .v2.column_synonyms import phrase_in_text as _v2_phrase_in_text
-from .v2.vq_output_guard import vq_output_gap as _v2_vq_output_gap
+from .v2.vq_output_guard import (
+    grouping_axis_terms as _v2_grouping_axis_terms,
+    vq_output_gap as _v2_vq_output_gap,
+)
 
 
 def _memoize_by_schema_identity(func):
@@ -408,6 +411,27 @@ _SOURCE_POLICY_EXPLICIT_PERIOD_RE = re.compile(
     r"분기|상반기|하반기|작년|지난해|전년|당시|저번\s*달|지난\s*달|전월"
     r")"
 )
+
+
+# 계약 match 가 문자열로 못 적는 조건. phrase_hit 은 두 글자 미만을 버리므로
+# "2026년" 을 가리키는 표면형을 리스트에 적을 방법이 없다 — '년' 한 글자는 늘
+# 탈락한다. 연·월을 숫자로 못 박았는지는 정규식으로만 물을 수 있어서, 그룹 안에
+# 이 토큰을 넣어 "이 그룹은 절대 기간으로도 만족된다" 를 선언한다.
+#
+# 상대 기간(전년·작년·지난달)은 일부러 뺐다. 컬럼 이름 안의 '전년'
+# (전년가맹점신용판매매출금액)이 기간으로 읽히면, 이번 달을 보는 질문이 월 실적
+# 아카이브로 새어 나간다.
+_ABSOLUTE_PERIOD_RE = re.compile(
+    r"20\d{2}\s*년|(?<!\d)20\d{4}(?:\d{2})?(?!\d)|20\d{2}[./-]\d{1,2}|"
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])\s*(?:기준|월)(?!\d)"
+)
+
+CONTRACT_MATCH_PREDICATES = {
+    "@absolute_period": lambda question: bool(_ABSOLUTE_PERIOD_RE.search(question or "")),
+    # 결과가 한 행인 계약은 축을 지목한 질문에 못 쓴다. 축 이름을 excluded 에
+    # 하나씩 적으면 새 축이 생길 때마다 새는 자리가 된다.
+    "@grouped_by_axis": lambda question: bool(_v2_grouping_axis_terms(question or "")),
+}
 
 
 _EXPLICIT_DAY_RE = re.compile(
@@ -912,12 +936,22 @@ def _format_query_reference(ref: dict, question: str = "") -> str:
     return "\n".join(lines)
 
 
+def _match_phrase_weight(value: object) -> int:
+    """점수용 길이. 조건 토큰은 글자 수에 뜻이 없어 최소 표면형(두 글자)으로 센다."""
+    if str(value) in CONTRACT_MATCH_PREDICATES:
+        return 2
+    return len(_compact_text(value))
+
+
 def _semantic_query_contract_score(schema: dict, question: str, contract: dict) -> int:
     """Score a compositional semantic contract using declarative phrase groups."""
     compact = _compact_text(question)
     match = contract.get("match") if isinstance(contract.get("match"), dict) else {}
 
     def phrase_hit(value: object) -> bool:
+        predicate = CONTRACT_MATCH_PREDICATES.get(str(value))
+        if predicate is not None:
+            return predicate(question)
         normalized = _compact_text(value)
         return bool(normalized and len(normalized) >= 2 and normalized in compact)
 
@@ -938,13 +972,13 @@ def _semantic_query_contract_score(schema: dict, question: str, contract: dict) 
         hits = [value for value in phrases if phrase_hit(value)]
         if not hits:
             return 0
-        score += 12 + max(len(_compact_text(value)) for value in hits)
+        score += 12 + max(_match_phrase_weight(value) for value in hits)
 
     for group in match.get("optional", []):
         phrases = group if isinstance(group, list) else [group]
         hits = [value for value in phrases if phrase_hit(value)]
         if hits:
-            score += 3 + max(len(_compact_text(value)) for value in hits)
+            score += 3 + max(_match_phrase_weight(value) for value in hits)
 
     for attribute_name in match.get("required_attribute_values", []):
         if not resolve_semantic_attribute_value(schema, str(attribute_name), question):
